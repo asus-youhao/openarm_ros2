@@ -25,12 +25,14 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(dynamixel_sdk REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/v10_simple_hardware.cpp
+  src/leap_hand_hardware.cpp
 )
 
 target_include_directories(
@@ -48,6 +50,7 @@ ament_target_dependencies(${PROJECT_NAME}
   pluginlib
   rclcpp
   rclcpp_lifecycle
+  dynamixel_sdk
 )
 
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)
@@ -70,7 +73,6 @@ ament_export_libraries(
 )
 ament_export_dependencies(
   hardware_interface
-  openarm_can
   pluginlib
   rclcpp
 )

@@ -22,4 +22,11 @@
       ros2_control hardware interface for OpenArm V10.
     </description>
   </class>
+  <class name="openarm_hardware/LeapHandHardware"
+         type="openarm_hardware::LeapHandHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control hardware interface for LEAP Hand via Dynamixel serial communication.
+    </description>
+  </class>
 </library>
