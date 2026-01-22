@@ -64,6 +64,12 @@ install(DIRECTORY include/
 DESTINATION include
 )
 
+# Install Python scripts
+install(PROGRAMS
+  scripts/test_leap_serial_port.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_export_include_directories(
   include
 )
