@@ -98,23 +98,23 @@ void OpenArm_v10HW::generate_joint_names() {
   // Generate leap_hand finger joint names if enabled (right hand only)
   if (has_leap_hand_) {
     // Index finger
-    joint_names_.push_back("right_index_mcp_forward");
     joint_names_.push_back("right_index_mcp_side");
+    joint_names_.push_back("right_index_mcp_forward");
     joint_names_.push_back("right_index_pip");
     joint_names_.push_back("right_index_dip");
     // Middle finger
-    joint_names_.push_back("right_middle_mcp_forward");
     joint_names_.push_back("right_middle_mcp_side");
+    joint_names_.push_back("right_middle_mcp_forward");
     joint_names_.push_back("right_middle_pip");
     joint_names_.push_back("right_middle_dip");
     // Ring finger
-    joint_names_.push_back("right_ring_mcp_forward");
     joint_names_.push_back("right_ring_mcp_side");
+    joint_names_.push_back("right_ring_mcp_forward");
     joint_names_.push_back("right_ring_pip");
     joint_names_.push_back("right_ring_dip");
     // Thumb
-    joint_names_.push_back("right_thumb_mcp_side");
     joint_names_.push_back("right_thumb_mcp_forward");
+    joint_names_.push_back("right_thumb_mcp_side");
     joint_names_.push_back("right_thumb_pip_joint");
     joint_names_.push_back("right_thumb_dip_joint");
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added 16 leap_hand finger joints");
