@@ -12,7 +12,7 @@ class LeapHandPublisher(Node):
         # Publisher for ros2_control interface
         self.controller_pub = self.create_publisher(
             Float64MultiArray, 
-            '/right_hand_controller/commands', 
+            '/leap_hand_controller/commands', 
             10)
         
         # Publisher for direct leap_hand interface
