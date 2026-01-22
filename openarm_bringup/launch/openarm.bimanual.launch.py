@@ -29,6 +29,8 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+from launch.conditions import IfCondition, UnlessCondition
+
 def namespace_from_context(context, arm_prefix):
     arm_prefix_str = context.perform_substitution(arm_prefix)
     if arm_prefix_str:
@@ -37,12 +39,13 @@ def namespace_from_context(context, arm_prefix):
 
 
 def generate_robot_description(context: LaunchContext, description_package, description_file,
-                               arm_type, use_fake_hardware, right_can_interface, left_can_interface):
+                               arm_type, ee_type, use_fake_hardware, right_can_interface, left_can_interface):
     """Generate robot description using xacro processing."""
 
     description_package_str = context.perform_substitution(description_package)
     description_file_str = context.perform_substitution(description_file)
     arm_type_str = context.perform_substitution(arm_type)
+    ee_type_str = context.perform_substitution(ee_type)
     use_fake_hardware_str = context.perform_substitution(use_fake_hardware)
     right_can_interface_str = context.perform_substitution(right_can_interface)
     left_can_interface_str = context.perform_substitution(left_can_interface)
@@ -57,6 +60,7 @@ def generate_robot_description(context: LaunchContext, description_package, desc
         xacro_path,
         mappings={
             "arm_type": arm_type_str,
+            "ee_type": ee_type_str,
             "bimanual": "true",
             "use_fake_hardware": use_fake_hardware_str,
             "ros2_control": "true",
@@ -69,12 +73,13 @@ def generate_robot_description(context: LaunchContext, description_package, desc
 
 
 def robot_nodes_spawner(context: LaunchContext, description_package, description_file,
-                        arm_type, use_fake_hardware, controllers_file, right_can_interface, left_can_interface, arm_prefix):
+                        arm_type, ee_type, use_fake_hardware, controllers_file, right_can_interface, left_can_interface, arm_prefix, use_joint_state_publisher):
     """Spawn both robot state publisher and control nodes with shared robot description."""
     namespace = namespace_from_context(context, arm_prefix)
+    use_joint_state_publisher_str = context.perform_substitution(use_joint_state_publisher)
 
     robot_description = generate_robot_description(
-        context, description_package, description_file, arm_type, use_fake_hardware, right_can_interface, left_can_interface,
+        context, description_package, description_file, arm_type, ee_type, use_fake_hardware, right_can_interface, left_can_interface,
     )
 
     controllers_file_str = context.perform_substitution(controllers_file)
@@ -93,15 +98,19 @@ def robot_nodes_spawner(context: LaunchContext, description_package, description
         parameters=[robot_description_param],
     )
 
-    control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        output="both",
-        namespace=namespace,
-        parameters=[robot_description_param, controllers_file_str],
-    )
+    # Only start control node if not using joint_state_publisher_gui
+    nodes = [robot_state_pub_node]
+    if use_joint_state_publisher_str.lower() != "true":
+        control_node = Node(
+            package="controller_manager",
+            executable="ros2_control_node",
+            output="both",
+            namespace=namespace,
+            parameters=[robot_description_param, controllers_file_str],
+        )
+        nodes.append(control_node)
 
-    return [robot_state_pub_node, control_node]
+    return nodes
 
 
 def controller_spawner(context: LaunchContext, robot_controller, arm_prefix):
@@ -137,6 +146,11 @@ def generate_launch_description():
 
     # Declare launch arguments
     declared_arguments = [
+        DeclareLaunchArgument(
+            "ee_type",
+            default_value="default",
+            description="Type of end-effector (ee), e.g., 'none', 'default', etc.",
+        ),
         DeclareLaunchArgument(
             "description_package",
             default_value="openarm_description",
@@ -189,6 +203,16 @@ def generate_launch_description():
             default_value="openarm_v10_bimanual_controllers.yaml",
             description="Controllers file(s) to use. Can be a single file or comma-separated list of files.",
         ),
+        DeclareLaunchArgument(
+            "launch_rviz",
+            default_value="true",
+            description="Whether to launch RViz.",
+        ),
+        DeclareLaunchArgument(
+            "use_joint_state_publisher",
+            default_value="false",
+            description="Use joint_state_publisher_gui instead of joint_state_broadcaster for manual control.",
+        ),
     ]
 
     # Initialize launch configurations
@@ -196,12 +220,15 @@ def generate_launch_description():
     description_file = LaunchConfiguration("description_file")
     arm_type = LaunchConfiguration("arm_type")
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
+    ee_type = LaunchConfiguration("ee_type")
     robot_controller = LaunchConfiguration("robot_controller")
     runtime_config_package = LaunchConfiguration("runtime_config_package")
     controllers_file = LaunchConfiguration("controllers_file")
     rightcan_interface = LaunchConfiguration("right_can_interface")
     left_can_interface = LaunchConfiguration("left_can_interface")
     arm_prefix = LaunchConfiguration("arm_prefix")
+    launch_rviz = LaunchConfiguration("launch_rviz")
+    use_joint_state_publisher = LaunchConfiguration("use_joint_state_publisher")
 
     controllers_file = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config",
@@ -210,8 +237,8 @@ def generate_launch_description():
 
     robot_nodes_spawner_func = OpaqueFunction(
         function=robot_nodes_spawner,
-        args=[description_package, description_file, arm_type,
-              use_fake_hardware, controllers_file, rightcan_interface, left_can_interface, arm_prefix]
+        args=[description_package, description_file, arm_type, ee_type,
+              use_fake_hardware, controllers_file, rightcan_interface, left_can_interface, arm_prefix, use_joint_state_publisher]
     )
 
     rviz_config_file = PathJoinSubstitution(
@@ -225,9 +252,29 @@ def generate_launch_description():
         name="rviz2",
         output="log",
         arguments=["-d", rviz_config_file],
+        condition=IfCondition(launch_rviz),
     )
 
-    # Joint state broadcaster spawner
+    # Joint state publisher GUI (for manual control)
+    # Need to use OpaqueFunction to access robot_description
+    def joint_state_publisher_spawner(context: LaunchContext):
+        robot_description = generate_robot_description(
+            context, description_package, description_file, arm_type, ee_type, 
+            use_fake_hardware, rightcan_interface, left_can_interface
+        )
+        return [Node(
+            package="joint_state_publisher_gui",
+            executable="joint_state_publisher_gui",
+            name="joint_state_publisher_gui",
+            parameters=[{"robot_description": robot_description}],
+        )]
+    
+    joint_state_publisher_gui_func = OpaqueFunction(
+        function=joint_state_publisher_spawner,
+        condition=IfCondition(use_joint_state_publisher),
+    )
+
+    # Joint state broadcaster spawner (for hardware)
     joint_state_broadcaster_spawner = OpaqueFunction(
         function=lambda context: [Node(
             package="controller_manager",
@@ -256,30 +303,62 @@ def generate_launch_description():
         )]
     )
 
+    # Spawn right_hand_controller for leap_hand finger joints
+    # This controller is needed for both fake and real hardware when ee_type=leap_hand_right
+    def conditional_hand_controller_spawner(context: LaunchContext):
+        ee_type_str = context.perform_substitution(ee_type)
+        use_jsp = context.perform_substitution(use_joint_state_publisher)
+        
+        # Only spawn if ee_type is leap_hand_right AND not using joint_state_publisher
+        if ee_type_str == "leap_hand_right" and use_jsp.lower() != "true":
+            return [Node(
+                package="controller_manager",
+                executable="spawner",
+                namespace=namespace_from_context(context, arm_prefix),
+                arguments=["right_hand_controller", "-c",
+                           f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
+            )]
+        return []
+    
+    hand_controller_spawner = OpaqueFunction(
+        function=conditional_hand_controller_spawner
+    )
+
     # Timing and sequencing
     LAUNCH_DELAY_SECONDS = 1.0
     delayed_joint_state_broadcaster = TimerAction(
         period=LAUNCH_DELAY_SECONDS,
         actions=[joint_state_broadcaster_spawner],
+        condition=UnlessCondition(use_joint_state_publisher),
     )
 
     delayed_robot_controller = TimerAction(
         period=LAUNCH_DELAY_SECONDS,
         actions=[controller_spawner_func],
+        condition=UnlessCondition(use_joint_state_publisher),
     )
     delayed_gripper_controller = TimerAction(
         period=LAUNCH_DELAY_SECONDS,
         actions=[gripper_controller_spawner],
+        condition=UnlessCondition(use_joint_state_publisher),
+    )
+    
+    delayed_hand_controller = TimerAction(
+        period=LAUNCH_DELAY_SECONDS,
+        actions=[hand_controller_spawner],
     )
 
     return LaunchDescription(
         declared_arguments + [
             robot_nodes_spawner_func,
             rviz_node,
+            joint_state_publisher_gui_func,
         ] +
         [
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
             delayed_gripper_controller,
+            delayed_hand_controller,
         ]
     )
+
