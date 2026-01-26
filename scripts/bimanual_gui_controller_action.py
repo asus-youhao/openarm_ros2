@@ -49,6 +49,10 @@ class BimanualGUIController:
             'right_hand': False
         }
         
+        # Position recording storage
+        self.saved_positions = []  # List of saved position snapshots
+        self.current_position_name = tk.StringVar(value="Position 1")
+        
         # Joint limits (in radians)
         self.joint_limits = {
             # Arms
@@ -68,26 +72,29 @@ class BimanualGUIController:
             'openarm_right_joint6': (-2.0, 2.0),
             'openarm_right_joint7': (-3.14, 3.14),
             
-            # LEAP Hand
-            'right_index_mcp_side': (-0.436, 0.436),
-            'right_index_mcp_forward': (0.0, 1.571),
-            'right_index_pip': (0.0, 1.571),
-            'right_index_dip': (0.0, 1.571),
+            # LEAP Hand - Index Finger
+            'right_index_mcp_side': (-1.047, 1.047),
+            'right_index_mcp_forward': (-0.314, 2.23),
+            'right_index_pip': (-0.506, 1.885),
+            'right_index_dip': (-0.366, 2.042),
             
-            'right_middle_mcp_side': (-0.436, 0.436),
-            'right_middle_mcp_forward': (0.0, 1.571),
-            'right_middle_pip': (0.0, 1.571),
-            'right_middle_dip': (0.0, 1.571),
+            # LEAP Hand - Middle Finger
+            'right_middle_mcp_side': (-1.047, 1.047),
+            'right_middle_mcp_forward': (-0.314, 2.23),
+            'right_middle_pip': (-0.506, 1.885),
+            'right_middle_dip': (-0.366, 2.042),
             
+            # LEAP Hand - Ring Finger
             'right_ring_mcp_side': (-0.436, 0.436),
             'right_ring_mcp_forward': (0.0, 1.571),
             'right_ring_pip': (0.0, 1.571),
             'right_ring_dip': (0.0, 1.571),
             
-            'right_thumb_mcp_forward': (0.0, 1.571),
-            'right_thumb_mcp_side': (-0.436, 0.436),
-            'right_thumb_pip_joint': (0.0, 1.571),
-            'right_thumb_dip_joint': (0.0, 1.571),
+            # LEAP Hand - Thumb (corrected from URDF)
+            'right_thumb_mcp_side': (-0.349, 2.094),
+            'right_thumb_mcp_forward': (-0.47, 2.443),
+            'right_thumb_pip_joint': (-1.20, 1.90),
+            'right_thumb_dip_joint': (-1.34, 1.88),
         }
         
         self.create_ui()
@@ -139,6 +146,48 @@ class BimanualGUIController:
                  command=self.send_grasp_pose).pack(side='left', padx=5)
         tk.Button(control_frame, text='Open Hand', 
                  command=self.send_open_hand).pack(side='left', padx=5)
+        
+        # Position recording section
+        recording_frame = tk.Frame(self.root, bg='lightblue', padx=10, pady=10)
+        recording_frame.pack(fill='x')
+        
+        tk.Label(recording_frame, text='Position Recording:', 
+                font=('Arial', 11, 'bold'), bg='lightblue').pack(side='left', padx=5)
+        
+        # Position name entry
+        tk.Entry(recording_frame, textvariable=self.current_position_name, 
+                width=15).pack(side='left', padx=5)
+        
+        # Save current position button
+        tk.Button(recording_frame, text='Save Position', 
+                 bg='#2196F3', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.save_current_position).pack(side='left', padx=5)
+        
+        # Position counter
+        self.position_counter_label = tk.Label(recording_frame, 
+                                               text='Saved: 0', 
+                                               font=('Arial', 10), bg='lightblue')
+        self.position_counter_label.pack(side='left', padx=10)
+        
+        # Export to JSON button
+        tk.Button(recording_frame, text='Export to JSON', 
+                 bg='#4CAF50', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.export_positions_to_json).pack(side='left', padx=5)
+        
+        # Load from JSON button
+        tk.Button(recording_frame, text='Load from JSON', 
+                 bg='#FF9800', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.load_positions_from_json).pack(side='left', padx=5)
+        
+        # Clear all button
+        tk.Button(recording_frame, text='Clear All', 
+                 bg='#f44336', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.clear_all_positions).pack(side='left', padx=5)
+        
+        # Export to replay format button
+        tk.Button(recording_frame, text='Export to Replay', 
+                 bg='#9C27B0', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.export_to_replay_format).pack(side='left', padx=5)
         
         # Create scrollable canvas
         canvas_frame = tk.Frame(self.root)
@@ -192,8 +241,10 @@ class BimanualGUIController:
         # Get limits
         min_val, max_val = self.joint_limits.get(joint_name, (-3.14, 3.14))
         
-        # Min limit label
-        min_label = tk.Label(frame, text=f'{min_val:.2f}', width=6)
+        # Min limit label (rad and deg)
+        min_deg = min_val * 180.0 / 3.14159
+        min_label = tk.Label(frame, text=f'{min_val:.2f}r\n{min_deg:.0f}°', 
+                            width=7, font=('Arial', 8))
         min_label.pack(side='left')
         
         # Slider
@@ -205,19 +256,21 @@ class BimanualGUIController:
         slider.pack(side='left', padx=5)
         self.joint_sliders[joint_name] = slider
         
-        # Max limit label
-        max_label = tk.Label(frame, text=f'{max_val:.2f}', width=6)
+        # Max limit label (rad and deg)
+        max_deg = max_val * 180.0 / 3.14159
+        max_label = tk.Label(frame, text=f'{max_val:.2f}r\n{max_deg:.0f}°', 
+                            width=7, font=('Arial', 8))
         max_label.pack(side='left')
         
-        # Target value label
-        target_label = tk.Label(frame, text='Target: 0.000', 
-                               width=14, font=('Arial', 9, 'bold'))
+        # Target value label (rad and deg)
+        target_label = tk.Label(frame, text='Target:\n0.000r (0°)', 
+                               width=16, font=('Arial', 9, 'bold'))
         target_label.pack(side='left', padx=5)
         self.joint_value_labels[joint_name] = target_label
         
-        # Current value label
-        current_label = tk.Label(frame, text='Current: ---', 
-                                width=14, fg='blue')
+        # Current value label (rad and deg)
+        current_label = tk.Label(frame, text='Current:\n--- (---)', 
+                                width=16, fg='blue', font=('Arial', 8))
         current_label.pack(side='left', padx=5)
         self.joint_current_labels[joint_name] = current_label
         
@@ -229,7 +282,10 @@ class BimanualGUIController:
     def on_slider_change(self, joint_name, value):
         """Handle slider value change."""
         val = float(value)
-        self.joint_value_labels[joint_name].config(text=f'Target: {val:.3f}')
+        deg = val * 180.0 / 3.14159
+        self.joint_value_labels[joint_name].config(
+            text=f'Target:\n{val:.3f}r ({deg:.1f}°)'
+        )
     
     def start_sending(self):
         """Start sending on change."""
@@ -301,8 +357,9 @@ class BimanualGUIController:
         joint_states = self.ros_node.get_current_joint_states()
         for joint_name, position in joint_states.items():
             if joint_name in self.joint_current_labels:
+                deg = position * 180.0 / 3.14159
                 self.joint_current_labels[joint_name].config(
-                    text=f'Current: {position:.3f}'
+                    text=f'Current:\n{position:.3f}r ({deg:.1f}°)'
                 )
         
         # Schedule next update (500ms)
@@ -334,6 +391,170 @@ class BimanualGUIController:
         for joint_name in self.ros_node.right_hand_joints:
             if joint_name in self.joint_sliders:
                 self.joint_sliders[joint_name].set(0.0)
+    
+    def save_current_position(self):
+        """Save current joint positions."""
+        import datetime
+        
+        position_data = {
+            'name': self.current_position_name.get(),
+            'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'left_arm': [self.joint_sliders[j].get() for j in self.ros_node.left_arm_joints],
+            'right_arm': [self.joint_sliders[j].get() for j in self.ros_node.right_arm_joints],
+            'right_hand': [self.joint_sliders[j].get() for j in self.ros_node.right_hand_joints],
+            'joint_names': {
+                'left_arm': self.ros_node.left_arm_joints,
+                'right_arm': self.ros_node.right_arm_joints,
+                'right_hand': self.ros_node.right_hand_joints
+            }
+        }
+        
+        self.saved_positions.append(position_data)
+        
+        # Update counter
+        self.position_counter_label.config(text=f'Saved: {len(self.saved_positions)}')
+        
+        # Auto-increment position name
+        try:
+            # Extract number from name like "Position 1"
+            parts = self.current_position_name.get().rsplit(' ', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                next_num = int(parts[1]) + 1
+                self.current_position_name.set(f'{parts[0]} {next_num}')
+        except:
+            pass
+        
+        self.ros_node.get_logger().info(
+            f'Saved position: {position_data["name"]} '
+            f'(Total: {len(self.saved_positions)})'
+        )
+    
+    def export_positions_to_json(self):
+        """Export saved positions to JSON file."""
+        import json
+        from tkinter import filedialog
+        
+        if not self.saved_positions:
+            self.ros_node.get_logger().warn('No positions to export!')
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension='.json',
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            initialdir='/tmp',
+            initialfile='saved_positions.json'
+        )
+        
+        if filename:
+            with open(filename, 'w') as f:
+                json.dump(self.saved_positions, f, indent=2)
+            
+            self.ros_node.get_logger().info(
+                f'Exported {len(self.saved_positions)} positions to {filename}'
+            )
+    
+    def load_positions_from_json(self):
+        """Load positions from JSON file."""
+        import json
+        from tkinter import filedialog
+        
+        filename = filedialog.askopenfilename(
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            initialdir='/tmp'
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r') as f:
+                    self.saved_positions = json.load(f)
+                
+                self.position_counter_label.config(text=f'Saved: {len(self.saved_positions)}')
+                
+                self.ros_node.get_logger().info(
+                    f'Loaded {len(self.saved_positions)} positions from {filename}'
+                )
+            except Exception as e:
+                self.ros_node.get_logger().error(f'Failed to load: {e}')
+    
+    def clear_all_positions(self):
+        """Clear all saved positions."""
+        if self.saved_positions:
+            self.saved_positions.clear()
+            self.position_counter_label.config(text='Saved: 0')
+            self.ros_node.get_logger().info('Cleared all saved positions')
+    
+    def export_to_replay_format(self):
+        """Export positions to replay format compatible with record_replay_commands.py."""
+        import json
+        from tkinter import filedialog, simpledialog
+        
+        if not self.saved_positions:
+            self.ros_node.get_logger().warn('No positions to export!')
+            return
+        
+        # Ask for duration between positions
+        duration = simpledialog.askfloat(
+            'Duration', 
+            'Duration between positions (seconds):',
+            initialvalue=2.0,
+            minvalue=0.1,
+            maxvalue=10.0
+        )
+        
+        if duration is None:
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension='.json',
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            initialdir='/tmp',
+            initialfile='replay_sequence.json'
+        )
+        
+        if not filename:
+            return
+        
+        # Convert to replay format
+        recordings = []
+        current_time = 0.0
+        
+        for pos_data in self.saved_positions:
+            # Add left arm command
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'left',
+                'positions': pos_data['left_arm']
+            })
+            
+            # Add right arm command (same timestamp for simultaneous movement)
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'right',
+                'positions': pos_data['right_arm']
+            })
+            
+            current_time += duration
+        
+        replay_data = {
+            'duration': current_time,
+            'total_commands': len(recordings),
+            'recordings': recordings,
+            'metadata': {
+                'source': 'bimanual_gui_controller',
+                'positions_count': len(self.saved_positions),
+                'duration_between_positions': duration
+            }
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(replay_data, f, indent=2)
+        
+        self.ros_node.get_logger().info(
+            f'Exported {len(self.saved_positions)} positions to replay format: {filename}'
+        )
+        self.ros_node.get_logger().info(
+            f'Total duration: {current_time:.1f}s, Commands: {len(recordings)}'
+        )
     
     def run(self):
         """Run the GUI."""
