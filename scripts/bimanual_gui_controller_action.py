@@ -55,22 +55,23 @@ class BimanualGUIController:
         
         # Joint limits (in radians)
         self.joint_limits = {
-            # Arms
-            'openarm_left_joint1': (-3.14, 3.14),
-            'openarm_left_joint2': (-2.0, 2.0),
-            'openarm_left_joint3': (-3.14, 3.14),
-            'openarm_left_joint4': (-2.0, 2.0),
-            'openarm_left_joint5': (-3.14, 3.14),
-            'openarm_left_joint6': (-2.0, 2.0),
-            'openarm_left_joint7': (-3.14, 3.14),
+            # Left Arm
+            'openarm_left_joint1': (-3.491, 1.396),
+            'openarm_left_joint2': (-3.316, 0.175),
+            'openarm_left_joint3': (-1.571, 1.571),
+            'openarm_left_joint4': (0.0, 2.443),
+            'openarm_left_joint5': (-1.571, 1.571),
+            'openarm_left_joint6': (-0.785, 0.785),
+            'openarm_left_joint7': (-1.571, 1.571),
             
-            'openarm_right_joint1': (-3.14, 3.14),
-            'openarm_right_joint2': (-2.0, 2.0),
-            'openarm_right_joint3': (-3.14, 3.14),
-            'openarm_right_joint4': (-2.0, 2.0),
-            'openarm_right_joint5': (-3.14, 3.14),
-            'openarm_right_joint6': (-2.0, 2.0),
-            'openarm_right_joint7': (-3.14, 3.14),
+            # Right Arm
+            'openarm_right_joint1': (-1.396, 3.491),
+            'openarm_right_joint2': (-0.175, 3.316),
+            'openarm_right_joint3': (-1.571, 1.571),
+            'openarm_right_joint4': (0.0, 2.443),
+            'openarm_right_joint5': (-1.571, 1.571),
+            'openarm_right_joint6': (-0.785, 0.785),
+            'openarm_right_joint7': (-1.571, 1.571),
             
             # LEAP Hand - Index Finger
             'right_index_mcp_side': (-1.047, 1.047),
