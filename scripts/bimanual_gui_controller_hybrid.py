@@ -520,7 +520,7 @@ class ROSNode(Node):
             'right_index_mcp_side', 'right_index_mcp_forward', 'right_index_pip', 'right_index_dip',
             'right_middle_mcp_side', 'right_middle_mcp_forward', 'right_middle_pip', 'right_middle_dip',
             'right_ring_mcp_side', 'right_ring_mcp_forward', 'right_ring_pip', 'right_ring_dip',
-            'right_thumb_mcp_forward', 'right_thumb_mcp_side', 'right_thumb_pip_joint', 'right_thumb_dip_joint'
+            'right_thumb_mcp_side', 'right_thumb_mcp_forward', 'right_thumb_pip_joint', 'right_thumb_dip_joint'
         ]
         
         # Create publishers/clients based on mode
