@@ -308,14 +308,21 @@ def generate_launch_description():
     def conditional_hand_controller_spawner(context: LaunchContext):
         ee_type_str = context.perform_substitution(ee_type)
         use_jsp = context.perform_substitution(use_joint_state_publisher)
+        robot_controller_str = context.perform_substitution(robot_controller)
         
         # Only spawn if ee_type is leap_hand_right AND not using joint_state_publisher
         if ee_type_str == "leap_hand_right" and use_jsp.lower() != "true":
+            # Select hand controller based on robot_controller mode
+            if robot_controller_str == "forward_position_controller":
+                hand_controller_name = "right_hand_forward_position_controller"
+            else:  # joint_trajectory_controller (default)
+                hand_controller_name = "right_hand_controller"
+            
             return [Node(
                 package="controller_manager",
                 executable="spawner",
                 namespace=namespace_from_context(context, arm_prefix),
-                arguments=["right_hand_controller", "-c",
+                arguments=[hand_controller_name, "-c",
                            f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
             )]
         return []
