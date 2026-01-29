@@ -609,12 +609,31 @@ class ROSNode(Node):
 
 def main(args=None):
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Bimanual GUI Controller with mode selection')
-    parser.add_argument('--mode', type=str, default='action', choices=['action', 'topic'],
-                        help='Control mode: action (trajectory) or topic (direct position)')
+    parser = argparse.ArgumentParser(
+        description='Bimanual GUI Controller with mode selection',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python3 bimanual_gui_controller_hybrid.py --mode action
+  python3 bimanual_gui_controller_hybrid.py --mode topic
+        '''
+    )
+    parser.add_argument('--mode', type=str, required=True, choices=['action', 'topic'],
+                        help='Control mode: action (trajectory) or topic (direct position) [REQUIRED]')
     
     # Parse known args (ignore ROS args)
-    parsed_args, remaining = parser.parse_known_args()
+    try:
+        parsed_args, remaining = parser.parse_known_args()
+    except SystemExit:
+        # argparse will print error message and usage
+        print("\nERROR: --mode parameter is required!")
+        print("\nPlease specify control mode:")
+        print("  --mode action  : Use joint_trajectory_controller (smooth trajectory)")
+        print("  --mode topic   : Use forward_position_controller (direct position)")
+        print("\nExamples:")
+        print("  python3 bimanual_gui_controller_hybrid.py --mode action")
+        print("  python3 bimanual_gui_controller_hybrid.py --mode topic")
+        sys.exit(1)
     
     # Initialize ROS with remaining args
     rclpy.init(args=remaining)

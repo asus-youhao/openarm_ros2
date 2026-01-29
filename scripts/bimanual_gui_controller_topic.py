@@ -599,9 +599,11 @@ class ROSNode(Node):
             10
         )
         
-        # Action client for LEAP Hand (action-based)
-        self.right_hand_client = ActionClient(
-            self, FollowJointTrajectory, '/right_hand_controller/follow_joint_trajectory'
+        # Publisher for LEAP Hand (topic-based)
+        self.right_hand_pub = self.create_publisher(
+            Float64MultiArray,
+            '/right_hand_forward_position_controller/commands',
+            10
         )
         
         # Joint state storage
@@ -621,7 +623,7 @@ class ROSNode(Node):
         return self.current_joint_states.copy()
     
     def publish_positions(self, controller, positions):
-        """Send positions via topic (arms) or action (hand)."""
+        """Send positions via topic."""
         if controller == 'left_arm':
             # Publish to left arm position controller topic
             msg = Float64MultiArray()
@@ -635,24 +637,10 @@ class ROSNode(Node):
             self.right_arm_pub.publish(msg)
             
         elif controller == 'right_hand':
-            # Use action for LEAP Hand
-            goal_msg = FollowJointTrajectory.Goal()
-            goal_msg.trajectory.joint_names = self.right_hand_joints
-            
-            # Debug: print joint names and positions
-            self.get_logger().info(f'Sending to right_hand_controller:')
-            for i, (name, pos) in enumerate(zip(self.right_hand_joints, positions)):
-                self.get_logger().info(f'  [{i}] {name}: {pos:.3f}')
-            
-            # Create trajectory point
-            point = JointTrajectoryPoint()
-            point.positions = positions
-            point.time_from_start = Duration(sec=0, nanosec=800000000)  # 800ms
-            
-            goal_msg.trajectory.points = [point]
-            
-            # Send goal asynchronously (non-blocking)
-            self.right_hand_client.send_goal_async(goal_msg)
+            # Publish to right hand position controller topic
+            msg = Float64MultiArray()
+            msg.data = positions
+            self.right_hand_pub.publish(msg)
 
 
 def main(args=None):
