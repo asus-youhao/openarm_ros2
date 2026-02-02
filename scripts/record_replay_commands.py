@@ -215,12 +215,13 @@ class CommandReplayerTopic(Node):
 class CommandReplayerAction(Node):
     """Replay recorded commands using ACTION interface."""
     
-    def __init__(self, input_file, speed=1.0, time_from_start=0.5):
+    def __init__(self, input_file, speed=1.0, time_from_start=0.5, batch_size=16):
         super().__init__('command_replayer_action')
         
         self.input_file = input_file
         self.speed = speed
         self.time_from_start = time_from_start
+        self.batch_size = batch_size
         
         # Joint names
         self.left_arm_joints = [
@@ -259,17 +260,15 @@ class CommandReplayerAction(Node):
             return
         
         self.current_index = 0
-        self.start_time = None
+        self.pending_goals = 0
         
-        # Timer for replay (10ms resolution)
-        self.timer = self.create_timer(0.01, self.replay_callback)
-        
-        self.get_logger().info('Replay ready (ACTION mode)...')
+        self.get_logger().info('Replay ready (ACTION mode - Batch processing)...')
         self.get_logger().info(f'  File: {input_file}')
         self.get_logger().info(f'  Commands: {len(self.recordings)}')
         self.get_logger().info(f'  Duration: {self.recordings[-1]["timestamp"]:.2f}s')
         self.get_logger().info(f'  Speed: {speed}x')
         self.get_logger().info(f'  Time from start: {time_from_start}s')
+        self.get_logger().info(f'  Batch size: {batch_size} steps')
         self.get_logger().info('Starting in 2 seconds...')
         
         # Delayed start
@@ -288,62 +287,116 @@ class CommandReplayerAction(Node):
     def _delayed_start(self):
         """Delayed start callback."""
         self.start_timer.cancel()
-        self.start_time = time.time()
         self.get_logger().info('Replay started!')
+        self.send_next_batch()
     
-    def send_trajectory_action(self, controller, positions):
-        """Send trajectory command via action."""
-        goal_msg = FollowJointTrajectory.Goal()
-        
-        # Set joint names based on controller
-        if controller == 'left':
-            goal_msg.trajectory.joint_names = self.left_arm_joints
-            action_client = self.left_arm_client
-        else:  # right
-            goal_msg.trajectory.joint_names = self.right_arm_joints
-            action_client = self.right_arm_client
-        
-        # Create trajectory point
-        point = JointTrajectoryPoint()
-        point.positions = positions
-        point.time_from_start = Duration(
-            sec=int(self.time_from_start),
-            nanosec=int((self.time_from_start % 1) * 1e9)
-        )
-        
-        goal_msg.trajectory.points = [point]
-        
-        # Send goal asynchronously
-        action_client.send_goal_async(goal_msg)
-    
-    def replay_callback(self):
-        """Replay commands at appropriate times."""
-        if self.start_time is None or self.current_index >= len(self.recordings):
+    def send_next_batch(self):
+        """Send next batch of commands."""
+        if self.current_index >= len(self.recordings):
+            self.get_logger().info('Replay completed!')
             return
         
-        elapsed = (time.time() - self.start_time) * self.speed
+        # Collect commands for this batch (group by controller)
+        left_batch = []
+        right_batch = []
+        batch_start_idx = self.current_index
         
-        # Publish all commands that should have happened by now
-        while self.current_index < len(self.recordings):
-            record = self.recordings[self.current_index]
-            
-            if record['timestamp'] > elapsed:
+        # Collect up to batch_size commands
+        for _ in range(self.batch_size):
+            if self.current_index >= len(self.recordings):
                 break
             
-            # Send via action
-            self.send_trajectory_action(record['controller'], record['positions'])
+            record = self.recordings[self.current_index]
             
-            self.get_logger().info(
-                f'[{record["timestamp"]:.3f}s] {record["controller"]}: '
-                f'{[f"{p:.3f}" for p in record["positions"]]}'
-            )
+            if record['controller'] == 'left':
+                left_batch.append(record)
+            else:
+                right_batch.append(record)
             
             self.current_index += 1
         
-        # Stop when done
-        if self.current_index >= len(self.recordings):
-            self.get_logger().info('Replay completed!')
-            self.timer.cancel()
+        # Send trajectories for left and right controllers
+        self.pending_goals = 0
+        
+        if left_batch:
+            self.send_trajectory_batch('left', left_batch)
+            self.pending_goals += 1
+        
+        if right_batch:
+            self.send_trajectory_batch('right', right_batch)
+            self.pending_goals += 1
+        
+        batch_end_idx = self.current_index - 1
+        self.get_logger().info(
+            f'Sent batch [{batch_start_idx}-{batch_end_idx}]: '
+            f'Left={len(left_batch)}, Right={len(right_batch)} steps'
+        )
+    
+    def send_trajectory_batch(self, controller, batch):
+        """Send trajectory with multiple points."""
+        goal_msg = FollowJointTrajectory.Goal()
+        
+        # Set joint names and client
+        if controller == 'left':
+            goal_msg.trajectory.joint_names = self.left_arm_joints
+            action_client = self.left_arm_client
+        else:
+            goal_msg.trajectory.joint_names = self.right_arm_joints
+            action_client = self.right_arm_client
+        
+        # Create trajectory points
+        points = []
+        base_timestamp = batch[0]['timestamp']
+        
+        for record in batch:
+            point = JointTrajectoryPoint()
+            point.positions = record['positions']
+            
+            # Calculate time from start for this point
+            time_offset = (record['timestamp'] - base_timestamp) / self.speed
+            time_offset += self.time_from_start
+            
+            point.time_from_start = Duration(
+                sec=int(time_offset),
+                nanosec=int((time_offset % 1) * 1e9)
+            )
+            points.append(point)
+        
+        goal_msg.trajectory.points = points
+        
+        # Send goal and wait for result
+        future = action_client.send_goal_async(goal_msg)
+        future.add_done_callback(lambda f: self.goal_response_callback(f, controller))
+    
+    def goal_response_callback(self, future, controller):
+        """Handle goal response."""
+        goal_handle = future.result()
+        
+        if not goal_handle.accepted:
+            self.get_logger().error(f'{controller} goal rejected!')
+            self.pending_goals -= 1
+            self.check_batch_complete()
+            return
+        
+        self.get_logger().info(f'{controller} goal accepted, waiting for result...')
+        
+        # Wait for result
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(lambda f: self.result_callback(f, controller))
+    
+    def result_callback(self, future, controller):
+        """Handle action result."""
+        result = future.result()
+        self.get_logger().info(f'{controller} batch completed!')
+        
+        self.pending_goals -= 1
+        self.check_batch_complete()
+    
+    def check_batch_complete(self):
+        """Check if current batch is complete and send next."""
+        if self.pending_goals == 0:
+            self.get_logger().info('Batch complete, sending next batch...')
+            self.send_next_batch()
 
 
 def main():
@@ -358,8 +411,11 @@ Examples:
   # Replay using topic interface
   python3 scripts/record_replay_commands.py replay -t --file /tmp/my_recording.json
   
-  # Replay using action interface
+  # Replay using action interface (16 steps per batch)
   python3 scripts/record_replay_commands.py replay -a --file /tmp/my_recording.json --time-from-start 0.8
+  
+  # Replay with custom batch size
+  python3 scripts/record_replay_commands.py replay -a --file /tmp/my_recording.json --batch-size 32
   
   # Replay at 2x speed
   python3 scripts/record_replay_commands.py replay -a --speed 2.0
@@ -383,6 +439,8 @@ Examples:
     # Action-specific parameters
     parser.add_argument('--time-from-start', type=float, default=0.5,
                        help='Time from start for action trajectory in seconds (default: 0.5)')
+    parser.add_argument('--batch-size', type=int, default=16,
+                       help='Number of trajectory points per batch for action mode (default: 16)')
     
     args = parser.parse_args()
     
@@ -406,7 +464,7 @@ Examples:
             if args.topic:
                 node = CommandReplayerTopic(args.file, args.speed)
             else:  # action
-                node = CommandReplayerAction(args.file, args.speed, args.time_from_start)
+                node = CommandReplayerAction(args.file, args.speed, args.time_from_start, args.batch_size)
             
             rclpy.spin(node)
     
