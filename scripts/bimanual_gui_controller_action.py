@@ -442,7 +442,7 @@ class BimanualGUIController:
         filename = filedialog.asksaveasfilename(
             defaultextension='.json',
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
-            initialdir='/tmp',
+            initialdir='./record_data',
             initialfile='saved_positions.json'
         )
         
@@ -461,7 +461,7 @@ class BimanualGUIController:
         
         filename = filedialog.askopenfilename(
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
-            initialdir='/tmp'
+            initialdir='./record_data'
         )
         
         if filename:
@@ -508,7 +508,7 @@ class BimanualGUIController:
         filename = filedialog.asksaveasfilename(
             defaultextension='.json',
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
-            initialdir='/tmp',
+            initialdir='./record_data',
             initialfile='replay_sequence.json'
         )
         

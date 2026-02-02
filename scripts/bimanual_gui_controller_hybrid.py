@@ -450,7 +450,7 @@ class BimanualGUIController:
         filename = filedialog.asksaveasfilename(
             defaultextension='.json',
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
-            initialdir='/tmp',
+            initialdir='./record_data',
             initialfile='saved_positions.json'
         )
         
@@ -469,7 +469,7 @@ class BimanualGUIController:
         
         filename = filedialog.askopenfilename(
             filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
-            initialdir='/tmp'
+            initialdir='./record_data'
         )
         
         if filename:
@@ -599,7 +599,7 @@ class ROSNode(Node):
         
         point = JointTrajectoryPoint()
         point.positions = positions
-        point.time_from_start = Duration(sec=0, nanosec=800000000)  # 800ms
+        point.time_from_start = Duration(sec=0, nanosec=500000000)  # 500ms
         
         goal_msg.trajectory.points = [point]
         
