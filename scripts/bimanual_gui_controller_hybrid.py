@@ -199,6 +199,11 @@ class BimanualGUIController:
                  bg='#f44336', fg='white', font=('Arial', 10, 'bold'),
                  command=self.clear_all_positions).pack(side='left', padx=5)
         
+        # Export to replay format button
+        tk.Button(recording_frame, text='Export to Replay', 
+                 bg='#9C27B0', fg='white', font=('Arial', 10, 'bold'),
+                 command=self.export_to_replay_format).pack(side='left', padx=5)
+        
         # Create scrollable canvas
         canvas_frame = tk.Frame(self.root)
         canvas_frame.pack(fill='both', expand=True)
@@ -491,6 +496,87 @@ class BimanualGUIController:
             self.saved_positions.clear()
             self.position_counter_label.config(text='Saved: 0')
             self.ros_node.get_logger().info('Cleared all saved positions')
+    
+    def export_to_replay_format(self):
+        """Export positions to replay format compatible with record_replay_commands.py."""
+        import json
+        from tkinter import filedialog, simpledialog
+        
+        if not self.saved_positions:
+            self.ros_node.get_logger().warn('No positions to export!')
+            return
+        
+        # Ask for duration between positions
+        duration = simpledialog.askfloat(
+            'Duration', 
+            'Duration between positions (seconds):',
+            initialvalue=2.0,
+            minvalue=0.1,
+            maxvalue=10.0
+        )
+        
+        if duration is None:
+            return
+        
+        filename = filedialog.asksaveasfilename(
+            defaultextension='.json',
+            filetypes=[('JSON files', '*.json'), ('All files', '*.*')],
+            initialdir='./record_data',
+            initialfile='replay_sequence.json'
+        )
+        
+        if not filename:
+            return
+        
+        # Convert to replay format
+        recordings = []
+        current_time = 0.0
+        
+        for pos_data in self.saved_positions:
+            # Add left arm command
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'left_arm',
+                'positions': pos_data['left_arm']
+            })
+            
+            # Add right arm command (same timestamp for simultaneous movement)
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'right_arm',
+                'positions': pos_data['right_arm']
+            })
+            
+            # Add right LEAP Hand command (same timestamp for simultaneous movement)
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'right_leaphand',
+                'positions': pos_data['right_hand']
+            })
+            
+            current_time += duration
+        
+        replay_data = {
+            'duration': current_time,
+            'total_commands': len(recordings),
+            'recordings': recordings,
+            'metadata': {
+                'source': 'bimanual_gui_controller_hybrid',
+                'positions_count': len(self.saved_positions),
+                'duration_between_positions': duration,
+                'control_mode': self.control_mode
+            }
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(replay_data, f, indent=2)
+        
+        self.ros_node.get_logger().info(
+            f'Exported {len(self.saved_positions)} positions to replay format: {filename}'
+        )
+        self.ros_node.get_logger().info(
+            f'Total duration: {current_time:.1f}s, Commands: {len(recordings)}'
+        )
     
     def run(self):
         """Run the GUI."""

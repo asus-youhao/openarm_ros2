@@ -524,15 +524,22 @@ class BimanualGUIController:
             # Add left arm command
             recordings.append({
                 'timestamp': current_time,
-                'controller': 'left',
+                'controller': 'left_arm',
                 'positions': pos_data['left_arm']
             })
             
             # Add right arm command (same timestamp for simultaneous movement)
             recordings.append({
                 'timestamp': current_time,
-                'controller': 'right',
+                'controller': 'right_arm',
                 'positions': pos_data['right_arm']
+            })
+            
+            # Add right LEAP Hand command (same timestamp for simultaneous movement)
+            recordings.append({
+                'timestamp': current_time,
+                'controller': 'right_leaphand',
+                'positions': pos_data['right_hand']
             })
             
             current_time += duration

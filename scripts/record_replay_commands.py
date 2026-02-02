@@ -29,18 +29,26 @@ class CommandRecorder(Node):
         self.start_time = None
         self.lock = Lock()
         
-        # Subscribe to both controllers
-        self.left_sub = self.create_subscription(
+        # Subscribe to arm controllers
+        self.left_arm_sub = self.create_subscription(
             Float64MultiArray,
             '/left_forward_position_controller/commands',
-            self.left_callback,
+            self.left_arm_callback,
             10
         )
         
-        self.right_sub = self.create_subscription(
+        self.right_arm_sub = self.create_subscription(
             Float64MultiArray,
             '/right_forward_position_controller/commands',
-            self.right_callback,
+            self.right_arm_callback,
+            10
+        )
+        
+        # Subscribe to LEAP Hand controller
+        self.right_leaphand_sub = self.create_subscription(
+            Float64MultiArray,
+            '/right_hand_forward_position_controller/commands',
+            self.right_leaphand_callback,
             10
         )
         
@@ -49,18 +57,23 @@ class CommandRecorder(Node):
         
         self.get_logger().info('Recording started...')
         self.get_logger().info('  Topics:')
-        self.get_logger().info('    - /left_forward_position_controller/commands')
-        self.get_logger().info('    - /right_forward_position_controller/commands')
+        self.get_logger().info('    - /left_forward_position_controller/commands (left_arm)')
+        self.get_logger().info('    - /right_forward_position_controller/commands (right_arm)')
+        self.get_logger().info('    - /right_hand_forward_position_controller/commands (right_leaphand)')
         self.get_logger().info(f'  Output: {output_file}')
         self.get_logger().info('  Press Ctrl+C to stop and save')
     
-    def left_callback(self, msg):
-        """Record left controller command."""
-        self._record_command('left', msg)
+    def left_arm_callback(self, msg):
+        """Record left arm controller command."""
+        self._record_command('left_arm', msg)
     
-    def right_callback(self, msg):
-        """Record right controller command."""
-        self._record_command('right', msg)
+    def right_arm_callback(self, msg):
+        """Record right arm controller command."""
+        self._record_command('right_arm', msg)
+    
+    def right_leaphand_callback(self, msg):
+        """Record right LEAP Hand controller command."""
+        self._record_command('right_leaphand', msg)
     
     def _record_command(self, controller, msg):
         """Record command with timestamp."""
@@ -88,15 +101,17 @@ class CommandRecorder(Node):
     def print_status(self):
         """Print recording status."""
         with self.lock:
-            left_count = sum(1 for r in self.recordings if r['controller'] == 'left')
-            right_count = sum(1 for r in self.recordings if r['controller'] == 'right')
+            left_arm_count = sum(1 for r in self.recordings if r['controller'] == 'left_arm')
+            right_arm_count = sum(1 for r in self.recordings if r['controller'] == 'right_arm')
+            right_leaphand_count = sum(1 for r in self.recordings if r['controller'] == 'right_leaphand')
             duration = time.time() - self.start_time if self.start_time else 0
             
             self.get_logger().info('─' * 60)
             self.get_logger().info(f'Recording Status:')
             self.get_logger().info(f'  Duration: {duration:.1f}s')
-            self.get_logger().info(f'  Left commands: {left_count}')
-            self.get_logger().info(f'  Right commands: {right_count}')
+            self.get_logger().info(f'  Left arm commands: {left_arm_count}')
+            self.get_logger().info(f'  Right arm commands: {right_arm_count}')
+            self.get_logger().info(f'  Right LEAP Hand commands: {right_leaphand_count}')
             self.get_logger().info(f'  Total: {len(self.recordings)}')
             self.get_logger().info('─' * 60)
     
@@ -124,16 +139,23 @@ class CommandReplayerTopic(Node):
         self.input_file = input_file
         self.speed = speed
         
-        # Publishers for both controllers
-        self.left_pub = self.create_publisher(
+        # Publishers for arm controllers
+        self.left_arm_pub = self.create_publisher(
             Float64MultiArray,
             '/left_forward_position_controller/commands',
             10
         )
         
-        self.right_pub = self.create_publisher(
+        self.right_arm_pub = self.create_publisher(
             Float64MultiArray,
             '/right_forward_position_controller/commands',
+            10
+        )
+        
+        # Publisher for LEAP Hand controller
+        self.right_leaphand_pub = self.create_publisher(
+            Float64MultiArray,
+            '/right_hand_forward_position_controller/commands',
             10
         )
         
@@ -194,10 +216,18 @@ class CommandReplayerTopic(Node):
             msg = Float64MultiArray()
             msg.data = record['positions']
             
-            if record['controller'] == 'left':
-                self.left_pub.publish(msg)
+            if record['controller'] == 'left_arm':
+                self.left_arm_pub.publish(msg)
+            elif record['controller'] == 'right_arm':
+                self.right_arm_pub.publish(msg)
+            elif record['controller'] == 'right_leaphand':
+                self.right_leaphand_pub.publish(msg)
             else:
-                self.right_pub.publish(msg)
+                # Backward compatibility for old recordings
+                if record['controller'] == 'left':
+                    self.left_arm_pub.publish(msg)
+                elif record['controller'] == 'right':
+                    self.right_arm_pub.publish(msg)
             
             self.get_logger().info(
                 f'[{record["timestamp"]:.3f}s] {record["controller"]}: '
@@ -236,6 +266,13 @@ class CommandReplayerAction(Node):
             'openarm_right_joint7'
         ]
         
+        self.right_leaphand_joints = [
+            'right_index_mcp_side', 'right_index_mcp_forward', 'right_index_pip', 'right_index_dip',
+            'right_middle_mcp_side', 'right_middle_mcp_forward', 'right_middle_pip', 'right_middle_dip',
+            'right_ring_mcp_side', 'right_ring_mcp_forward', 'right_ring_pip', 'right_ring_dip',
+            'right_thumb_mcp_side', 'right_thumb_mcp_forward', 'right_thumb_pip_joint', 'right_thumb_dip_joint'
+        ]
+        
         # Action clients for trajectory control
         self.left_arm_client = ActionClient(
             self, FollowJointTrajectory, 
@@ -245,11 +282,16 @@ class CommandReplayerAction(Node):
             self, FollowJointTrajectory, 
             '/right_joint_trajectory_controller/follow_joint_trajectory'
         )
+        self.right_leaphand_client = ActionClient(
+            self, FollowJointTrajectory,
+            '/right_hand_controller/follow_joint_trajectory'
+        )
         
         # Wait for action servers
         self.get_logger().info('Waiting for action servers...')
         self.left_arm_client.wait_for_server()
         self.right_arm_client.wait_for_server()
+        self.right_leaphand_client.wait_for_server()
         self.get_logger().info('Action servers ready!')
         
         # Load recordings
@@ -297,8 +339,9 @@ class CommandReplayerAction(Node):
             return
         
         # Collect commands for this batch (group by controller)
-        left_batch = []
-        right_batch = []
+        left_arm_batch = []
+        right_arm_batch = []
+        right_leaphand_batch = []
         batch_start_idx = self.current_index
         
         # Collect up to batch_size commands
@@ -307,29 +350,43 @@ class CommandReplayerAction(Node):
                 break
             
             record = self.recordings[self.current_index]
+            controller = record['controller']
             
-            if record['controller'] == 'left':
-                left_batch.append(record)
-            else:
-                right_batch.append(record)
+            # Handle new naming
+            if controller == 'left_arm':
+                left_arm_batch.append(record)
+            elif controller == 'right_arm':
+                right_arm_batch.append(record)
+            elif controller == 'right_leaphand':
+                right_leaphand_batch.append(record)
+            # Backward compatibility for old recordings
+            # elif controller == 'left':
+            #     left_arm_batch.append(record)
+            # elif controller == 'right':
+            #     right_arm_batch.append(record)
             
             self.current_index += 1
         
-        # Send trajectories for left and right controllers
+        # Send trajectories for all controllers
         self.pending_goals = 0
         
-        if left_batch:
-            self.send_trajectory_batch('left', left_batch)
+        if left_arm_batch:
+            self.send_trajectory_batch('left_arm', left_arm_batch)
             self.pending_goals += 1
         
-        if right_batch:
-            self.send_trajectory_batch('right', right_batch)
+        if right_arm_batch:
+            self.send_trajectory_batch('right_arm', right_arm_batch)
+            self.pending_goals += 1
+        
+        if right_leaphand_batch:
+            self.send_trajectory_batch('right_leaphand', right_leaphand_batch)
             self.pending_goals += 1
         
         batch_end_idx = self.current_index - 1
         self.get_logger().info(
             f'Sent batch [{batch_start_idx}-{batch_end_idx}]: '
-            f'Left={len(left_batch)}, Right={len(right_batch)} steps'
+            f'Left_arm={len(left_arm_batch)}, Right_arm={len(right_arm_batch)}, '
+            f'Right_leaphand={len(right_leaphand_batch)} steps'
         )
     
     def send_trajectory_batch(self, controller, batch):
@@ -337,12 +394,18 @@ class CommandReplayerAction(Node):
         goal_msg = FollowJointTrajectory.Goal()
         
         # Set joint names and client
-        if controller == 'left':
+        if controller == 'left_arm':
             goal_msg.trajectory.joint_names = self.left_arm_joints
             action_client = self.left_arm_client
-        else:
+        elif controller == 'right_arm':
             goal_msg.trajectory.joint_names = self.right_arm_joints
             action_client = self.right_arm_client
+        elif controller == 'right_leaphand':
+            goal_msg.trajectory.joint_names = self.right_leaphand_joints
+            action_client = self.right_leaphand_client
+        else:
+            self.get_logger().error(f'Unknown controller: {controller}')
+            return
         
         # Create trajectory points
         points = []
