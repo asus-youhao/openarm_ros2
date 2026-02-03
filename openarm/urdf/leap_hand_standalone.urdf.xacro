@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="leap_hand">
+
+  <xacro:arg name="serial_port" default="/dev/ttyUSB0" />
+  <xacro:arg name="baudrate" default="4000000" />
+  <xacro:arg name="use_fake_hardware" default="false" />
+  <xacro:arg name="move_to_home" default="false" />
+
+  <link name="world"/>
+  <link name="palm_mount">
+    <visual><geometry><box size="0.05 0.1 0.02"/></geometry></visual>
+  </link>
+  <joint name="world_to_hand" type="fixed">
+    <parent link="world"/><child link="palm_mount"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:include filename="$(find openarm)/urdf/leap_hand/leap_hand_right.xacro"/>
+  <xacro:leap_hand_right parent_link="palm_mount" prefix="right_"/>
+
+  <ros2_control name="LeapHandHardware" type="system">
+    <hardware>
+      <xacro:if value="$(arg use_fake_hardware)">
+        <plugin>mock_components/GenericSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="$(arg use_fake_hardware)">
+        <plugin>openarm_hardware/LeapHandHardware</plugin>
+        <param name="serial_port">$(arg serial_port)</param>
+        <param name="baudrate">$(arg baudrate)</param>
+        <param name="move_to_home">$(arg move_to_home)</param>
+      </xacro:unless>
+    </hardware>
+
+    <joint name="right_index_mcp_side"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_index_mcp_forward"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_index_pip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_index_dip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    
+    <joint name="right_middle_mcp_side"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_middle_mcp_forward"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_middle_pip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_middle_dip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    
+    <joint name="right_ring_mcp_side"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_ring_mcp_forward"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_ring_pip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_ring_dip"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    
+    <joint name="right_thumb_mcp_forward"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_thumb_mcp_side"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_thumb_pip_joint"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+    <joint name="right_thumb_dip_joint"><command_interface name="position"/><state_interface name="position"/><state_interface name="velocity"/><state_interface name="effort"/></joint>
+  </ros2_control>
+
+</robot>

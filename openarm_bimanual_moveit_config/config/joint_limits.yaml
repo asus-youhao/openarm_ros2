@@ -102,3 +102,135 @@ joint_limits:
    max_velocity: 20.943946
    has_acceleration_limits: false
    max_acceleration: 0.0
+  # Leap Hand Right - Index Finger (顺序: mcp_forward, mcp_side, pip, dip)
+  right_index_mcp_forward:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.314
+   max_position: 2.23
+  right_index_mcp_side:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -1.047
+   max_position: 1.047
+  right_index_pip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.506
+   max_position: 1.885
+  right_index_dip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.366
+   max_position: 2.042
+  # Leap Hand Right - Middle Finger
+  right_middle_mcp_forward:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.314
+   max_position: 2.23
+  right_middle_mcp_side:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -1.047
+   max_position: 1.047
+  right_middle_pip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.506
+   max_position: 1.885
+  right_middle_dip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.366
+   max_position: 2.042
+  # Leap Hand Right - Ring Finger
+  right_ring_mcp_forward:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.314
+   max_position: 2.23
+  right_ring_mcp_side:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -1.047
+   max_position: 1.047
+  right_ring_pip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.506
+   max_position: 1.885
+  right_ring_dip:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.366
+   max_position: 2.042
+  # Leap Hand Right - Thumb
+  right_thumb_mcp_side:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.349
+   max_position: 2.094
+  right_thumb_mcp_forward:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -0.47
+   max_position: 2.443
+  right_thumb_pip_joint:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -1.20
+   max_position: 1.90
+  right_thumb_dip_joint:
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+   has_position_limits: true
+   min_position: -1.34
+   max_position: 1.88

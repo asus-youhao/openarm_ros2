@@ -21,5 +21,10 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 
+# Install URDF files
+install(
+  DIRECTORY urdf
+  DESTINATION share/${PROJECT_NAME}
+)
 
 ament_package()
