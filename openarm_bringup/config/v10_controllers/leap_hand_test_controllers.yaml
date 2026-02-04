@@ -26,8 +26,8 @@ leap_hand_controller:
       - right_ring_mcp_forward
       - right_ring_pip
       - right_ring_dip
-      - right_thumb_mcp_forward
       - right_thumb_mcp_side
+      - right_thumb_mcp_forward
       - right_thumb_pip_joint
       - right_thumb_dip_joint
     interface_name: position
