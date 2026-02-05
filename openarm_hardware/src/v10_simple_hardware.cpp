@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 
@@ -188,6 +189,25 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   vel_states_.resize(total_joints, 0.0);
   tau_states_.resize(total_joints, 0.0);
 
+  // Initialize thread control flags
+  arm_thread_running_ = false;
+  leap_thread_running_ = false;
+  
+  // Initialize arm thread buffers (7 DOF + optional gripper)
+  size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+  arm_pos_cmd_buffer_.resize(arm_size, 0.0);
+  arm_vel_cmd_buffer_.resize(arm_size, 0.0);
+  arm_tau_cmd_buffer_.resize(arm_size, 0.0);
+  arm_pos_state_buffer_.resize(arm_size, 0.0);
+  arm_vel_state_buffer_.resize(arm_size, 0.0);
+  arm_tau_state_buffer_.resize(arm_size, 0.0);
+  
+  // Initialize LEAP Hand thread buffers if enabled
+  if (has_leap_hand_) {
+    leap_pos_cmd_buffer_.resize(LEAP_HAND_DOF, 0.0);
+    leap_pos_state_buffer_.resize(LEAP_HAND_DOF, 0.0);
+  }
+
   // Initialize LEAP Hand if enabled
   leap_connected_ = false;
   if (has_leap_hand_) {
@@ -223,6 +243,33 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
                 leap_serial_port_.c_str(), leap_baudrate_);
   }
 
+  // Initialize gravity compensation (optional, enabled by parameter)
+  auto it = info.hardware_parameters.find("use_gravity_compensation");
+  use_gravity_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
+  
+  // Initialize friction compensation (optional, enabled by parameter)
+  it = info.hardware_parameters.find("use_friction_compensation");
+  use_friction_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
+  
+  if (use_gravity_compensation_) {
+    // Try to get URDF string from robot_description parameter (passed by controller_manager)
+    // Note: This is typically not available in hardware_parameters during on_init
+    // For now, we'll initialize KDL in on_configure when we can access the node
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Gravity compensation will be initialized in on_configure");
+  } else {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Gravity compensation disabled");
+  }
+  
+  if (use_friction_compensation_) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Friction compensation enabled (LuGre model)");
+  } else {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Friction compensation disabled");
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "OpenArm V10 Simple HW initialized successfully");
 
@@ -235,6 +282,36 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
   openarm_->refresh_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
+
+  // Initialize KDL dynamics if gravity compensation is enabled
+  if (use_gravity_compensation_) {
+    // Try to get robot_description from ROS2 parameter
+    try {
+      auto node = rclcpp::Node::make_shared("_openarm_hw_temp_node");
+      node->declare_parameter("robot_description", "");
+      std::string urdf_string = node->get_parameter("robot_description").as_string();
+      
+      if (!urdf_string.empty()) {
+        if (init_kdl_dynamics(urdf_string)) {
+          gravity_torques_.resize(ARM_DOF);
+          RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                      "Gravity compensation enabled successfully");
+        } else {
+          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                      "Failed to initialize KDL dynamics, gravity compensation disabled");
+          use_gravity_compensation_ = false;
+        }
+      } else {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                    "robot_description parameter is empty, gravity compensation disabled");
+        use_gravity_compensation_ = false;
+      }
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                  "Failed to get robot_description: %s, gravity compensation disabled", e.what());
+      use_gravity_compensation_ = false;
+    }
+  }
 
   return CallbackReturn::SUCCESS;
 }
@@ -291,6 +368,18 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   // Return to zero position
   return_to_zero();
 
+  // Start high-frequency arm control thread (500Hz)
+  arm_thread_running_ = true;
+  arm_control_thread_ = std::thread(&OpenArm_v10HW::arm_control_loop, this);
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread started at 500Hz");
+  
+  // Start LEAP Hand control thread (100Hz) if enabled
+  if (has_leap_hand_ && leap_connected_) {
+    leap_thread_running_ = true;
+    leap_control_thread_ = std::thread(&OpenArm_v10HW::leap_control_loop, this);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 100Hz");
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
   return CallbackReturn::SUCCESS;
 }
@@ -299,6 +388,24 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Deactivating OpenArm V10...");
+
+  // Stop arm control thread
+  if (arm_thread_running_) {
+    arm_thread_running_ = false;
+    if (arm_control_thread_.joinable()) {
+      arm_control_thread_.join();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread stopped");
+  }
+  
+  // Stop LEAP Hand control thread
+  if (leap_thread_running_) {
+    leap_thread_running_ = false;
+    if (leap_control_thread_.joinable()) {
+      leap_control_thread_.join();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread stopped");
+  }
 
   // Disconnect LEAP Hand if connected
   if (has_leap_hand_) {
@@ -316,49 +423,25 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
 
 hardware_interface::return_type OpenArm_v10HW::read(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
-  // Receive all motor states
-  openarm_->refresh_all();
-  openarm_->recv_all();
-
-  // Read arm joint states
-  const auto& arm_motors = openarm_->get_arm().get_motors();
-  for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
-    pos_states_[i] = arm_motors[i].get_position();
-    vel_states_[i] = arm_motors[i].get_velocity();
-    tau_states_[i] = arm_motors[i].get_torque();
-  }
-
-  // Read gripper state if enabled
-  if (hand_ && joint_names_.size() > ARM_DOF) {
-    const auto& gripper_motors = openarm_->get_gripper().get_motors();
-    if (!gripper_motors.empty()) {
-      // TODO the mappings are approximates
-      // Convert motor position (radians) to joint value (0-0.044m)
-      double motor_pos = gripper_motors[0].get_position();
-      pos_states_[ARM_DOF] = motor_radians_to_joint(motor_pos);
-
-      // Unimplemented: Velocity and torque mapping
-      vel_states_[ARM_DOF] = 0;  // gripper_motors[0].get_velocity();
-      tau_states_[ARM_DOF] = 0;  // gripper_motors[0].get_torque();
+  // Copy arm states from high-frequency thread buffer (thread-safe)
+  {
+    std::lock_guard<std::mutex> lock(arm_state_mutex_);
+    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    for (size_t i = 0; i < arm_size; ++i) {
+      pos_states_[i] = arm_pos_state_buffer_[i];
+      vel_states_[i] = arm_vel_state_buffer_[i];
+      tau_states_[i] = arm_tau_state_buffer_[i];
     }
   }
 
-  // Read LEAP Hand states if connected
+  // Copy LEAP Hand states from thread buffer if enabled (thread-safe)
   if (has_leap_hand_ && leap_connected_) {
+    std::lock_guard<std::mutex> lock(leap_state_mutex_);
     size_t leap_start_idx = ARM_DOF + (hand_ ? 1 : 0);
-    if (!read_leap_hand_states(pos_states_, leap_start_idx)) {
-      static auto last_warn_time = std::chrono::steady_clock::now();
-      auto now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_warn_time).count() > 1000) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                    "Failed to read LEAP Hand states");
-        last_warn_time = now;
-      }
-    }
-    // Velocity and effort are not read from LEAP Hand
-    for (size_t i = leap_start_idx; i < leap_start_idx + LEAP_HAND_DOF && i < vel_states_.size(); ++i) {
-      vel_states_[i] = 0.0;
-      tau_states_[i] = 0.0;
+    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+      pos_states_[leap_start_idx + i] = leap_pos_state_buffer_[i];
+      vel_states_[leap_start_idx + i] = 0.0;  // LEAP Hand doesn't provide velocity
+      tau_states_[leap_start_idx + i] = 0.0;  // LEAP Hand doesn't provide torque
     }
   }
 
@@ -367,36 +450,26 @@ hardware_interface::return_type OpenArm_v10HW::read(
 
 hardware_interface::return_type OpenArm_v10HW::write(
     const rclcpp::Time& /*time*/, const rclcpp::Duration& /*period*/) {
-  // Control arm motors with MIT control
-  std::vector<openarm::damiao_motor::MITParam> arm_params;
-  for (size_t i = 0; i < ARM_DOF; ++i) {
-    arm_params.push_back(
-        {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], tau_commands_[i]});
-  }
-  openarm_->get_arm().mit_control_all(arm_params);
-  // Control gripper if enabled
-  if (hand_ && joint_names_.size() > ARM_DOF) {
-    // TODO the true mappings are unimplemented.
-    double motor_command = joint_to_motor_radians(pos_commands_[ARM_DOF]);
-    openarm_->get_gripper().mit_control_all(
-        {{GRIPPER_KP, GRIPPER_KD, motor_command, 0, 0}});
-  }
-  
-  // Control LEAP Hand if connected
-  if (has_leap_hand_ && leap_connected_) {
-    size_t leap_start_idx = ARM_DOF + (hand_ ? 1 : 0);
-    if (!send_leap_hand_command(pos_commands_, leap_start_idx)) {
-      static auto last_warn_time = std::chrono::steady_clock::now();
-      auto now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_warn_time).count() > 1000) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                    "Failed to send LEAP Hand commands");
-        last_warn_time = now;
-      }
+  // Update arm command buffers (thread-safe)
+  {
+    std::lock_guard<std::mutex> lock(arm_command_mutex_);
+    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    for (size_t i = 0; i < arm_size; ++i) {
+      arm_pos_cmd_buffer_[i] = pos_commands_[i];
+      arm_vel_cmd_buffer_[i] = vel_commands_[i];
+      arm_tau_cmd_buffer_[i] = tau_commands_[i];
     }
   }
-  
-  openarm_->recv_all(1000);
+
+  // Update LEAP Hand command buffers if enabled (thread-safe)
+  if (has_leap_hand_ && leap_connected_) {
+    std::lock_guard<std::mutex> lock(leap_command_mutex_);
+    size_t leap_start_idx = ARM_DOF + (hand_ ? 1 : 0);
+    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+      leap_pos_cmd_buffer_[i] = pos_commands_[leap_start_idx + i];
+    }
+  }
+
   return hardware_interface::return_type::OK;
 }
 
@@ -564,6 +637,263 @@ bool OpenArm_v10HW::read_leap_hand_states(std::vector<double>& positions, size_t
   }
 
   return true;
+}
+
+// Initialize KDL dynamics for gravity compensation
+bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
+  // Build KDL tree directly from URDF string
+  KDL::Tree kdl_tree;
+  if (!kdl_parser::treeFromString(urdf_content, kdl_tree)) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Failed to construct KDL tree from URDF");
+    return false;
+  }
+
+  // Extract chain for this arm
+  std::string root_link = "openarm_body_link0";
+  std::string tip_link = "openarm_" + arm_prefix_ + "hand";
+  
+  if (!kdl_tree.getChain(root_link, tip_link, kdl_chain_)) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Failed to get KDL chain from %s to %s",
+                 root_link.c_str(), tip_link.c_str());
+    return false;
+  }
+
+  if (kdl_chain_.getNrOfJoints() != ARM_DOF) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "KDL chain has %u joints, expected %zu",
+                 kdl_chain_.getNrOfJoints(), ARM_DOF);
+    return false;
+  }
+
+  // Create dynamics solver with gravity vector (0, 0, -9.81)
+  kdl_solver_ = std::make_unique<KDL::ChainDynParam>(
+      kdl_chain_, KDL::Vector(0.0, 0.0, -9.81));
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "KDL dynamics initialized: chain from %s to %s with %u joints",
+              root_link.c_str(), tip_link.c_str(), kdl_chain_.getNrOfJoints());
+
+  return true;
+}
+
+// Compute gravity compensation torques
+void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_torques) {
+  if (!kdl_solver_ || gravity_torques.size() != ARM_DOF) {
+    return;
+  }
+
+  // Convert current positions to KDL format
+  KDL::JntArray q(ARM_DOF);
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    q(i) = pos_states_[i];
+  }
+
+  // Compute gravity torques
+  kdl_solver_->JntToGravity(q, gravity_torques_);
+
+  // Copy results
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    gravity_torques[i] = gravity_torques_(i);
+  }
+}
+
+// Compute friction compensation torques using LuGre model
+// tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
+void OpenArm_v10HW::compute_friction_compensation(std::vector<double>& friction_torques) {
+  if (friction_torques.size() != ARM_DOF) {
+    return;
+  }
+
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    double dq = vel_states_[i];  // Current joint velocity
+    
+    // LuGre friction model:
+    // - Fc * tanh(k * dq): Smooth Coulomb friction (avoids discontinuity at dq=0)
+    // - Fv * dq: Viscous friction (proportional to velocity)
+    // - Fo: Static offset (compensates for asymmetries)
+    friction_torques[i] = Fc_[i] * std::tanh(k_[i] * dq) + Fv_[i] * dq + Fo_[i];
+  }
+}
+
+// High-frequency arm control loop (500Hz)
+void OpenArm_v10HW::arm_control_loop() {
+  using namespace std::chrono;
+  const auto loop_period = microseconds(1000);  // 1000Hz = 1000us
+
+  auto next_cycle = steady_clock::now() + loop_period;
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+              "Arm control loop started (500Hz)");
+  
+  // Local command buffers
+  std::vector<double> pos_cmd(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  std::vector<double> vel_cmd(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  std::vector<double> tau_cmd(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  
+  // Local state buffers
+  std::vector<double> pos_state(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  std::vector<double> vel_state(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  std::vector<double> tau_state(ARM_DOF + (hand_ ? 1 : 0), 0.0);
+  
+  while (arm_thread_running_) {
+    // Copy commands from buffer (thread-safe)
+    {
+      std::lock_guard<std::mutex> lock(arm_command_mutex_);
+      pos_cmd = arm_pos_cmd_buffer_;
+      vel_cmd = arm_vel_cmd_buffer_;
+      tau_cmd = arm_tau_cmd_buffer_;
+    }
+    
+    // Read current states
+    openarm_->refresh_all();
+    openarm_->recv_all();
+    
+    const auto& arm_motors = openarm_->get_arm().get_motors();
+    for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
+      pos_state[i] = arm_motors[i].get_position();
+      vel_state[i] = arm_motors[i].get_velocity();
+      tau_state[i] = arm_motors[i].get_torque();
+    }
+    
+    // Read gripper state if enabled
+    if (hand_) {
+      const auto& gripper_motors = openarm_->get_gripper().get_motors();
+      if (!gripper_motors.empty()) {
+        double motor_pos = gripper_motors[0].get_position();
+        pos_state[ARM_DOF] = motor_radians_to_joint(motor_pos);
+        vel_state[ARM_DOF] = 0.0;
+        tau_state[ARM_DOF] = 0.0;
+      }
+    }
+    
+    // Update state buffer (thread-safe)
+    {
+      std::lock_guard<std::mutex> lock(arm_state_mutex_);
+      arm_pos_state_buffer_ = pos_state;
+      arm_vel_state_buffer_ = vel_state;
+      arm_tau_state_buffer_ = tau_state;
+    }
+    
+    // Compute gravity compensation
+    std::vector<double> gravity_comp(ARM_DOF, 0.0);
+    if (use_gravity_compensation_) {
+      // Use current state for gravity computation
+      KDL::JntArray q(ARM_DOF);
+      for (size_t i = 0; i < ARM_DOF; ++i) {
+        q(i) = pos_state[i];
+      }
+      if (kdl_solver_) {
+        kdl_solver_->JntToGravity(q, gravity_torques_);
+        for (size_t i = 0; i < ARM_DOF; ++i) {
+          gravity_comp[i] = gravity_torques_(i);
+        }
+      }
+    }
+    
+    // Compute friction compensation
+    std::vector<double> friction_comp(ARM_DOF, 0.0);
+    if (use_friction_compensation_) {
+      for (size_t i = 0; i < ARM_DOF; ++i) {
+        double dq = vel_state[i];
+        friction_comp[i] = Fc_[i] * std::tanh(k_[i] * dq) + Fv_[i] * dq + Fo_[i];
+      }
+    }
+    
+    // Send arm commands with compensation
+    std::vector<openarm::damiao_motor::MITParam> arm_params;
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      double feedforward_tau = tau_cmd[i] + gravity_comp[i] + friction_comp[i];
+      arm_params.push_back({kp_[i], kd_[i], pos_cmd[i], vel_cmd[i], feedforward_tau});
+    }
+    openarm_->get_arm().mit_control_all(arm_params);
+    
+    // Send gripper command if enabled
+    if (hand_) {
+      double motor_command = joint_to_motor_radians(pos_cmd[ARM_DOF]);
+      openarm_->get_gripper().mit_control_all(
+          {{GRIPPER_KP, GRIPPER_KD, motor_command, 0, 0}});
+    }
+    
+    // Sleep until next cycle
+    std::this_thread::sleep_until(next_cycle);
+    next_cycle += loop_period;
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+              "Arm control loop stopped");
+}
+
+// LEAP Hand control loop (100Hz)
+void OpenArm_v10HW::leap_control_loop() {
+  using namespace std::chrono;
+  const auto loop_period = milliseconds(10);  // 100Hz = 10ms
+  auto next_cycle = steady_clock::now() + loop_period;
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+              "LEAP Hand control loop started (100Hz)");
+  
+  std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
+  std::vector<double> pos_state(LEAP_HAND_DOF, 0.0);
+  
+  while (leap_thread_running_) {
+    // Copy commands from buffer (thread-safe)
+    {
+      std::lock_guard<std::mutex> lock(leap_command_mutex_);
+      pos_cmd = leap_pos_cmd_buffer_;
+    }
+    
+    // Send LEAP Hand commands
+    if (leap_connected_) {
+      // Clear previous sync write data
+      leap_group_sync_write_->clearParam();
+      
+      // Convert URDF coordinates to LEAP coordinates and send
+      for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+        double leap_pos = urdf_to_leap(pos_cmd[i]);
+        int32_t position_ticks = static_cast<int32_t>(leap_pos / LEAP_POS_SCALE);
+        
+        uint8_t param_goal_position[4];
+        param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(position_ticks));
+        param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(position_ticks));
+        param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(position_ticks));
+        param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(position_ticks));
+        
+        leap_group_sync_write_->addParam(leap_motor_ids_[i], param_goal_position);
+      }
+      
+      leap_group_sync_write_->txPacket();
+      
+      // Read LEAP Hand states
+      int dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
+      if (dxl_comm_result == COMM_SUCCESS) {
+        for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+          uint8_t motor_id = leap_motor_ids_[i];
+          if (leap_group_sync_read_pos_->isAvailable(motor_id, LEAP_ADDR_PRESENT_POSITION, 
+                                                      LEAP_LEN_PRESENT_POSITION)) {
+            int32_t position_ticks = leap_group_sync_read_pos_->getData(
+              motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
+            double leap_pos = static_cast<double>(position_ticks) * LEAP_POS_SCALE;
+            pos_state[i] = leap_to_urdf(leap_pos);
+          }
+        }
+        
+        // Update state buffer (thread-safe)
+        {
+          std::lock_guard<std::mutex> lock(leap_state_mutex_);
+          leap_pos_state_buffer_ = pos_state;
+        }
+      }
+    }
+    
+    // Sleep until next cycle
+    std::this_thread::sleep_until(next_cycle);
+    next_cycle += loop_period;
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+              "LEAP Hand control loop stopped");
 }
 
 }  // namespace openarm_hardware

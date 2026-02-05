@@ -14,11 +14,14 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <openarm/can/socket/openarm.hpp>
 #include <openarm/damiao_motor/dm_motor_constants.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "dynamixel_sdk/dynamixel_sdk.h"
@@ -29,6 +32,13 @@
 #include "openarm_hardware/visibility_control.h"
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+
+// KDL headers for dynamics computation
+#include <kdl/chain.hpp>
+#include <kdl/chaindynparam.hpp>
+#include <kdl/jntarray.hpp>
+#include <kdl/tree.hpp>
+#include <kdl_parser/kdl_parser.hpp>
 
 namespace openarm_hardware {
 
@@ -102,9 +112,23 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   const uint32_t DEFAULT_GRIPPER_SEND_CAN_ID = 0x08;
   const uint32_t DEFAULT_GRIPPER_RECV_CAN_ID = 0x18;
 
-  // Gains
-  std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0};
-  std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+  // Gains (based on teleop follower.yaml for accurate tracking)
+  // Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
+  // std::vector<double> kp_ = {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0};
+  // std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 24.0, 31.0, 10.0};
+  // Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
+  // std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
+  // std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+  std::vector<double> kp_ = {20.0, 20.0, 20.0, 20.0,
+                                          5.0,  5.0,  5.0,  0.5};
+  std::vector<double> kd_ = {2.75, 2.5, 0.7, 0.4,
+                                          0.7,  0.6, 0.5, 0.1};
+  // Friction compensation parameters (LuGre model from teleop)
+  // tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
+  std::vector<double> Fc_ = {0.306, 0.306, 0.40, 0.166, 0.050, 0.093, 0.172};  // Coulomb friction
+  std::vector<double> k_  = {28.417, 28.417, 29.065, 130.038, 151.771, 242.287, 7.888};  // Stiffness
+  std::vector<double> Fv_ = {0.063, 0.063, 0.604, 0.813, 0.029, 0.072, 0.084};  // Viscous friction
+  std::vector<double> Fo_ = {0.088, 0.088, 0.008, -0.058, 0.005, 0.009, -0.059};  // Offset
 
   const double GRIPPER_JOINT_0_POSITION = 0.044;
   const double GRIPPER_JOINT_1_POSITION = 0.0;
@@ -135,10 +159,40 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> vel_states_;
   std::vector<double> tau_states_;
 
+  // High-frequency control thread (500Hz for arm)
+  std::thread arm_control_thread_;
+  std::atomic<bool> arm_thread_running_;
+  std::mutex arm_command_mutex_;
+  std::mutex arm_state_mutex_;
+  
+  // Command buffers (thread-safe copy)
+  std::vector<double> arm_pos_cmd_buffer_;
+  std::vector<double> arm_vel_cmd_buffer_;
+  std::vector<double> arm_tau_cmd_buffer_;
+  
+  // State buffers (thread-safe copy)
+  std::vector<double> arm_pos_state_buffer_;
+  std::vector<double> arm_vel_state_buffer_;
+  std::vector<double> arm_tau_state_buffer_;
+  
+  // LEAP Hand control thread (100Hz)
+  std::thread leap_control_thread_;
+  std::atomic<bool> leap_thread_running_;
+  std::mutex leap_command_mutex_;
+  std::mutex leap_state_mutex_;
+  
+  // LEAP Hand command/state buffers
+  std::vector<double> leap_pos_cmd_buffer_;
+  std::vector<double> leap_pos_state_buffer_;
+
   // Helper methods
   void return_to_zero();
   bool parse_config(const hardware_interface::HardwareInfo& info);
   void generate_joint_names();
+  
+  // Thread control loops
+  void arm_control_loop();
+  void leap_control_loop();
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);
@@ -172,6 +226,18 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // LEAP coordinate conversion (URDF 0=home, LEAP 3.14=home)
   inline double urdf_to_leap(double urdf_pos) { return urdf_pos + M_PI; }
   inline double leap_to_urdf(double leap_pos) { return leap_pos - M_PI; }
+
+  // Gravity compensation using KDL
+  std::unique_ptr<KDL::ChainDynParam> kdl_solver_;
+  KDL::Chain kdl_chain_;
+  KDL::JntArray gravity_torques_;
+  bool use_gravity_compensation_;
+  bool use_friction_compensation_;
+  std::string urdf_string_;
+  
+  bool init_kdl_dynamics(const std::string& urdf_content);
+  void compute_gravity_compensation(std::vector<double>& gravity_torques);
+  void compute_friction_compensation(std::vector<double>& friction_torques);
 };
 
 }  // namespace openarm_hardware
