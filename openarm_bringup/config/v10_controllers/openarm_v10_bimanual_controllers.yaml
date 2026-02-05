@@ -98,6 +98,7 @@ left_joint_trajectory_controller:
       - position
     state_interfaces:
       - position
+      - velocity
 
     state_publish_rate: 50.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
@@ -163,6 +164,7 @@ right_joint_trajectory_controller:
       - position
     state_interfaces:
       - position
+      - velocity
 
     state_publish_rate: 50.0 # Defaults to 50
     action_monitor_rate: 50.0 # Defaults to 20
@@ -212,6 +214,7 @@ right_hand_controller:
       - position
     state_interfaces:
       - position
+      - velocity
     
     state_publish_rate: 50.0
     action_monitor_rate: 50.0

@@ -30,6 +30,13 @@
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
+// KDL headers for dynamics computation
+#include <kdl/chain.hpp>
+#include <kdl/chaindynparam.hpp>
+#include <kdl/jntarray.hpp>
+#include <kdl/tree.hpp>
+#include <kdl_parser/kdl_parser.hpp>
+
 namespace openarm_hardware {
 
 /**
@@ -102,8 +109,12 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   const uint32_t DEFAULT_GRIPPER_SEND_CAN_ID = 0x08;
   const uint32_t DEFAULT_GRIPPER_RECV_CAN_ID = 0x18;
 
-  // Gains
-  std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0};
+  // Gains (based on teleop follower.yaml for accurate tracking)
+  // Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
+  //std::vector<double> kp_ = {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0};
+  std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 24.0, 31.0, 10.0};
+  // Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
+  //std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
 
   const double GRIPPER_JOINT_0_POSITION = 0.044;
@@ -172,6 +183,16 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // LEAP coordinate conversion (URDF 0=home, LEAP 3.14=home)
   inline double urdf_to_leap(double urdf_pos) { return urdf_pos + M_PI; }
   inline double leap_to_urdf(double leap_pos) { return leap_pos - M_PI; }
+
+  // Gravity compensation using KDL
+  std::unique_ptr<KDL::ChainDynParam> kdl_solver_;
+  KDL::Chain kdl_chain_;
+  KDL::JntArray gravity_torques_;
+  bool use_gravity_compensation_;
+  std::string urdf_string_;
+  
+  bool init_kdl_dynamics(const std::string& urdf_content);
+  void compute_gravity_compensation(std::vector<double>& gravity_torques);
 };
 
 }  // namespace openarm_hardware

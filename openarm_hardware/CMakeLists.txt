@@ -26,6 +26,9 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(dynamixel_sdk REQUIRED)
+find_package(kdl_parser REQUIRED)
+find_package(orocos_kdl REQUIRED)
+find_package(urdf REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
@@ -51,6 +54,9 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   rclcpp_lifecycle
   dynamixel_sdk
+  kdl_parser
+  orocos_kdl
+  urdf
 )
 
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)
