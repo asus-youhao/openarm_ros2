@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <vector>
 
@@ -227,6 +228,10 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   auto it = info.hardware_parameters.find("use_gravity_compensation");
   use_gravity_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
   
+  // Initialize friction compensation (optional, enabled by parameter)
+  it = info.hardware_parameters.find("use_friction_compensation");
+  use_friction_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
+  
   if (use_gravity_compensation_) {
     // Try to get URDF string from robot_description parameter (passed by controller_manager)
     // Note: This is typically not available in hardware_parameters during on_init
@@ -236,6 +241,14 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   } else {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                 "Gravity compensation disabled");
+  }
+  
+  if (use_friction_compensation_) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Friction compensation enabled (LuGre model)");
+  } else {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Friction compensation disabled");
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -425,12 +438,18 @@ hardware_interface::return_type OpenArm_v10HW::write(
     compute_gravity_compensation(gravity_comp);
   }
 
-  // Control arm motors with MIT control + gravity compensation
+  // Compute friction compensation if enabled
+  std::vector<double> friction_comp(ARM_DOF, 0.0);
+  if (use_friction_compensation_) {
+    compute_friction_compensation(friction_comp);
+  }
+
+  // Control arm motors with MIT control + gravity + friction compensation
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   for (size_t i = 0; i < ARM_DOF; ++i) {
     // MIT control: kp, kd, target_pos, target_vel, feedforward_torque
-    // feedforward_torque = commanded_torque + gravity_compensation
-    double feedforward_tau = tau_commands_[i] + gravity_comp[i];
+    // feedforward_torque = commanded_torque + gravity_compensation + friction_compensation
+    double feedforward_tau = tau_commands_[i] + gravity_comp[i] + friction_comp[i];
     
     arm_params.push_back(
         {kp_[i], kd_[i], pos_commands_[i], vel_commands_[i], feedforward_tau});
@@ -685,6 +704,24 @@ void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_to
   // Copy results
   for (size_t i = 0; i < ARM_DOF; ++i) {
     gravity_torques[i] = gravity_torques_(i);
+  }
+}
+
+// Compute friction compensation torques using LuGre model
+// tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
+void OpenArm_v10HW::compute_friction_compensation(std::vector<double>& friction_torques) {
+  if (friction_torques.size() != ARM_DOF) {
+    return;
+  }
+
+  for (size_t i = 0; i < ARM_DOF; ++i) {
+    double dq = vel_states_[i];  // Current joint velocity
+    
+    // LuGre friction model:
+    // - Fc * tanh(k * dq): Smooth Coulomb friction (avoids discontinuity at dq=0)
+    // - Fv * dq: Viscous friction (proportional to velocity)
+    // - Fo: Static offset (compensates for asymmetries)
+    friction_torques[i] = Fc_[i] * std::tanh(k_[i] * dq) + Fv_[i] * dq + Fo_[i];
   }
 }
 

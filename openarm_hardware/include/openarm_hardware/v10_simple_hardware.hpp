@@ -112,10 +112,16 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Gains (based on teleop follower.yaml for accurate tracking)
   // Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
   //std::vector<double> kp_ = {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0};
-  std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 24.0, 31.0, 10.0};
-  // Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
-  //std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
+std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 24.0, 31.0, 10.0};
+// Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
+  //  std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+  // Friction compensation parameters (LuGre model from teleop)
+  // tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
+  std::vector<double> Fc_ = {0.306, 0.306, 0.40, 0.166, 0.050, 0.093, 0.172};  // Coulomb friction
+  std::vector<double> k_  = {28.417, 28.417, 29.065, 130.038, 151.771, 242.287, 7.888};  // Stiffness
+  std::vector<double> Fv_ = {0.063, 0.063, 0.604, 0.813, 0.029, 0.072, 0.084};  // Viscous friction
+  std::vector<double> Fo_ = {0.088, 0.088, 0.008, -0.058, 0.005, 0.009, -0.059};  // Offset
 
   const double GRIPPER_JOINT_0_POSITION = 0.044;
   const double GRIPPER_JOINT_1_POSITION = 0.0;
@@ -189,10 +195,12 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   KDL::Chain kdl_chain_;
   KDL::JntArray gravity_torques_;
   bool use_gravity_compensation_;
+  bool use_friction_compensation_;
   std::string urdf_string_;
   
   bool init_kdl_dynamics(const std::string& urdf_content);
   void compute_gravity_compensation(std::vector<double>& gravity_torques);
+  void compute_friction_compensation(std::vector<double>& friction_torques);
 };
 
 }  // namespace openarm_hardware
