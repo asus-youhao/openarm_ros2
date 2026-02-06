@@ -83,6 +83,46 @@ class RightHandTrajectoryClient(Node):
 
 def preset_positions(name: str) -> List[float]:
     name = (name or '').lower()
+    if name == 'open':
+        values = {
+            'right_index_mcp_side': 0.0,
+            'right_index_mcp_forward': 0.0,
+            'right_index_pip': 0.0,
+            'right_index_dip': 0.0,
+            'right_middle_mcp_side': 0.0,
+            'right_middle_mcp_forward': 0.0,
+            'right_middle_pip': 0.0,
+            'right_middle_dip': 0.0,
+            'right_ring_mcp_side': 0.0,
+            'right_ring_mcp_forward': 0.0,
+            'right_ring_pip': 0.0,
+            'right_ring_dip': 0.0,
+            'right_thumb_mcp_side': 1.57,
+            'right_thumb_mcp_forward': 0.0,
+            'right_thumb_pip_joint': 0.0,
+            'right_thumb_dip_joint': 0.0,
+        }
+        return build_positions_from_dict(RIGHT_HAND_JOINTS, values)
+    if name == 'closed':
+        values = {
+            'right_index_mcp_side': 0.0,
+            'right_index_mcp_forward': 1.46,
+            'right_index_pip': 0.174,
+            'right_index_dip': 0.52,
+            'right_middle_mcp_side': 0.0,
+            'right_middle_mcp_forward': 1.46,
+            'right_middle_pip': 0.174,
+            'right_middle_dip': 0.52,
+            'right_ring_mcp_side': 0.0,
+            'right_ring_mcp_forward': 1.46,
+            'right_ring_pip': 0.174,
+            'right_ring_dip': 0.52,
+            'right_thumb_mcp_side': 1.7,
+            'right_thumb_mcp_forward': 0.0,
+            'right_thumb_pip_joint': 0.436,
+            'right_thumb_dip_joint': 0.17,
+        }
+        return build_positions_from_dict(RIGHT_HAND_JOINTS, values)
     if name == 'grasp':
         values = {
             # Index
@@ -107,14 +147,13 @@ def preset_positions(name: str) -> List[float]:
             'right_thumb_dip_joint': 0.71,
         }
         return build_positions_from_dict(RIGHT_HAND_JOINTS, values)
-    else:  # 'open' or default
-        return [0.0] * len(RIGHT_HAND_JOINTS)
+    return [0.0] * len(RIGHT_HAND_JOINTS)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Send a trajectory goal to right hand controller')
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('--preset', choices=['open', 'grasp'], help='Use a preset hand pose')
+    group.add_argument('--preset', choices=['open', 'closed', 'grasp'], help='Use a preset hand pose')
     group.add_argument('--positions', type=float, nargs=16, metavar='P', help='16 joint positions (radians)')
     parser.add_argument('--duration', type=float, default=0.8, help='Time to reach target (seconds)')
     parser.add_argument('--server', type=str, default='/right_hand_controller/follow_joint_trajectory',
