@@ -39,6 +39,7 @@
 #include <kdl/jntarray.hpp>
 #include <kdl/tree.hpp>
 #include <kdl_parser/kdl_parser.hpp>
+#include <yaml-cpp/yaml.h>
 
 namespace openarm_hardware {
 
@@ -115,14 +116,18 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Gains (based on teleop follower.yaml for accurate tracking)
   // Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
   // std::vector<double> kp_ = {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0};
-  // std::vector<double> kp_ = {70.0, 70.0, 70.0, 60.0, 24.0, 31.0, 10.0};
+  std::vector<double> kp_ = {50.0, 50.0, 50.0, 60.0, 24.0, 31.0, 25.0};
   // Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
   // std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
-  // std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
-  std::vector<double> kp_ = {20.0, 20.0, 20.0, 20.0,
-                                          5.0,  5.0,  5.0,  0.5};
-  std::vector<double> kd_ = {2.75, 2.5, 0.7, 0.4,
-                                          0.7,  0.6, 0.5, 0.1};
+  std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
+
+
+  //   std::vector<double> kp_ = {20.0, 20.0, 20.0, 20.0,
+//                                           5.0,  5.0,  5.0,  0.5};
+//   std::vector<double> kd_ = {2.75, 2.5, 0.7, 0.4,
+//                                           0.7,  0.6, 0.5, 0.1};
+
+
   // Friction compensation parameters (LuGre model from teleop)
   // tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
   std::vector<double> Fc_ = {0.306, 0.306, 0.40, 0.166, 0.050, 0.093, 0.172};  // Coulomb friction
@@ -238,6 +243,31 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool init_kdl_dynamics(const std::string& urdf_content);
   void compute_gravity_compensation(std::vector<double>& gravity_torques);
   void compute_friction_compensation(std::vector<double>& friction_torques);
+
+  // Function to load parameters from YAML file
+  void loadParametersFromYAML(const std::string& yaml_file) {
+    YAML::Node config = YAML::LoadFile(yaml_file);
+
+    if (config["kp"]) {
+        kp_ = config["kp"].as<std::vector<double>>();
+    }
+    if (config["kd"]) {
+        kd_ = config["kd"].as<std::vector<double>>();
+    }
+    if (config["Fc"]) {
+        Fc_ = config["Fc"].as<std::vector<double>>();
+    }
+    if (config["k"]) {
+        k_ = config["k"].as<std::vector<double>>();
+    }
+    if (config["Fv"]) {
+        Fv_ = config["Fv"].as<std::vector<double>>();
+    }
+    if (config["Fo"]) {
+        Fo_ = config["Fo"].as<std::vector<double>>();
+    }
+}
+
 };
 
 }  // namespace openarm_hardware
