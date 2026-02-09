@@ -21,6 +21,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -29,6 +30,7 @@ find_package(dynamixel_sdk REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(orocos_kdl REQUIRED)
 find_package(urdf REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
@@ -46,9 +48,11 @@ target_include_directories(
 
 target_link_libraries(${PROJECT_NAME}
   OpenArmCAN::openarm_can
+  yaml-cpp
 )
 
 ament_target_dependencies(${PROJECT_NAME}
+  ament_index_cpp
   hardware_interface
   pluginlib
   rclcpp
@@ -68,6 +72,11 @@ install(
 
 install(DIRECTORY include/
 DESTINATION include
+)
+
+# Install config files (parameters.yaml, etc.)
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
 )
 
 # Install Python scripts

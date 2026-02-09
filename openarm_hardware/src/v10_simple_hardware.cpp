@@ -67,6 +67,23 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
 
   // Parse control gains
+
+  // Load parameters from YAML file using ROS2 package resource lookup
+  try {
+    std::string package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
+    std::string yaml_path = package_share_dir + "/config/parameters.yaml";
+    loadParametersFromYAML(yaml_path);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Loaded parameters from %s", yaml_path.c_str());
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "kp=[%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+                kp_[0], kp_[1], kp_[2], kp_[3], kp_[4], kp_[5], kp_[6]);
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "Failed to load parameters.yaml: %s, using defaults", e.what());
+  }
+
+  // Parse control gains from hardware parameters (overrides YAML if present)
   for (size_t i = 1; i <= ARM_DOF; ++i) {
     it = info.hardware_parameters.find("kp" + std::to_string(i));
     if (it != info.hardware_parameters.end()) {

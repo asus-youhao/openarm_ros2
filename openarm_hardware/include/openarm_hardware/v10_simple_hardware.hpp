@@ -34,6 +34,7 @@
 #include "rclcpp_lifecycle/state.hpp"
 
 // KDL headers for dynamics computation
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <kdl/chain.hpp>
 #include <kdl/chaindynparam.hpp>
 #include <kdl/jntarray.hpp>
@@ -113,22 +114,12 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   const uint32_t DEFAULT_GRIPPER_SEND_CAN_ID = 0x08;
   const uint32_t DEFAULT_GRIPPER_RECV_CAN_ID = 0x18;
 
-  // Gains (based on teleop follower.yaml for accurate tracking)
-  // Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
-  // std::vector<double> kp_ = {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0};
-  std::vector<double> kp_ = {50.0, 50.0, 50.0, 60.0, 24.0, 31.0, 25.0};
-  // Original values: {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5}
-  // std::vector<double> kd_ = {3.0, 3.0, 3.0, 3.0, 0.2, 0.2, 0.2};
+  // Control gains and compensation parameters
+  // Will be loaded from parameters.yaml, these are just fallback defaults
+  std::vector<double> kp_ = {50.0, 50.0, 50.0, 60.0, 24.0, 31.0, 10.0};
   std::vector<double> kd_ = {2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5};
 
-
-  //   std::vector<double> kp_ = {20.0, 20.0, 20.0, 20.0,
-//                                           5.0,  5.0,  5.0,  0.5};
-//   std::vector<double> kd_ = {2.75, 2.5, 0.7, 0.4,
-//                                           0.7,  0.6, 0.5, 0.1};
-
-
-  // Friction compensation parameters (LuGre model from teleop)
+  // Friction compensation parameters (LuGre model)
   // tau_friction = Fc * tanh(k * dq) + Fv * dq + Fo
   std::vector<double> Fc_ = {0.306, 0.306, 0.40, 0.166, 0.050, 0.093, 0.172};  // Coulomb friction
   std::vector<double> k_  = {28.417, 28.417, 29.065, 130.038, 151.771, 242.287, 7.888};  // Stiffness
