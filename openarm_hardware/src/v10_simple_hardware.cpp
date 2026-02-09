@@ -843,7 +843,17 @@ void OpenArm_v10HW::arm_control_loop() {
     // Send arm commands with compensation
     std::vector<openarm::damiao_motor::MITParam> arm_params;
     for (size_t i = 0; i < ARM_DOF; ++i) {
-      double feedforward_tau = tau_cmd[i] + gravity_comp[i] + friction_comp[i];
+      // Software-layer feedforward with additional error-based correction
+      // This adds a software PD term on top of hardware PD for enhanced tracking
+      double pos_error = pos_cmd[i] - pos_state[i];
+      double vel_error = vel_cmd[i] - vel_state[i];
+      double software_feedback = kp_[i] * pos_error *0.3 + kd_[i] * vel_error *0.3;
+      // double software_feedback = 0;
+      // Combined feedforward: compensation + software feedback + user torque command
+      double feedforward_tau = tau_cmd[i] + gravity_comp[i] + friction_comp[i] + software_feedback;
+      
+      // MIT controller will add its own hardware PD on top of this
+      // Total control: hardware_PD + (gravity + friction + software_PD + tau_cmd)
       arm_params.push_back({kp_[i], kd_[i], pos_cmd[i], vel_cmd[i], feedforward_tau});
     }
     openarm_->get_arm().mit_control_all(arm_params);
