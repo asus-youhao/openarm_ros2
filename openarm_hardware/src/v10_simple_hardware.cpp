@@ -66,7 +66,15 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     can_fd_ = (value == "true");
   }
 
-  // Parse control gains
+  // Parse frequency diagnostics enable (default: false)
+  it = info.hardware_parameters.find("enable_frequency_diagnostics");
+  if (it == info.hardware_parameters.end()) {
+    enable_frequency_diagnostics_ = false;
+  } else {
+    std::string value = it->second;
+    std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+    enable_frequency_diagnostics_ = (value == "true");
+  }
 
   // Load parameters from YAML file using ROS2 package resource lookup
   try {
@@ -96,10 +104,11 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, leap_hand=%s",
+              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, leap_hand=%s, freq_diag=%s",
               can_interface_.c_str(), arm_prefix_.c_str(), ee_type_.c_str(),
               hand_ ? "enabled" : "disabled", can_fd_ ? "enabled" : "disabled",
-              has_leap_hand_ ? "enabled" : "disabled");
+              has_leap_hand_ ? "enabled" : "disabled",
+              enable_frequency_diagnostics_ ? "enabled" : "disabled");
   return true;
 }
 
@@ -230,7 +239,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   if (has_leap_hand_) {
     // Get serial port parameter (default: /dev/ttyUSB0)
     auto it = info.hardware_parameters.find("serial_port");
-    leap_serial_port_ = (it != info.hardware_parameters.end()) ? it->second : "/dev/ttyUSB0";
+    leap_serial_port_ = (it != info.hardware_parameters.end()) ? it->second : "/dev/leaphand";
     
     // Get baudrate parameter (default: 4000000)
     it = info.hardware_parameters.find("baudrate");
@@ -741,8 +750,13 @@ void OpenArm_v10HW::arm_control_loop() {
 
   auto next_cycle = steady_clock::now() + loop_period;
   
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-              "Arm control loop started (500Hz)");
+  if (enable_frequency_diagnostics_) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+                "Arm control loop started (target: 500Hz, diagnostics: ON)");
+  } else {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+                "Arm control loop started (target: 500Hz)");
+  }
   
   // Local command buffers
   std::vector<double> pos_cmd(ARM_DOF + (hand_ ? 1 : 0), 0.0);
@@ -754,7 +768,15 @@ void OpenArm_v10HW::arm_control_loop() {
   std::vector<double> vel_state(ARM_DOF + (hand_ ? 1 : 0), 0.0);
   std::vector<double> tau_state(ARM_DOF + (hand_ ? 1 : 0), 0.0);
   
+  // Performance monitoring (only if diagnostics enabled)
+  size_t loop_count = 0;
+  auto stats_start = steady_clock::now();
+  duration<double, std::micro> max_loop_time(0);
+  duration<double, std::micro> min_loop_time(999999);
+  duration<double, std::micro> total_loop_time(0);
+  
   while (arm_thread_running_) {
+    auto cycle_start = steady_clock::now();
     // Copy commands from buffer (thread-safe)
     {
       std::lock_guard<std::mutex> lock(arm_command_mutex_);
@@ -831,6 +853,38 @@ void OpenArm_v10HW::arm_control_loop() {
       double motor_command = joint_to_motor_radians(pos_cmd[ARM_DOF]);
       openarm_->get_gripper().mit_control_all(
           {{GRIPPER_KP, GRIPPER_KD, motor_command, 0, 0}});
+    }
+    
+    // Frequency diagnostics (only if enabled)
+    if (enable_frequency_diagnostics_) {
+      auto cycle_end = steady_clock::now();
+      auto loop_time = duration_cast<duration<double, std::micro>>(cycle_end - cycle_start);
+      
+      // Update statistics
+      max_loop_time = std::max(max_loop_time, loop_time);
+      min_loop_time = std::min(min_loop_time, loop_time);
+      total_loop_time += loop_time;
+      loop_count++;
+      
+      // Print statistics every 5 seconds
+      auto elapsed = duration_cast<seconds>(cycle_end - stats_start);
+      if (elapsed.count() >= 5) {
+        double avg_loop_time = total_loop_time.count() / loop_count;
+        double actual_frequency = loop_count / elapsed.count();
+        
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
+                    "Loop stats: freq=%.1f Hz (target=500), "
+                    "exec_time: avg=%.0f us, min=%.0f us, max=%.0f us",
+                    actual_frequency, avg_loop_time, 
+                    min_loop_time.count(), max_loop_time.count());
+        
+        // Reset statistics
+        loop_count = 0;
+        stats_start = cycle_end;
+        max_loop_time = duration<double, std::micro>(0);
+        min_loop_time = duration<double, std::micro>(999999);
+        total_loop_time = duration<double, std::micro>(0);
+      }
     }
     
     // Sleep until next cycle

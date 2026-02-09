@@ -140,6 +140,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool hand_;
   bool can_fd_;
   bool has_leap_hand_;
+  bool enable_frequency_diagnostics_;  // Enable performance monitoring
 
   // OpenArm instance
   std::unique_ptr<openarm::can::socket::OpenArm> openarm_;
