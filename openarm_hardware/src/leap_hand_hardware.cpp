@@ -38,7 +38,7 @@ hardware_interface::CallbackReturn LeapHandHardware::on_init(
   }
 
   // Get serial port parameter (default: /dev/ttyUSB0)
-  serial_port_ = "/dev/ttyUSB0";
+  serial_port_ = "/dev/leaphand";
   if (info_.hardware_parameters.find("serial_port") != info_.hardware_parameters.end())
   {
     serial_port_ = info_.hardware_parameters["serial_port"];

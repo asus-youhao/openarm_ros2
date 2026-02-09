@@ -59,7 +59,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "serial_port",
-            default_value="/dev/ttyUSB0",
+            default_value="/dev/leaphand",
             description="Serial port for LEAP Hand (e.g., /dev/ttyUSB0, /dev/ttyUSB1)",
         )
     )
