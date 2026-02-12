@@ -27,27 +27,16 @@ from tkinter import ttk
 class BimanualGUIController:
     def __init__(self, ros_node):
         self.ros_node = ros_node
-        self.is_sending = False
         
         # Create main window
         self.root = tk.Tk()
-        self.root.title('OpenArm Bimanual Controller - Change Detection Mode')
+        self.root.title('OpenArm Bimanual Controller - Button Send Mode')
         self.root.geometry('1200x900')
         
         # Joint sliders storage
         self.joint_sliders = {}
         self.joint_value_labels = {}
         self.joint_current_labels = {}
-        
-        # Store last sent positions for each individual joint
-        self.last_sent_joint_values = {}
-        
-        # Track which controllers need updates
-        self.controllers_need_update = {
-            'left_arm': False,
-            'right_arm': False,
-            'right_hand': False
-        }
         
         # Position recording storage
         self.saved_positions = []  # List of saved position snapshots
@@ -100,9 +89,6 @@ class BimanualGUIController:
         
         self.create_ui()
         
-        # Timer for 20Hz sending
-        self.send_commands_scheduled()
-        
         # Update joint states timer
         self.update_joint_states_scheduled()
         
@@ -113,31 +99,22 @@ class BimanualGUIController:
         control_frame.pack(fill='x')
         
         # Title
-        title_label = tk.Label(control_frame, text='Control Panel - Send on Change', 
+        title_label = tk.Label(control_frame, text='Control Panel - Press to Send', 
                                font=('Arial', 12, 'bold'), bg='lightgray')
         title_label.pack(side='left', padx=10)
         
-        # START button
-        self.start_btn = tk.Button(control_frame, text='START', 
+        # Move to Target button
+        self.move_btn = tk.Button(control_frame, text='Move to Target', 
                                    bg='#4CAF50', fg='white', 
                                    font=('Arial', 14, 'bold'),
-                                   width=10, height=2,
-                                   command=self.start_sending)
-        self.start_btn.pack(side='left', padx=5)
-        
-        # STOP button
-        self.stop_btn = tk.Button(control_frame, text='STOP', 
-                                  bg='#f44336', fg='white',
-                                  font=('Arial', 14, 'bold'),
-                                  width=10, height=2,
-                                  state='disabled',
-                                  command=self.stop_sending)
-        self.stop_btn.pack(side='left', padx=5)
+                                   width=15, height=2,
+                                   command=self.move_to_target)
+        self.move_btn.pack(side='left', padx=5)
         
         # Status label
-        self.status_label = tk.Label(control_frame, text='Status: STOPPED',
+        self.status_label = tk.Label(control_frame, text='Status: READY',
                                      font=('Arial', 12, 'bold'),
-                                     fg='red', bg='lightgray')
+                                     fg='blue', bg='lightgray')
         self.status_label.pack(side='left', padx=20)
         
         # Preset buttons
@@ -288,70 +265,23 @@ class BimanualGUIController:
             text=f'Target:\n{val:.3f}r ({deg:.1f}°)'
         )
     
-    def start_sending(self):
-        """Start sending on change."""
-        self.is_sending = True
-        self.start_btn.config(state='disabled')
-        self.stop_btn.config(state='normal')
-        self.status_label.config(text='Status: ACTIVE (Send on Change)', fg='green')
-        self.ros_node.get_logger().info('Started sending on change mode')
-    
-    def stop_sending(self):
-        """Stop sending."""
-        self.is_sending = False
-        self.start_btn.config(state='normal')
-        self.stop_btn.config(state='disabled')
-        self.status_label.config(text='Status: STOPPED', fg='red')
-        self.ros_node.get_logger().info('Stopped sending')
-    
-    def send_commands_scheduled(self):
-        """Scheduled function to check for individual joint changes and send by controller."""
-        if self.is_sending:
-            # Reset controller update flags
-            self.controllers_need_update = {
-                'left_arm': False,
-                'right_arm': False,
-                'right_hand': False
-            }
-            
-            # Check each joint individually for changes
-            all_joints = (self.ros_node.left_arm_joints + 
-                         self.ros_node.right_arm_joints + 
-                         self.ros_node.right_hand_joints)
-            
-            for joint_name in all_joints:
-                current_value = self.joint_sliders[joint_name].get()
-                
-                # Check if this joint's value has changed
-                if joint_name not in self.last_sent_joint_values or \
-                   self.last_sent_joint_values[joint_name] != current_value:
-                    
-                    # Mark which controller needs update
-                    if joint_name in self.ros_node.left_arm_joints:
-                        self.controllers_need_update['left_arm'] = True
-                    elif joint_name in self.ros_node.right_arm_joints:
-                        self.controllers_need_update['right_arm'] = True
-                    elif joint_name in self.ros_node.right_hand_joints:
-                        self.controllers_need_update['right_hand'] = True
-                    
-                    # Update the stored value
-                    self.last_sent_joint_values[joint_name] = current_value
-            
-            # Send commands to controllers that have changes
-            if self.controllers_need_update['left_arm']:
-                left_arm_pos = [self.joint_sliders[j].get() for j in self.ros_node.left_arm_joints]
-                self.ros_node.publish_positions('left_arm', left_arm_pos)
-                
-            if self.controllers_need_update['right_arm']:
-                right_arm_pos = [self.joint_sliders[j].get() for j in self.ros_node.right_arm_joints]
-                self.ros_node.publish_positions('right_arm', right_arm_pos)
-                
-            if self.controllers_need_update['right_hand']:
-                right_hand_pos = [self.joint_sliders[j].get() for j in self.ros_node.right_hand_joints]
-                self.ros_node.publish_positions('right_hand', right_hand_pos)
+    def move_to_target(self):
+        """Send target positions directly to controllers."""
+        # Get target positions from sliders
+        target_left = [self.joint_sliders[j].get() for j in self.ros_node.left_arm_joints]
+        target_right = [self.joint_sliders[j].get() for j in self.ros_node.right_arm_joints]
+        target_hand = [self.joint_sliders[j].get() for j in self.ros_node.right_hand_joints]
         
-        # Schedule next check (50ms for responsive detection)
-        self.root.after(50, self.send_commands_scheduled)
+        # Send to controllers
+        self.ros_node.publish_positions('left_arm', target_left)
+        self.ros_node.publish_positions('right_arm', target_right)
+        self.ros_node.publish_positions('right_hand', target_hand)
+        
+        # Update status
+        self.status_label.config(text='Status: Command Sent', fg='green')
+        self.root.after(1000, lambda: self.status_label.config(text='Status: READY', fg='blue'))
+        
+        self.ros_node.get_logger().info('Sent target positions to all controllers')
     
     def update_joint_states_scheduled(self):
         """Scheduled function to update joint state displays."""

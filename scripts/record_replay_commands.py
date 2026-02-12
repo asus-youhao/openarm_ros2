@@ -16,18 +16,36 @@ import json
 import time
 import argparse
 from threading import Lock
+import os
+from datetime import datetime
+import glob
 
 
+# Ensure record_data folder is created in Python logic
 class CommandRecorder(Node):
     """Record commands from position controllers."""
     
-    def __init__(self, output_file):
+    def __init__(self, output_file=None):
         super().__init__('command_recorder')
-        
+
+        # Generate default file name and folder if none is provided
+        if not output_file:  # Ensure output_file is None or empty
+            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            date_folder = datetime.now().strftime('%Y%m%d')
+            base_dir = os.getcwd()
+            record_data_dir = os.path.join(base_dir, 'record_data')
+            if not os.path.exists(record_data_dir):
+                os.makedirs(record_data_dir)
+            output_dir = os.path.join(record_data_dir, date_folder)  # Current folder/record_data/YYYYMMDD
+            os.makedirs(output_dir, exist_ok=True)  # Create folder if it doesn't exist
+            output_file = os.path.join(output_dir, f'commands_recording_{now_str}.json')
+
         self.output_file = output_file
         self.recordings = []
         self.start_time = None
         self.lock = Lock()
+
+        self.get_logger().info(f'Recording will be saved to: {self.output_file}')
         
         # Subscribe to arm controllers
         self.left_arm_sub = self.create_subscription(
@@ -245,7 +263,7 @@ class CommandReplayerTopic(Node):
 class CommandReplayerAction(Node):
     """Replay recorded commands using ACTION interface."""
     
-    def __init__(self, input_file, speed=1.0, time_from_start=0.5, batch_size=16):
+    def __init__(self, input_file, speed=1.0, time_from_start=1.0, batch_size=16):
         super().__init__('command_replayer_action')
         
         self.input_file = input_file
@@ -462,6 +480,29 @@ class CommandReplayerAction(Node):
             self.send_next_batch()
 
 
+def select_record_file():
+    base_dir = os.getcwd()
+    record_data_dir = os.path.join(base_dir, 'record_data')
+    folders = sorted([d for d in os.listdir(record_data_dir) if os.path.isdir(os.path.join(record_data_dir, d))])
+    if not folders:
+        print('No record_data folders found.')
+        return None
+    print('Available folders:')
+    for idx, folder in enumerate(folders):
+        print(f'{idx+1}: {folder}')
+    folder_idx = int(input('Select folder number: ')) - 1
+    folder_path = os.path.join(record_data_dir, folders[folder_idx])
+    files = sorted(glob.glob(os.path.join(folder_path, '*.json')))
+    if not files:
+        print('No JSON files found in selected folder.')
+        return None
+    print('Available files:')
+    for idx, file in enumerate(files):
+        print(f'{idx+1}: {os.path.basename(file)}')
+    file_idx = int(input('Select file number: ')) - 1
+    return files[file_idx]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Record/replay position controller commands',
@@ -487,8 +528,8 @@ Examples:
     
     parser.add_argument('mode', choices=['record', 'replay'], 
                        help='Mode: record or replay')
-    parser.add_argument('--file', default='/tmp/commands_recording.json', 
-                       help='Recording file path (default: /tmp/commands_recording.json)')
+    parser.add_argument('--file', default=None, 
+                       help='Recording file path (default: auto-generate in record_data/YYYYMMDD)')
     parser.add_argument('--speed', type=float, default=1.0,
                        help='Replay speed multiplier (default: 1.0, e.g., 2.0 = 2x faster)')
     
@@ -516,7 +557,7 @@ Examples:
     node = None
     try:
         if args.mode == 'record':
-            node = CommandRecorder(args.file)
+            node = CommandRecorder(args.file if args.file else None)
             try:
                 rclpy.spin(node)
             except KeyboardInterrupt:
@@ -524,17 +565,24 @@ Examples:
                 node.save()
         
         else:  # replay
+            input_file = args.file
+            if input_file is None:
+                input_file = select_record_file()
+            if input_file is None:
+                print('No valid file selected. Exiting.')
+                return
             if args.topic:
-                node = CommandReplayerTopic(args.file, args.speed)
-            else:  # action
-                node = CommandReplayerAction(args.file, args.speed, args.time_from_start, args.batch_size)
+                node = CommandReplayerTopic(input_file, args.speed)
+            elif args.action:
+                node = CommandReplayerAction(input_file, args.speed, args.time_from_start, args.batch_size)
             
             rclpy.spin(node)
     
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
