@@ -420,7 +420,9 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Deactivating OpenArm V10...");
-
+  RCLCPP_INFO(rclcpp::get_logger("Safety closing"),"Returning to safe zero position before shutdown...");
+  return_to_zero();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   // Stop arm control thread
   if (arm_thread_running_) {
     arm_thread_running_ = false;
@@ -517,16 +519,17 @@ void OpenArm_v10HW::return_to_zero() {
   // Return arm to zero with MIT control
   std::vector<openarm::damiao_motor::MITParam> arm_params;
   for (size_t i = 0; i < ARM_DOF; ++i) {
-    arm_params.push_back({kp_[i], kd_[i], 0.0, 0.0, 0.0});
+    arm_params.push_back({kp_[i]/100000, kd_[i]/100000, 0.0, 0.0, 0.0});
   }
   openarm_->get_arm().mit_control_all(arm_params);
+  std::this_thread::sleep_for(std::chrono::seconds(1));
 
   // Return gripper to zero if enabled
   if (hand_) {
     openarm_->get_gripper().mit_control_all(
         {{GRIPPER_KP, GRIPPER_KD, GRIPPER_JOINT_0_POSITION, 0.0, 0.0}});
   }
-  std::this_thread::sleep_for(std::chrono::microseconds(1000));
+  std::this_thread::sleep_for(std::chrono::seconds(1));
   openarm_->recv_all();
 }
 
@@ -909,8 +912,8 @@ void OpenArm_v10HW::arm_control_loop() {
       // This adds a software PD term on top of hardware PD for enhanced tracking
       double pos_error = pos_cmd[i] - pos_state[i];
       double vel_error = vel_cmd[i] - vel_state[i];
-      double software_feedback = kp_[i] * pos_error *0.3 + kd_[i] * vel_error *0.3;
-      // double software_feedback = 0;
+      // double software_feedback = kp_[i] * pos_error *0.3 + kd_[i] * vel_error *0.3;
+      double software_feedback = 0;
       // Combined feedforward: compensation + software feedback + user torque command
       double feedforward_tau = tau_cmd[i] + gravity_comp[i] + friction_comp[i] + software_feedback;
       
