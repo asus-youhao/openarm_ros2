@@ -3,3 +3,4 @@
 .vscode/
 __pycache__/
 scripts/record_data/*.json
+scripts/analye_joint/*

@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <openarm/can/socket/openarm.hpp>
@@ -181,6 +182,11 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // LEAP Hand command/state buffers
   std::vector<double> leap_pos_cmd_buffer_;
   std::vector<double> leap_pos_state_buffer_;
+  
+  // Debug CSV logging (one file per arm instance)
+  std::ofstream debug_csv_;
+  bool csv_initialized_;
+  size_t csv_sample_count_;
 
   // Helper methods
   void return_to_zero();

@@ -18,6 +18,8 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
@@ -218,6 +220,10 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Initialize thread control flags
   arm_thread_running_ = false;
   leap_thread_running_ = false;
+  
+  // Initialize CSV logging variables
+  csv_initialized_ = false;
+  csv_sample_count_ = 0;
   
   // Initialize arm thread buffers (7 DOF + optional gripper)
   size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
@@ -442,7 +448,12 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   openarm_->disable_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
-
+  // Close debug CSV if open
+  if (debug_csv_.is_open()) {
+    debug_csv_.flush();
+    debug_csv_.close();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed debug CSV file on deactivate");
+  }
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -840,6 +851,57 @@ void OpenArm_v10HW::arm_control_loop() {
       }
     }
     
+    // Debug logging: save data to CSV for analysis (one CSV per arm)
+    if (!csv_initialized_) {
+      // Get install directory path (workspace/install/openarm_hardware/share/openarm_hardware)
+      std::string package_share_dir;
+      try {
+        package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
+      } catch (const std::exception& e) {
+        package_share_dir = "/tmp";  // Fallback to /tmp if package not found
+      }
+      
+      // Create filename with arm prefix and timestamp
+      auto now = std::chrono::system_clock::now();
+      auto time_t_now = std::chrono::system_clock::to_time_t(now);
+      std::tm tm_now;
+      localtime_r(&time_t_now, &tm_now);
+      
+      std::ostringstream tmp_date;
+      tmp_date << std::put_time(&tm_now, "%Y%m%d");
+      std::string date_str = tmp_date.str();
+
+      std::string arm_name = arm_prefix_.empty() ? "arm" : arm_prefix_;
+      // Remove trailing underscore if present
+      if (!arm_name.empty() && arm_name.back() == '_') {
+        arm_name.pop_back();
+      }
+
+      // Build directory: <package_share_dir>/debug_csvs/YYYYMMDD
+      std::filesystem::path dir_path = std::filesystem::path(package_share_dir) / "debug_csvs" / date_str;
+      try {
+        std::filesystem::create_directories(dir_path);
+      } catch (const std::exception &e) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), "Failed to create debug CSV directory '%s': %s", dir_path.c_str(), e.what());
+      }
+
+      std::ostringstream oss;
+      oss << dir_path.string() << "/debug_" << arm_name << "_"
+          << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << ".csv";
+      std::string csv_filename = oss.str();
+      debug_csv_.open(csv_filename);
+      if (!debug_csv_.is_open()) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), "Failed to open debug CSV: %s", csv_filename.c_str());
+      } else {
+        debug_csv_ << "timestamp,joint_id,pos_cmd,vel_cmd,tau_cmd,pos_state,vel_state,tau_state,"
+          << "pos_error,vel_error,gravity_comp,friction_comp,software_feedback,feedforward_tau,"
+          << "kp,kd\n";
+      }
+      csv_initialized_ = true;
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+          "Debug CSV created: %s", csv_filename.c_str());
+    }
+    
     // Send arm commands with compensation
     std::vector<openarm::damiao_motor::MITParam> arm_params;
     for (size_t i = 0; i < ARM_DOF; ++i) {
@@ -854,8 +916,23 @@ void OpenArm_v10HW::arm_control_loop() {
       
       // MIT controller will add its own hardware PD on top of this
       // Total control: hardware_PD + (gravity + friction + software_PD + tau_cmd)
+      
+      // Log data every 100 iterations (5Hz) to reduce file size
+      if (csv_sample_count_ % 100 == 0) {
+        auto timestamp = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+        if (debug_csv_.is_open()) {
+          debug_csv_ << timestamp << "," << i << ","
+            << pos_cmd[i] << "," << vel_cmd[i] << "," << tau_cmd[i] << ","
+            << pos_state[i] << "," << vel_state[i] << "," << tau_state[i] << ","
+            << pos_error << "," << vel_error << ","
+            << gravity_comp[i] << "," << friction_comp[i] << "," << software_feedback << ","
+            << feedforward_tau << "," << kp_[i] << "," << kd_[i] << "\n";
+        }
+      }
+      
       arm_params.push_back({kp_[i], kd_[i], pos_cmd[i], vel_cmd[i], feedforward_tau});
     }
+    csv_sample_count_++;
     openarm_->get_arm().mit_control_all(arm_params);
     
     // Send gripper command if enabled
