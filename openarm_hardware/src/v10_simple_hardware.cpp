@@ -275,13 +275,13 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
                 leap_serial_port_.c_str(), leap_baudrate_);
   }
 
-  // Initialize gravity compensation (optional, enabled by parameter)
+  // Initialize gravity compensation (default: enabled)
   auto it = info.hardware_parameters.find("use_gravity_compensation");
-  use_gravity_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
+  use_gravity_compensation_ = (it == info.hardware_parameters.end() || it->second != "false");
   
-  // Initialize friction compensation (optional, enabled by parameter)
+  // Initialize friction compensation (default: enabled)
   it = info.hardware_parameters.find("use_friction_compensation");
-  use_friction_compensation_ = (it != info.hardware_parameters.end() && it->second == "true");
+  use_friction_compensation_ = (it == info.hardware_parameters.end() || it->second != "false");
   
   if (use_gravity_compensation_) {
     // Try to get URDF string from robot_description parameter (passed by controller_manager)
@@ -686,13 +686,13 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
     return false;
   }
 
-  // Extract chain for this arm
+  // Extract chain for this arm (only arm links, exclude hand/gripper for dynamic loads)
   std::string root_link = "openarm_body_link0";
-  std::string tip_link = "openarm_" + arm_prefix_ + "hand";
+  std::string tip_link = "openarm_" + arm_prefix_ + "link7";  // End at link7, before hand
   
   if (!kdl_tree.getChain(root_link, tip_link, kdl_chain_)) {
-    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "Failed to get KDL chain from %s to %s",
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Failed to get KDL chain from %s to %s, gravity compensation will be disabled",
                  root_link.c_str(), tip_link.c_str());
     return false;
   }
