@@ -173,7 +173,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> arm_vel_state_buffer_;
   std::vector<double> arm_tau_state_buffer_;
   
-  // LEAP Hand control thread (100Hz)
+  // LEAP Hand control thread (now 500Hz for synchronized execution)
   std::thread leap_control_thread_;
   std::atomic<bool> leap_thread_running_;
   std::mutex leap_command_mutex_;
@@ -182,6 +182,15 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // LEAP Hand command/state buffers
   std::vector<double> leap_pos_cmd_buffer_;
   std::vector<double> leap_pos_state_buffer_;
+  
+  // ========== SYNCHRONIZATION PRIMITIVES ==========
+  // These ensure arm and hand commands are executed synchronously
+  std::mutex sync_mutex_;                    // Mutex for synchronization
+  std::condition_variable sync_cv_;          // Condition variable for thread sync
+  std::atomic<uint64_t> command_tick_{0};    // Monotonic tick counter for sync
+  std::atomic<uint64_t> arm_executed_tick_{0};
+  std::atomic<uint64_t> leap_executed_tick_{0};
+  std::atomic<bool> sync_enabled_{false};    // Enable/disable synchronization
   
   // Debug CSV logging (one file per arm instance)
   std::ofstream debug_csv_;

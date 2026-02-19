@@ -405,11 +405,12 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   arm_control_thread_ = std::thread(&OpenArm_v10HW::arm_control_loop, this);
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread started at 500Hz");
   
-  // Start LEAP Hand control thread (100Hz) if enabled
+  // Start LEAP Hand control thread (500Hz, synchronized with arm) if enabled
   if (has_leap_hand_ && leap_connected_) {
     leap_thread_running_ = true;
+    sync_enabled_ = true;  // Enable synchronization
     leap_control_thread_ = std::thread(&OpenArm_v10HW::leap_control_loop, this);
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 100Hz");
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 500Hz (synchronized)");
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
@@ -986,14 +987,14 @@ void OpenArm_v10HW::arm_control_loop() {
               "Arm control loop stopped");
 }
 
-// LEAP Hand control loop (100Hz)
+// LEAP Hand control loop (500Hz - synchronized with arm)
 void OpenArm_v10HW::leap_control_loop() {
   using namespace std::chrono;
-  const auto loop_period = milliseconds(10);  // 100Hz = 10ms
+  const auto loop_period = microseconds(2000);  // 500Hz = 2ms (matches arm control timing)
   auto next_cycle = steady_clock::now() + loop_period;
   
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-              "LEAP Hand control loop started (100Hz)");
+              "LEAP Hand control loop started (500Hz, synchronized with arm)");
   
   std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
   std::vector<double> pos_state(LEAP_HAND_DOF, 0.0);

@@ -551,7 +551,7 @@ class ROSNode(Node):
         return self.current_joint_states.copy()
     
     def publish_positions(self, controller, positions):
-        """Send positions via action client."""
+        """Send positions via action client (single point trajectory)."""
         # Create goal message
         goal_msg = FollowJointTrajectory.Goal()
         
@@ -565,10 +565,6 @@ class ROSNode(Node):
         elif controller == 'right_hand':
             goal_msg.trajectory.joint_names = self.right_hand_joints
             action_client = self.right_hand_client
-            # Debug: print joint names and positions
-            self.get_logger().info(f'Sending to right_hand_controller:')
-            for i, (name, pos) in enumerate(zip(self.right_hand_joints, positions)):
-                self.get_logger().info(f'  [{i}] {name}: {pos:.3f}')
         else:
             return
         
@@ -581,6 +577,110 @@ class ROSNode(Node):
         
         # Send goal asynchronously (non-blocking)
         action_client.send_goal_async(goal_msg)
+    
+    def publish_synchronized_positions(self, left_positions, right_positions, hand_positions, 
+                                        time_from_start_sec=0.8):
+        """
+        Send synchronized positions to all controllers simultaneously.
+        
+        This method ensures that left arm, right arm, and hand receive their
+        commands at the same time, enabling coordinated motion.
+        
+        Args:
+            left_positions: List of 7 joint positions for left arm
+            right_positions: List of 7 joint positions for right arm  
+            hand_positions: List of 16 joint positions for right hand
+            time_from_start_sec: Time to reach target position (seconds)
+        """
+        # Create trajectory points with same time_from_start
+        duration = Duration(
+            sec=int(time_from_start_sec),
+            nanosec=int((time_from_start_sec % 1) * 1e9)
+        )
+        
+        # Build goals for each controller
+        goals = []
+        
+        # Left arm goal
+        left_goal = FollowJointTrajectory.Goal()
+        left_goal.trajectory.joint_names = self.left_arm_joints
+        left_point = JointTrajectoryPoint()
+        left_point.positions = left_positions
+        left_point.time_from_start = duration
+        left_goal.trajectory.points = [left_point]
+        goals.append(('left_arm', self.left_arm_client, left_goal))
+        
+        # Right arm goal
+        right_goal = FollowJointTrajectory.Goal()
+        right_goal.trajectory.joint_names = self.right_arm_joints
+        right_point = JointTrajectoryPoint()
+        right_point.positions = right_positions
+        right_point.time_from_start = duration
+        right_goal.trajectory.points = [right_point]
+        goals.append(('right_arm', self.right_arm_client, right_goal))
+        
+        # Right hand goal
+        hand_goal = FollowJointTrajectory.Goal()
+        hand_goal.trajectory.joint_names = self.right_hand_joints
+        hand_point = JointTrajectoryPoint()
+        hand_point.positions = hand_positions
+        hand_point.time_from_start = duration
+        hand_goal.trajectory.points = [hand_point]
+        goals.append(('right_hand', self.right_hand_client, hand_goal))
+        
+        # Send all goals simultaneously
+        for name, client, goal in goals:
+            client.send_goal_async(goal)
+            self.get_logger().debug(f'Sent {name} goal')
+        
+        self.get_logger().info(
+            f'Sent synchronized positions to all controllers (duration: {time_from_start_sec}s)'
+        )
+    
+    def publish_multi_point_trajectory(self, controller, trajectory_points, timestamps):
+        """
+        Send multi-point trajectory with proper timestamps.
+        
+        This is useful for executing action chunks from VLA models.
+        
+        Args:
+            controller: 'left_arm', 'right_arm', or 'right_hand'
+            trajectory_points: List of position lists (one per step)
+            timestamps: List of timestamps for each step (seconds from start)
+        """
+        goal_msg = FollowJointTrajectory.Goal()
+        
+        # Set joint names based on controller
+        if controller == 'left_arm':
+            goal_msg.trajectory.joint_names = self.left_arm_joints
+            action_client = self.left_arm_client
+        elif controller == 'right_arm':
+            goal_msg.trajectory.joint_names = self.right_arm_joints
+            action_client = self.right_arm_client
+        elif controller == 'right_hand':
+            goal_msg.trajectory.joint_names = self.right_hand_joints
+            action_client = self.right_hand_client
+        else:
+            return
+        
+        # Build trajectory points with timestamps
+        points = []
+        for i, (ts, pos) in enumerate(zip(timestamps, trajectory_points)):
+            point = JointTrajectoryPoint()
+            point.positions = [float(p) for p in pos]
+            point.time_from_start = Duration(
+                sec=int(ts),
+                nanosec=int((ts % 1) * 1e9)
+            )
+            points.append(point)
+        
+        goal_msg.trajectory.points = points
+        
+        # Send goal
+        action_client.send_goal_async(goal_msg)
+        self.get_logger().info(
+            f'Sent multi-point trajectory to {controller}: {len(points)} points'
+        )
 
 
 def main(args=None):
