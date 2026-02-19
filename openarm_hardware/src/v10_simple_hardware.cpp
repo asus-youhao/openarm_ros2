@@ -220,13 +220,20 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Initialize thread control flags
   arm_thread_running_ = false;
   leap_thread_running_ = false;
+  state_read_thread_running_ = false;
+  
+  // Initialize low-pass filters for state smoothing
+  size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+  arm_state_filter_.init(arm_size, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
+  if (has_leap_hand_) {
+    leap_state_filter_.init(LEAP_HAND_DOF, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
+  }
   
   // Initialize CSV logging variables
   csv_initialized_ = false;
   csv_sample_count_ = 0;
   
-  // Initialize arm thread buffers (7 DOF + optional gripper)
-  size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+  // Initialize arm thread buffers (7 DOF + optional gripper) - arm_size already declared above
   arm_pos_cmd_buffer_.resize(arm_size, 0.0);
   arm_vel_cmd_buffer_.resize(arm_size, 0.0);
   arm_tau_cmd_buffer_.resize(arm_size, 0.0);

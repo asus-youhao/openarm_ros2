@@ -94,6 +94,22 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   static constexpr size_t LEAP_HAND_DOF = 16;
   static constexpr bool ENABLE_GRIPPER = true;
 
+  // ========== CONFIGURABLE CONTROL RATES ==========
+  // These can be tuned based on system performance requirements
+  // Write rate: Motor command frequency (Hz)
+  static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz for smooth motor control
+  // Read rate: Motor state reading frequency (Hz)
+  static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // 100Hz for state feedback
+  // Feedback rate: GR00T/VLA model feedback frequency (Hz)
+  static constexpr double GROOT_FEEDBACK_RATE_HZ = 50.0;  // 50Hz for VLA model input
+
+  // Low-pass filter cutoff frequency for state smoothing (Hz)
+  static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // Smooth states for VLA feedback
+  
+  // Health monitoring thresholds
+  static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Max allowed communication latency
+  static constexpr size_t MAX_CONSECUTIVE_FAILURES = 10;  // Max failures before error
+
   // Default motor configuration for V10
   const std::vector<openarm::damiao_motor::MotorType> DEFAULT_MOTOR_TYPES = {
       openarm::damiao_motor::MotorType::DM8009,  // Joint 1
@@ -197,14 +213,65 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool csv_initialized_;
   size_t csv_sample_count_;
 
+  // ========== DECOUPLED STATE READING THREAD ==========
+  // Separate thread for reading motor states at lower frequency
+  std::thread state_read_thread_;
+  std::atomic<bool> state_read_thread_running_;
+  
+  // ========== HEALTH MONITORING ==========
+  struct HealthStatus {
+    std::atomic<size_t> consecutive_read_failures{0};
+    std::atomic<size_t> consecutive_write_failures{0};
+    std::atomic<double> last_read_latency_ms{0.0};
+    std::atomic<double> last_write_latency_ms{0.0};
+    std::atomic<bool> arm_healthy{true};
+    std::atomic<bool> leap_healthy{true};
+    std::atomic<uint64_t> last_successful_read_time{0};
+    std::atomic<uint64_t> last_successful_write_time{0};
+  } health_status_;
+  
+  // ========== LOW-PASS FILTER FOR STATE SMOOTHING ==========
+  struct LowPassFilter {
+    double alpha;          // Filter coefficient
+    std::vector<double> filtered_values;
+    bool initialized = false;
+    
+    void init(size_t size, double cutoff_hz, double sample_hz) {
+      // Calculate alpha from cutoff frequency
+      double rc = 1.0 / (2.0 * M_PI * cutoff_hz);
+      double dt = 1.0 / sample_hz;
+      alpha = dt / (rc + dt);
+      filtered_values.resize(size, 0.0);
+      initialized = true;
+    }
+    
+    void update(const std::vector<double>& new_values) {
+      if (!initialized || new_values.size() != filtered_values.size()) return;
+      for (size_t i = 0; i < filtered_values.size(); ++i) {
+        filtered_values[i] = filtered_values[i] + alpha * (new_values[i] - filtered_values[i]);
+      }
+    }
+    
+    const std::vector<double>& get() const { return filtered_values; }
+  };
+  
+  LowPassFilter arm_state_filter_;
+  LowPassFilter leap_state_filter_;
+
   // Helper methods
   void return_to_zero();
   bool parse_config(const hardware_interface::HardwareInfo& info);
   void generate_joint_names();
   
   // Thread control loops
-  void arm_control_loop();
-  void leap_control_loop();
+  void arm_control_loop();        // Write loop @ 500Hz
+  void leap_control_loop();       // Write loop @ 500Hz
+  void state_read_loop();         // Read loop @ 100Hz (decoupled from write)
+  
+  // Health monitoring methods
+  void check_health();
+  void report_health_status();
+  bool is_healthy() const;
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);
