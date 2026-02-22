@@ -98,10 +98,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // These can be tuned based on system performance requirements
   // Write rate: Motor command frequency (Hz)
   static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz for smooth motor control
-  // Read rate: Motor state reading frequency (Hz)
+  // Read rate: Motor state reading frequency (Hz) - used for filter initialization only
   static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // 100Hz for state feedback
-  // Feedback rate: GR00T/VLA model feedback frequency (Hz)
-  static constexpr double GROOT_FEEDBACK_RATE_HZ = 50.0;  // 50Hz for VLA model input
 
   // Low-pass filter cutoff frequency for state smoothing (Hz)
   static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // Smooth states for VLA feedback
@@ -213,10 +211,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool csv_initialized_;
   size_t csv_sample_count_;
 
-  // ========== DECOUPLED STATE READING THREAD ==========
-  // Separate thread for reading motor states at lower frequency
-  std::thread state_read_thread_;
-  std::atomic<bool> state_read_thread_running_;
+  // Note: State reading is done inside arm_control_loop() and leap_control_loop()
+  // at 500Hz for synchronized operation. No separate read thread needed.
   
   // ========== HEALTH MONITORING ==========
   struct HealthStatus {
@@ -264,9 +260,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void generate_joint_names();
   
   // Thread control loops
-  void arm_control_loop();        // Write loop @ 500Hz
-  void leap_control_loop();       // Write loop @ 500Hz
-  void state_read_loop();         // Read loop @ 100Hz (decoupled from write)
+  void arm_control_loop();        // Write loop @ 500Hz (includes reading for state feedback)
+  void leap_control_loop();       // Write loop @ 500Hz (includes reading for state feedback)
   
   // Health monitoring methods
   void check_health();

@@ -765,19 +765,21 @@ void OpenArm_v10HW::compute_friction_compensation(std::vector<double>& friction_
   }
 }
 
-// High-frequency arm control loop (500Hz)
+// High-frequency arm control loop (WRITE ONLY @ 500Hz)
+// This loop handles ONLY command sending, NOT reading (reading is done in state_read_loop)
 void OpenArm_v10HW::arm_control_loop() {
   using namespace std::chrono;
-  const auto loop_period = microseconds(1000);  // 1000Hz = 1000us
+  // Use constant from header: CONTROL_WRITE_RATE_HZ = 500Hz -> 2000us period
+  const auto loop_period = microseconds(static_cast<int>(1000000.0 / CONTROL_WRITE_RATE_HZ));
 
   auto next_cycle = steady_clock::now() + loop_period;
   
   if (enable_frequency_diagnostics_) {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-                "Arm control loop started (target: 500Hz, diagnostics: ON)");
+                "Arm control loop started (target: %.0fHz, diagnostics: ON)", CONTROL_WRITE_RATE_HZ);
   } else {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-                "Arm control loop started (target: 500Hz)");
+                "Arm control loop started (target: %.0fHz - WRITE ONLY)", CONTROL_WRITE_RATE_HZ);
   }
   
   // Local command buffers
@@ -1053,6 +1055,19 @@ void OpenArm_v10HW::leap_control_loop() {
           std::lock_guard<std::mutex> lock(leap_state_mutex_);
           leap_pos_state_buffer_ = pos_state;
         }
+        
+        // Update health status - successful read
+        health_status_.consecutive_read_failures = 0;
+        health_status_.leap_healthy = true;
+      } else {
+        // Update health status - failed read
+        health_status_.consecutive_read_failures++;
+        if (health_status_.consecutive_read_failures > MAX_CONSECUTIVE_FAILURES) {
+          health_status_.leap_healthy = false;
+          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"),
+                      "LEAP Hand health check: %zu consecutive read failures",
+                      health_status_.consecutive_read_failures.load());
+        }
       }
     }
     
@@ -1063,6 +1078,50 @@ void OpenArm_v10HW::leap_control_loop() {
   
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
               "LEAP Hand control loop stopped");
+}
+
+// Health monitoring functions
+void OpenArm_v10HW::check_health() {
+  // Check arm health based on consecutive failures
+  if (health_status_.consecutive_read_failures > MAX_CONSECUTIVE_FAILURES ||
+      health_status_.consecutive_write_failures > MAX_CONSECUTIVE_FAILURES) {
+    health_status_.arm_healthy = false;
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "Arm health check failed: read_failures=%zu, write_failures=%zu",
+                health_status_.consecutive_read_failures.load(),
+                health_status_.consecutive_write_failures.load());
+  }
+  
+  // Check LEAP health
+  if (!health_status_.leap_healthy) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "LEAP Hand health check failed");
+  }
+}
+
+void OpenArm_v10HW::report_health_status() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "=== Health Status ===");
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Arm healthy: %s, LEAP healthy: %s",
+              health_status_.arm_healthy ? "YES" : "NO",
+              health_status_.leap_healthy ? "YES" : "NO");
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Consecutive read failures: %zu",
+              health_status_.consecutive_read_failures.load());
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Consecutive write failures: %zu",
+              health_status_.consecutive_write_failures.load());
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Last read latency: %.2f ms",
+              health_status_.last_read_latency_ms.load());
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Last write latency: %.2f ms",
+              health_status_.last_write_latency_ms.load());
+}
+
+bool OpenArm_v10HW::is_healthy() const {
+  return health_status_.arm_healthy && health_status_.leap_healthy;
 }
 
 }  // namespace openarm_hardware

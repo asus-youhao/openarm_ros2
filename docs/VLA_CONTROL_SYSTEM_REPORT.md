@@ -1,14 +1,5 @@
 # VLA Control System Analysis and Implementation Report
 
-## Project Overview
-
-**Project:** OpenArm Bimanual Robot with LEAP Hand - VLA Control System  
-**Model:** Isaac GR00T N1.5  
-**Date:** February 2026  
-**Author:** AI Assistant (Cline)
-
----
-
 ## Table of Contents
 
 1. [Original Problem Statement](#1-original-problem-statement)
@@ -345,7 +336,7 @@ Read Loop @ 100Hz:
 │                                                                 │
 │  GR00T FEEDBACK PATH                                            │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │ groot_state_publisher.py @ 50Hz                             ││
+│  │ gr00t_state_publisher.py @ 50Hz                             ││
 │  │ - Subscribes to /joint_states                               ││
 │  │ - Applies additional filtering                              ││
 │  │ - Publishes efficient message format                        ││
@@ -457,16 +448,16 @@ if (has_leap_hand_) {
 [241:497]: right_hand positions (16 × 16 = 256 values)
 ```
 
-### 6.4 New Script: `scripts/groot_state_publisher.py`
+### 6.4 New Script: `scripts/gr00t_state_publisher.py`
 
 **Purpose:** Publish filtered joint states for GR00T at 50Hz
 
 **Key Features:**
 - Subscribes to `/joint_states` at 100Hz
 - Applies low-pass filtering (alpha = 0.3)
-- Publishes to `/groot/joint_states` at 50Hz
+- Publishes to `/gr00t/joint_states` at 50Hz
 - Health monitoring with latency/jitter tracking
-- Publishes to `/groot/state_health` for diagnostics
+- Publishes to `/gr00t/state_health` for diagnostics
 
 **Message Format (32 floats):**
 ```
@@ -527,7 +518,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │   (State Publishing)    │                         │    (Action Chunk Execution)     │
 │                         │                         │                                 │
 │  Rate: 50Hz             │                         │  Rate: Event-driven             │
-│  Topic: /groot/         │                         │  Topic: /action_chunk           │
+│  Topic: /gr00t/         │                         │  Topic: /action_chunk           │
 │         joint_states    │                         │                                 │
 └───────────┬─────────────┘                         └──────────────┬──────────────────┘
             │                                                      │
@@ -743,7 +734,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │     │                                         │                                       │
 │     ▼                                         ▼                                       │
 │  RViz/Debug                           ┌───────────────────────────────────────┐       │
-│                                       │ scripts/groot_state_publisher.py      │       │
+│                                       │ scripts/gr00t_state_publisher.py      │       │
 │                                       │                                       │       │
 │                                       │ Configuration:                        │       │
 │                                       │ - feedback_rate_hz: 50 Hz             │       │
@@ -754,8 +745,8 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │                                       │ - /joint_states (JointState)          │       │
 │                                       │                                       │       │
 │                                       │ Publishers:                           │       │
-│                                       │ - /groot/joint_states (Float64Multi)  │       │
-│                                       │ - /groot/state_health (Float64Multi)  │       │
+│                                       │ - /gr00t/joint_states (Float64Multi)  │       │
+│                                       │ - /gr00t/state_health (Float64Multi)  │       │
 │                                       │                                       │       │
 │                                       │ Processing:                           │       │
 │                                       │ 1. Receive joint_states @ 100Hz       │       │
@@ -782,7 +773,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │                                         └─────────────────────────────────────┘       │
 │                                                       │                               │
 │                                                       ▼                               │
-│                                          /groot/joint_states @ 50 Hz                  │
+│                                          /gr00t/joint_states @ 50 Hz                  │
 │                                                       │                               │
 │                                                       ▼                               │
 │                                          ┌─────────────────────────────────┐           │
@@ -791,7 +782,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │                                          └─────────────────────────────────┘           │
 │                                                                                       │
 │  Health Statistics Published @ 0.2 Hz:                                                │
-│  /groot/state_health (Float64MultiArray):                                             │
+│  /gr00t/state_health (Float64MultiArray):                                             │
 │  [0]: total_messages                                                                  │
 │  [1]: timeouts                                                                        │
 │  [2]: avg_latency_ms                                                                  │
@@ -834,7 +825,7 @@ static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Health threshold
 static constexpr size_t MAX_CONSECUTIVE_FAILURES = 10;  // Health threshold
 ```
 
-**In Python (`groot_state_publisher.py`):**
+**In Python (`gr00t_state_publisher.py`):**
 ```python
 # Line ~40-45
 GROOT_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
@@ -895,13 +886,13 @@ source install/setup.bash
 ros2 launch openarm_bringup openarm.bimanual.launch.py
 
 # Terminal 2: Launch GR00T state publisher
-python3 scripts/groot_state_publisher.py
+python3 scripts/gr00t_state_publisher.py
 
 # Terminal 3: Launch action chunk controller
 python3 scripts/action_chunk_controller.py
 
 # Terminal 4: Run GR00T inference (your VLA model)
-python3 your_groot_inference_script.py
+python3 your_gr00t_inference_script.py
 ```
 
 **Option 2: Using the Launch Script (Recommended)**
@@ -917,7 +908,7 @@ A launch script has been created at `scripts/launch_vla_control.sh`.
 | `openarm_hardware/include/openarm_hardware/v10_simple_hardware.hpp` | Modified | Added configurable rates, health monitoring, LPF, state read thread |
 | `openarm_hardware/src/v10_simple_hardware.cpp` | Modified | Changed LEAP rate to 500Hz, initialized filters |
 | `scripts/action_chunk_controller.py` | New | Synchronized action chunk execution |
-| `scripts/groot_state_publisher.py` | New | 50Hz filtered state publisher |
+| `scripts/gr00t_state_publisher.py` | New | 50Hz filtered state publisher |
 | `scripts/bimanual_gui_controller_action.py` | Modified | Added synchronized methods |
 | `scripts/launch_vla_control.sh` | New | Launch script for entire system |
 | `docs/VLA_CONTROL_SYSTEM_REPORT.md` | New | This report |

@@ -17,7 +17,7 @@ Key Features:
 - Health monitoring and statistics
 
 Usage:
-  python3 groot_state_publisher.py
+  python3 gr00t_state_publisher.py
 """
 
 import rclpy
@@ -38,7 +38,7 @@ import statistics
 
 # ============== CONFIGURABLE RATES ==============
 # These can be modified based on system requirements
-GROOT_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
+GR00T_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
 STATE_BUFFER_SIZE = 10         # Number of states to keep for filtering
 LOW_PASS_ALPHA = 0.3           # Low-pass filter coefficient (0-1)
 
@@ -127,8 +127,8 @@ class GR00TStatePublisher(Node):
     Publishes filtered joint states for GR00T VLA model.
     
     Subscribes to /joint_states and publishes:
-    - /groot/joint_states: Float64MultiArray with all joint positions
-    - /groot/state_health: Health statistics
+    - /gr00t/joint_states: Float64MultiArray with all joint positions
+    - /gr00t/state_health: Health statistics
     """
     
     # Joint names in the expected order for GR00T
@@ -152,10 +152,10 @@ class GR00TStatePublisher(Node):
     ]
     
     def __init__(self):
-        super().__init__('groot_state_publisher')
+        super().__init__('gr00t_state_publisher')
         
         # Declare parameters
-        self.declare_parameter('feedback_rate_hz', GROOT_FEEDBACK_RATE_HZ)
+        self.declare_parameter('feedback_rate_hz', GR00T_FEEDBACK_RATE_HZ)
         self.declare_parameter('low_pass_alpha', LOW_PASS_ALPHA)
         self.declare_parameter('enable_filtering', True)
         self.declare_parameter('health_check_interval_s', 5.0)
@@ -196,16 +196,16 @@ class GR00TStatePublisher(Node):
         )
         
         # Publisher for GR00T feedback
-        self.groot_state_pub = self.create_publisher(
+        self.gr00t_state_pub = self.create_publisher(
             Float64MultiArray,
-            '/groot/joint_states',
+            '/gr00t/joint_states',
             10
         )
         
         # Publisher for health statistics
         self.health_pub = self.create_publisher(
             Float64MultiArray,
-            '/groot/state_health',
+            '/gr00t/state_health',
             10
         )
         
@@ -271,7 +271,7 @@ class GR00TStatePublisher(Node):
         ]
         msg.data.extend(positions)
         
-        self.groot_state_pub.publish(msg)
+        self.gr00t_state_pub.publish(msg)
     
     def _get_ordered_positions(self) -> List[float]:
         """Get joint positions in the expected order for GR00T."""

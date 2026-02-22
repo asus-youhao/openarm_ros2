@@ -145,7 +145,7 @@ fi
 # Launch state publisher
 if [ "$LAUNCH_STATE_PUBLISHER" = true ]; then
     echo -e "${GREEN}[2/3] Launching GR00T state publisher (50Hz)...${NC}"
-    python3 "$SCRIPT_DIR/groot_state_publisher.py" &
+    python3 "$SCRIPT_DIR/gr00t_state_publisher.py" &
     PIDS+=($!)
     echo -e "  State Publisher PID: ${PIDS[-1]}"
     sleep 1
@@ -171,8 +171,8 @@ echo -e "  Action Controller:  $([ "$LAUNCH_ACTION_CONTROLLER" = true ] && echo 
 echo ""
 echo -e "  Topics:"
 echo -e "    /joint_states           - Raw joint states (100Hz)"
-echo -e "    /groot/joint_states     - Filtered states for GR00T (50Hz)"
-echo -e "    /groot/state_health     - Health statistics"
+echo -e "    /gr00t/joint_states     - Filtered states for GR00T (50Hz)"
+echo -e "    /gr00t/state_health     - Health statistics"
 echo -e "    /action_chunk           - Action chunk input (from GR00T)"
 echo ""
 echo -e "${YELLOW}Press Ctrl+C to shutdown all components${NC}"

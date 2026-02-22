@@ -181,7 +181,7 @@ class VLALauncher:
         """Launch the GR00T state publisher."""
         print_colored("[2/3] Launching GR00T state publisher (50Hz)...", Colors.GREEN)
         
-        script_path = self.script_dir / "groot_state_publisher.py"
+        script_path = self.script_dir / "gr00t_state_publisher.py"
         cmd = ["python3", str(script_path)]
         
         proc = self.run_command(cmd, "GR00T State Publisher", background=True)
@@ -217,8 +217,8 @@ class VLALauncher:
         print_colored("""
   Topics:
     /joint_states           - Raw joint states (100Hz)
-    /groot/joint_states     - Filtered states for GR00T (50Hz)
-    /groot/state_health     - Health statistics
+    /gr00t/joint_states     - Filtered states for GR00T (50Hz)
+    /gr00t/state_health     - Health statistics
     /action_chunk           - Action chunk input (from GR00T)
 """, Colors.CYAN)
         
@@ -277,8 +277,8 @@ Examples:
 
 Topics:
   /joint_states           Raw joint states (100Hz)
-  /groot/joint_states     Filtered states for GR00T (50Hz)
-  /groot/state_health     Health statistics
+  /gr00t/joint_states     Filtered states for GR00T (50Hz)
+  /gr00t/state_health     Health statistics
   /action_chunk           Action chunk input (from GR00T)
 """
     )
