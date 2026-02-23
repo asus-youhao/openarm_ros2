@@ -1027,7 +1027,11 @@ void OpenArm_v10HW::leap_control_loop() {
         leap_group_sync_write_->addParam(leap_motor_ids_[i], param_goal_position);
       }
       
-      leap_group_sync_write_->txPacket();
+      // Protect serial write operation with mutex (RS-485 is half-duplex)
+      {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        leap_group_sync_write_->txPacket();
+      }
       
       // State reading is handled by the decoupled state_read_loop() @ 200Hz.
     }
@@ -1095,7 +1099,11 @@ void OpenArm_v10HW::state_read_loop() {
 
     // ---- LEAP HAND STATE READ (RS-485) ----
     if (has_leap_hand_ && leap_connected_) {
-      int dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
+      int dxl_comm_result;
+      {
+        std::lock_guard<std::mutex> lock(serial_mutex_);
+        dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
+      }
       if (dxl_comm_result == COMM_SUCCESS) {
         for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
           uint8_t motor_id = leap_motor_ids_[i];
@@ -1183,6 +1191,11 @@ bool OpenArm_v10HW::is_healthy() const {
 }
 
 }  // namespace openarm_hardware
+
+#include "pluginlib/class_list_macros.hpp"
+
+PLUGINLIB_EXPORT_CLASS(openarm_hardware::OpenArm_v10HW,
+                       hardware_interface::SystemInterface)
 
 #include "pluginlib/class_list_macros.hpp"
 

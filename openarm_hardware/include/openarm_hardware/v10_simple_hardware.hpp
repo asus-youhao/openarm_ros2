@@ -192,6 +192,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::atomic<bool> leap_thread_running_;
   std::mutex leap_command_mutex_;
   std::mutex leap_state_mutex_;
+  std::mutex serial_mutex_;  // Protect RS-485 serial port access (half-duplex)
   
   // LEAP Hand command/state buffers
   std::vector<double> leap_pos_cmd_buffer_;

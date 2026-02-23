@@ -61,6 +61,7 @@ GROOT_STEP_DT = 1.0 / 30.0        # Duration per action step (seconds): 33.3 ms
 TRAJECTORY_START_DELAY_SEC = 0.05  # Lead time added to now before trajectory starts.
                                    # Gives all 3 controllers time to accept the goal
                                    # before t=0 of the trajectory.
+RECEDING_HORIZON_ENABLED = True    # Enable receding horizon control for timing correction
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -295,6 +296,13 @@ class ActionChunkController(Node):
         hand_points  = self._build_trajectory_points(
             chunk.timestamps, chunk.right_hand_positions)
 
+        # ── Receding Horizon Control ──────────────────────────────────────────
+        if RECEDING_HORIZON_ENABLED:
+            # Check if any timestamps have already passed and adjust trajectory
+            adjusted_points = self._apply_receding_horizon_control(
+                chunk.timestamps, left_points, right_points, hand_points)
+            left_points, right_points, hand_points = adjusted_points
+
         # ── Synchronized start time ───────────────────────────────────────────
         # All three trajectory goals share the SAME header.stamp.
         # JointTrajectoryController interprets time_from_start relative to this
@@ -404,6 +412,119 @@ class ActionChunkController(Node):
             goal_msg.trajectory.header.stamp = start_time.to_msg()
 
         return action_client.send_goal_async(goal_msg)
+
+    def _apply_receding_horizon_control(self, timestamps: List[float], 
+                                      left_points: List[JointTrajectoryPoint],
+                                      right_points: List[JointTrajectoryPoint],
+                                      hand_points: List[JointTrajectoryPoint]) -> tuple:
+        """
+        Apply receding horizon control to prevent jumps when timestamps have passed.
+        
+        This method checks if any trajectory points correspond to times that have
+        already passed and adjusts the trajectory accordingly:
+        1. If the first point is in the past, interpolate from current state to the first valid point
+        2. If some points are in the past, start from the first future point
+        3. If all points are in the past, use current state as target
+        """
+        now = self.get_clock().now()
+        start_time = now + RclpyDuration(seconds=TRAJECTORY_START_DELAY_SEC)
+        
+        # Convert start_time to seconds for comparison
+        start_time_sec = start_time.seconds_nanoseconds()[0] + start_time.seconds_nanoseconds()[1] * 1e-9
+        
+        # Find the first point that hasn't passed yet
+        current_time_sec = now.seconds_nanoseconds()[0] + now.seconds_nanoseconds()[1] * 1e-9
+        first_future_idx = 0
+        
+        for i, ts in enumerate(timestamps):
+            if current_time_sec + ts > start_time_sec:
+                first_future_idx = i
+                break
+        
+        # If all points are in the past, use current state as target
+        if first_future_idx >= len(timestamps) - 1:
+            self.get_logger().warn("All trajectory points are in the past, using current state as target")
+            return self._create_single_point_trajectory(left_points, right_points, hand_points)
+        
+        # If first point is in the past, interpolate from current state
+        if first_future_idx > 0:
+            self.get_logger().info(f"Adjusting trajectory: skipping {first_future_idx} past points")
+            
+            # Get current joint positions for interpolation
+            current_left = self._get_current_joint_positions(self.LEFT_ARM_JOINTS)
+            current_right = self._get_current_joint_positions(self.RIGHT_ARM_JOINTS)
+            current_hand = self._get_current_joint_positions(self.RIGHT_HAND_JOINTS)
+            
+            # Get the first future point
+            target_left = left_points[first_future_idx].positions
+            target_right = right_points[first_future_idx].positions
+            target_hand = hand_points[first_future_idx].positions
+            
+            # Create interpolated first point
+            interp_left = self._interpolate_points(current_left, target_left, 0.5)
+            interp_right = self._interpolate_points(current_right, target_right, 0.5)
+            interp_hand = self._interpolate_points(current_hand, target_hand, 0.5)
+            
+            # Build new trajectories starting from interpolated point
+            new_left_points = [self._create_trajectory_point(interp_left, 0.0)]
+            new_right_points = [self._create_trajectory_point(interp_right, 0.0)]
+            new_hand_points = [self._create_trajectory_point(interp_hand, 0.0)]
+            
+            # Add remaining points with adjusted timestamps
+            for i in range(first_future_idx, len(timestamps)):
+                # Adjust timestamp relative to new start (0.0)
+                adjusted_ts = timestamps[i] - timestamps[first_future_idx]
+                
+                new_left_points.append(self._create_trajectory_point(
+                    left_points[i].positions, adjusted_ts))
+                new_right_points.append(self._create_trajectory_point(
+                    right_points[i].positions, adjusted_ts))
+                new_hand_points.append(self._create_trajectory_point(
+                    hand_points[i].positions, adjusted_ts))
+            
+            return new_left_points, new_right_points, new_hand_points
+        
+        # No adjustment needed, return original trajectories
+        return left_points, right_points, hand_points
+
+    def _get_current_joint_positions(self, joint_names: List[str]) -> List[float]:
+        """Get current joint positions from cached joint states."""
+        positions = []
+        for name in joint_names:
+            if name in self.current_joint_states:
+                positions.append(self.current_joint_states[name])
+            else:
+                positions.append(0.0)  # Default if not available
+        return positions
+
+    def _interpolate_points(self, start: List[float], end: List[float], alpha: float) -> List[float]:
+        """Linearly interpolate between two joint position vectors."""
+        return [start[i] + alpha * (end[i] - start[i]) for i in range(len(start))]
+
+    def _create_trajectory_point(self, positions: List[float], time_from_start: float) -> JointTrajectoryPoint:
+        """Create a trajectory point with given positions and timestamp."""
+        point = JointTrajectoryPoint()
+        point.positions = [float(p) for p in positions]
+        
+        sec = int(time_from_start)
+        nanosec = int(round((time_from_start - sec) * 1e9))
+        point.time_from_start = Duration(sec=sec, nanosec=nanosec)
+        
+        return point
+
+    def _create_single_point_trajectory(self, left_points: List[JointTrajectoryPoint],
+                                      right_points: List[JointTrajectoryPoint],
+                                      hand_points: List[JointTrajectoryPoint]) -> tuple:
+        """Create single-point trajectories using current positions."""
+        current_left = self._get_current_joint_positions(self.LEFT_ARM_JOINTS)
+        current_right = self._get_current_joint_positions(self.RIGHT_ARM_JOINTS)
+        current_hand = self._get_current_joint_positions(self.RIGHT_HAND_JOINTS)
+        
+        single_left = [self._create_trajectory_point(current_left, 0.0)]
+        single_right = [self._create_trajectory_point(current_right, 0.0)]
+        single_hand = [self._create_trajectory_point(current_hand, 0.0)]
+        
+        return single_left, single_right, single_hand
 
     # ──────────────────────────────────────────────────────────────────────────
     # Testing / replay utilities

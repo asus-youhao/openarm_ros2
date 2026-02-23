@@ -4,3 +4,8 @@
 __pycache__/
 scripts/record_data/*.json
 scripts/analye_joint/*
+
+# Ignore build artifacts
+build/
+install/
+log/

@@ -438,6 +438,7 @@ if (has_leap_hand_) {
 - Builds multi-point trajectories with timestamps
 - Sends synchronized goals to all controllers simultaneously
 - Uses `MultiThreadedExecutor` for concurrent action handling
+- **Receding Horizon Control:** Handles inference latency by interpolating trajectory start to current state
 
 **Message Format (497 floats):**
 ```
