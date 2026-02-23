@@ -14,7 +14,7 @@ Examples:
     python3 launch_vla_control.py --help                     # Show help message
 
 Requirements:
-    - ROS2 Humble/Iron installed
+    - ROS2 Humble installed
     - Workspace built at ~/openarm_ros2
     - Hardware connected (CAN interface, Serial port)
 """
@@ -62,6 +62,7 @@ class VLALauncher:
         self.script_dir = Path(__file__).parent.resolve()
         self.workspace_dir = self.script_dir.parent
         self.processes: List[subprocess.Popen] = []
+        self.env: dict = os.environ.copy()  # Will be updated after sourcing workspace
         
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -102,7 +103,7 @@ class VLALauncher:
         if background:
             proc = subprocess.Popen(
                 cmd,
-                env=env,  # Pass sourced ROS2 workspace environment
+                env=self.env,  # Pass sourced ROS2 workspace environment
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid if os.name != 'nt' else None
@@ -111,7 +112,7 @@ class VLALauncher:
             print_colored(f"    PID: {proc.pid}", Colors.GREEN)
             return proc
         else:
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            result = subprocess.run(cmd, capture_output=True, text=True, env=self.env)
             if result.returncode != 0:
                 print_colored(f"    Error: {result.stderr}", Colors.RED)
                 return None
@@ -139,8 +140,8 @@ class VLALauncher:
         
         print_colored("Build complete!", Colors.GREEN)
     
-    def source_workspace(self) -> dict:
-        """Get environment variables for sourcing the workspace."""
+    def source_workspace(self):
+        """Source the workspace and update self.env."""
         install_dir = self.workspace_dir / "install" / "setup.bash"
         
         if not install_dir.exists():
@@ -161,9 +162,9 @@ class VLALauncher:
                 key, value = line.split('=', 1)
                 env[key] = value
         
-        return env
+        self.env = env
     
-    def launch_hardware(self, env: dict):
+    def launch_hardware(self):
         """Launch the robot hardware."""
         print_colored("[1/3] Launching robot hardware...", Colors.GREEN)
         
@@ -171,32 +172,30 @@ class VLALauncher:
             "ros2", "launch", "openarm_bringup", "openarm.bimanual.launch.py"
         ]
         
-        proc = self.run_command(cmd, "Robot Hardware", background=True)
-        if proc:
-            proc.env = env  # type: ignore
+        self.run_command(cmd, "Robot Hardware", background=True)
         
         print_colored("  Waiting for hardware to initialize...", Colors.YELLOW)
         time.sleep(5)
     
-    def launch_state_publisher(self, env: dict):
+    def launch_state_publisher(self):
         """Launch the GR00T state publisher."""
         print_colored("[2/3] Launching GR00T state publisher (50Hz)...", Colors.GREEN)
         
         script_path = self.script_dir / "gr00t_state_publisher.py"
         cmd = ["python3", str(script_path)]
         
-        proc = self.run_command(cmd, "GR00T State Publisher", background=True)
+        self.run_command(cmd, "GR00T State Publisher", background=True)
         
         time.sleep(1)
     
-    def launch_action_controller(self, env: dict):
+    def launch_action_controller(self):
         """Launch the action chunk controller."""
         print_colored("[3/3] Launching action chunk controller...", Colors.GREEN)
         
         script_path = self.script_dir / "action_chunk_controller.py"
         cmd = ["python3", str(script_path)]
         
-        proc = self.run_command(cmd, "Action Chunk Controller", background=True)
+        self.run_command(cmd, "Action Chunk Controller", background=True)
         
         time.sleep(1)
     
@@ -234,18 +233,18 @@ class VLALauncher:
         if self.args.build:
             self.build_workspace()
         
-        # Get sourced environment
-        env = self.source_workspace()
+        # Source workspace environment
+        self.source_workspace()
         
         # Launch components
         if self.args.hardware:
-            self.launch_hardware(env)
+            self.launch_hardware()
         
         if self.args.state:
-            self.launch_state_publisher(env)
+            self.launch_state_publisher()
         
         if self.args.action:
-            self.launch_action_controller(env)
+            self.launch_action_controller()
         
         # Print status
         self.print_status()

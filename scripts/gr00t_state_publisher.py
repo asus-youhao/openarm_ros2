@@ -6,13 +6,15 @@ This node collects joint states from the hardware interface and publishes them
 at a configurable rate (default 50Hz) suitable for GR00T N1.5 VLA model input.
 
 The node subscribes to /joint_states and provides:
-1. Filtered/smoothed joint states for VLA feedback
+1. Reordered joint states for GR00T feedback
 2. Efficient message format for network transmission
 3. Health monitoring and latency tracking
 
+Note: Low-pass filtering is handled in the C++ state_read_loop() at 200Hz.
+      This node passes through positions without additional filtering.
+
 Key Features:
 - Configurable publishing rate (default 50Hz)
-- Low-pass filtering for smoother state feedback
 - Efficient Float64MultiArray format for GR00T
 - Health monitoring and statistics
 
@@ -30,7 +32,7 @@ from builtin_interfaces.msg import Time
 
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 from dataclasses import dataclass, field
 from collections import deque
 import statistics
@@ -39,8 +41,7 @@ import statistics
 # ============== CONFIGURABLE RATES ==============
 # These can be modified based on system requirements
 GR00T_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
-STATE_BUFFER_SIZE = 10         # Number of states to keep for filtering
-LOW_PASS_ALPHA = 0.7           # Low-pass filter coefficient (0-1, higher=faster response/less smoothing)
+STATE_BUFFER_SIZE = 10         # Number of states to keep for health monitoring
 
 
 @dataclass
@@ -52,31 +53,6 @@ class JointStateData:
     timestamp: float = 0.0
 
 
-class LowPassFilter:
-    """Simple exponential moving average filter."""
-    
-    def __init__(self, alpha: float = 0.3):
-        self.alpha = alpha
-        self.filtered_values: Optional[List[float]] = None
-        self.initialized = False
-    
-    def update(self, new_values: List[float]) -> List[float]:
-        """Update filter with new values and return filtered result."""
-        if not self.initialized:
-            self.filtered_values = new_values.copy()
-            self.initialized = True
-        else:
-            for i in range(len(new_values)):
-                self.filtered_values[i] = (
-                    self.alpha * new_values[i] + 
-                    (1 - self.alpha) * self.filtered_values[i]
-                )
-        return self.filtered_values.copy()
-    
-    def reset(self):
-        """Reset filter state."""
-        self.filtered_values = None
-        self.initialized = False
 
 
 class HealthMonitor:
@@ -124,7 +100,7 @@ class HealthMonitor:
 
 class GR00TStatePublisher(Node):
     """
-    Publishes filtered joint states for GR00T VLA model.
+    Publishes joint states for GR00T VLA model.
     
     Subscribes to /joint_states and publishes:
     - /gr00t/joint_states: Float64MultiArray with all joint positions
@@ -156,14 +132,10 @@ class GR00TStatePublisher(Node):
         
         # Declare parameters
         self.declare_parameter('feedback_rate_hz', GR00T_FEEDBACK_RATE_HZ)
-        self.declare_parameter('low_pass_alpha', LOW_PASS_ALPHA)
-        self.declare_parameter('enable_filtering', True)
         self.declare_parameter('health_check_interval_s', 5.0)
         
         # Get parameters
         self.feedback_rate = self.get_parameter('feedback_rate_hz').value
-        self.low_pass_alpha = self.get_parameter('low_pass_alpha').value
-        self.enable_filtering = self.get_parameter('enable_filtering').value
         self.health_check_interval = self.get_parameter('health_check_interval_s').value
         
         # Calculate total joints: 7 (left arm) + 7 (right arm) + 16 (right hand) = 30
@@ -174,8 +146,6 @@ class GR00TStatePublisher(Node):
         self.state_lock = threading.Lock()
         self.last_update_time: float = 0.0
         
-        # Low-pass filter
-        self.position_filter = LowPassFilter(self.low_pass_alpha)
         
         # Health monitor
         self.health_monitor = HealthMonitor()
@@ -225,7 +195,7 @@ class GR00TStatePublisher(Node):
             f'GR00T State Publisher initialized:'
             f'\n  Feedback rate: {self.feedback_rate} Hz'
             f'\n  Total joints: {self.total_joints}'
-            f'\n  Filtering: {"enabled" if self.enable_filtering else "disabled"}'
+            f'\n  Filtering: handled by C++ state_read_loop (LPF cutoff=30Hz @200Hz)'
         )
     
     def joint_state_callback(self, msg: JointState):
@@ -256,9 +226,6 @@ class GR00TStatePublisher(Node):
             self.get_logger().warn('No joint states received yet')
             return
         
-        # Apply low-pass filter if enabled
-        if self.enable_filtering:
-            positions = self.position_filter.update(positions)
         
         # Create and publish message
         msg = Float64MultiArray()

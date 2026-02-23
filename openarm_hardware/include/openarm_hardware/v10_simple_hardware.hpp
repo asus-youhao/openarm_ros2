@@ -102,7 +102,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // 200Hz decoupled state read thread
 
   // Low-pass filter cutoff frequency for state smoothing (Hz)
-  static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // Smooth states for VLA feedback
+  static constexpr double STATE_FILTER_CUTOFF_HZ = 50.0;  // Smooth states for VLA feedback
   
   // Health monitoring thresholds
   static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Max allowed communication latency

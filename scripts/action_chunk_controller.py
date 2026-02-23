@@ -57,8 +57,8 @@ from dataclasses import dataclass
 import time
 
 # ── GR00T N1.5 timing constants ───────────────────────────────────────────────
-GROOT_STEP_DT = 1.0 / 30.0        # Duration per action step (seconds): 33.3 ms
-TRAJECTORY_START_DELAY_SEC = 0.05  # Lead time added to now before trajectory starts.
+GROOT_STEP_DT = 1.0 / 30.0         # Duration per action step (seconds): 33.3 ms
+TRAJECTORY_START_DELAY_SEC = 0.01  # 10ms lead time for controller synchronization.
                                    # Gives all 3 controllers time to accept the goal
                                    # before t=0 of the trajectory.
 RECEDING_HORIZON_ENABLED = True    # Enable receding horizon control for timing correction
@@ -297,24 +297,24 @@ class ActionChunkController(Node):
         at exactly the same ROS clock instant (= now + TRAJECTORY_START_DELAY_SEC).
         Timestamps inside the trajectory are relative to that stamp.
         """
+        start_process_time = time.time()
+        self._increment_chunk_count()
+
         self.get_logger().info(
             f'Chunk {chunk.chunk_id}: executing {len(chunk.timestamps)} steps, '
             f'total duration={chunk.timestamps[-1]:.3f}s'
         )
 
         # Build trajectory point lists
-        left_points  = self._build_trajectory_points(
-            chunk.timestamps, chunk.left_arm_positions)
-        right_points = self._build_trajectory_points(
-            chunk.timestamps, chunk.right_arm_positions)
-        hand_points  = self._build_trajectory_points(
-            chunk.timestamps, chunk.right_hand_positions)
+        left_points  = self._build_trajectory_points(chunk.timestamps, chunk.left_arm_positions)
+        right_points = self._build_trajectory_points(chunk.timestamps, chunk.right_arm_positions)
+        hand_points  = self._build_trajectory_points(chunk.timestamps, chunk.right_hand_positions)
 
         # ── Receding Horizon Control ──────────────────────────────────────────
         if RECEDING_HORIZON_ENABLED:
             # Check if any timestamps have already passed and adjust trajectory
             adjusted_points = self._apply_receding_horizon_control(
-                chunk.timestamps, left_points, right_points, hand_points)
+                chunk.timestamps, left_points, right_points, hand_points, chunk.received_time)
             left_points, right_points, hand_points = adjusted_points
 
         # ── Synchronized start time ───────────────────────────────────────────
@@ -325,38 +325,42 @@ class ActionChunkController(Node):
         start_time = now + RclpyDuration(seconds=TRAJECTORY_START_DELAY_SEC)
 
         # Send all three goals asynchronously (as close together as possible)
+        send_time = time.time()
         futures_with_labels = [
-            ('left_arm',   self._send_trajectory_async(
-                self.left_arm_client,  self.LEFT_ARM_JOINTS,  left_points,  start_time)),
-            ('right_arm',  self._send_trajectory_async(
-                self.right_arm_client, self.RIGHT_ARM_JOINTS, right_points, start_time)),
-            ('right_hand', self._send_trajectory_async(
-                self.right_hand_client, self.RIGHT_HAND_JOINTS, hand_points, start_time)),
+            ('left_arm',   self._send_trajectory_async(self.left_arm_client,  self.LEFT_ARM_JOINTS,  left_points,  start_time)),
+            ('right_arm',  self._send_trajectory_async(self.right_arm_client, self.RIGHT_ARM_JOINTS, right_points, start_time)),
+            ('right_hand', self._send_trajectory_async(self.right_hand_client, self.RIGHT_HAND_JOINTS, hand_points, start_time)),
         ]
 
         # Register callbacks to collect accepted goal handles for future preemption
         for label, future in futures_with_labels:
-            future.add_done_callback(
-                lambda f, lbl=label: self._goal_accepted_callback(f, lbl, chunk.chunk_id)
-            )
+            future.add_done_callback(lambda f, lbl=label: self._goal_accepted_callback(f, lbl, chunk.chunk_id, send_time))
+
+        self._record_chunk_processing_time(time.time() - start_process_time)
 
         self.get_logger().info(
             f'Chunk {chunk.chunk_id}: trajectories sent to all 3 controllers '
             f'(start_delay={TRAJECTORY_START_DELAY_SEC*1000:.0f} ms)'
         )
 
-    def _goal_accepted_callback(self, future, label: str, chunk_id: int):
+    def _goal_accepted_callback(self, future, label: str, chunk_id: int, send_time: float = 0.0):
         """Store accepted goal handle so it can be cancelled on preemption."""
+        if send_time > 0.0:
+            self._record_trajectory_acceptance_time(time.time() - send_time)
+
         try:
             handle = future.result()
             if handle.accepted:
+                self._increment_acceptance_count()
                 with self.active_handles_lock:
                     self.active_goal_handles.append(handle)
                 self.get_logger().debug(f'Chunk {chunk_id}: goal accepted by {label}')
             else:
+                self._increment_rejection_count()
                 self.get_logger().warn(
                     f'Chunk {chunk_id}: goal REJECTED by {label}')
         except Exception as e:
+            self._increment_rejection_count()
             self.get_logger().error(
                 f'Chunk {chunk_id}: goal send error ({label}): {e}')
 
@@ -430,7 +434,8 @@ class ActionChunkController(Node):
     def _apply_receding_horizon_control(self, timestamps: List[float], 
                                       left_points: List[JointTrajectoryPoint],
                                       right_points: List[JointTrajectoryPoint],
-                                      hand_points: List[JointTrajectoryPoint]) -> tuple:
+                                      hand_points: List[JointTrajectoryPoint],
+                                      received_time: float) -> tuple:
         """
         Apply receding horizon control to prevent jumps when timestamps have passed.
         
@@ -447,18 +452,19 @@ class ActionChunkController(Node):
         start_time_sec = start_time.seconds_nanoseconds()[0] + start_time.seconds_nanoseconds()[1] * 1e-9
         
         # Find the first point that hasn't passed yet
-        current_time_sec = now.seconds_nanoseconds()[0] + now.seconds_nanoseconds()[1] * 1e-9
         first_future_idx = 0
         
         for i, ts in enumerate(timestamps):
-            if current_time_sec + ts > start_time_sec:
+            if received_time + ts > start_time_sec:
                 first_future_idx = i
                 break
         
         # If all points are in the past, use current state as target
         if first_future_idx >= len(timestamps) - 1:
             self.get_logger().warn("All trajectory points are in the past, using current state as target")
-            return self._create_single_point_trajectory(left_points, right_points, hand_points)
+            return self._create_single_point_trajectory()
+        
+        time_offset = start_time_sec - received_time
         
         # If first point is in the past, interpolate from current state
         if first_future_idx > 0:
@@ -474,10 +480,16 @@ class ActionChunkController(Node):
             target_right = right_points[first_future_idx].positions
             target_hand = hand_points[first_future_idx].positions
             
+            # Calculate alpha based on progress from previous point to target point
+            prev_ts = timestamps[first_future_idx - 1]
+            curr_ts = timestamps[first_future_idx]
+            alpha = (time_offset - prev_ts) / (curr_ts - prev_ts) if curr_ts > prev_ts else 1.0
+            alpha = max(0.0, min(1.0, alpha))
+            
             # Create interpolated first point
-            interp_left = self._interpolate_points(current_left, target_left, 0.5)
-            interp_right = self._interpolate_points(current_right, target_right, 0.5)
-            interp_hand = self._interpolate_points(current_hand, target_hand, 0.5)
+            interp_left = self._interpolate_points(current_left, target_left, alpha)
+            interp_right = self._interpolate_points(current_right, target_right, alpha)
+            interp_hand = self._interpolate_points(current_hand, target_hand, alpha)
             
             # Build new trajectories starting from interpolated point
             new_left_points = [self._create_trajectory_point(interp_left, 0.0)]
@@ -486,15 +498,14 @@ class ActionChunkController(Node):
             
             # Add remaining points with adjusted timestamps
             for i in range(first_future_idx, len(timestamps)):
-                # Adjust timestamp relative to new start (0.0)
-                adjusted_ts = timestamps[i] - timestamps[first_future_idx]
+                # Adjust timestamp relative to time_offset
+                adjusted_ts = timestamps[i] - time_offset
+                if adjusted_ts <= 0.0:
+                    adjusted_ts = 0.001
                 
-                new_left_points.append(self._create_trajectory_point(
-                    left_points[i].positions, adjusted_ts))
-                new_right_points.append(self._create_trajectory_point(
-                    right_points[i].positions, adjusted_ts))
-                new_hand_points.append(self._create_trajectory_point(
-                    hand_points[i].positions, adjusted_ts))
+                new_left_points.append(self._create_trajectory_point(left_points[i].positions, adjusted_ts))
+                new_right_points.append(self._create_trajectory_point(right_points[i].positions, adjusted_ts))
+                new_hand_points.append(self._create_trajectory_point(hand_points[i].positions, adjusted_ts))
             
             return new_left_points, new_right_points, new_hand_points
         
@@ -526,9 +537,7 @@ class ActionChunkController(Node):
         
         return point
 
-    def _create_single_point_trajectory(self, left_points: List[JointTrajectoryPoint],
-                                      right_points: List[JointTrajectoryPoint],
-                                      hand_points: List[JointTrajectoryPoint]) -> tuple:
+    def _create_single_point_trajectory(self) -> tuple:
         """Create single-point trajectories using current positions."""
         current_left = self._get_current_joint_positions(self.LEFT_ARM_JOINTS)
         current_right = self._get_current_joint_positions(self.RIGHT_ARM_JOINTS)

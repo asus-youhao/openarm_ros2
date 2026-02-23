@@ -88,7 +88,7 @@ During can-sorting task execution, the robotic hand exhibited non-smooth motion:
 │  │   - Reads AND writes in same loop                                    │   │
 │  │   - CAN communication to 7 arm motors                                │   │
 │  │   - Total loop time: ~1ms command + ~0.65ms read = 1.65ms            │   │
-│  │   - Margin: 2ms - 1.65ms = 0.35ms (17.5%) - TIGHT!                   │   │
+│  │   - Margin: 2ms - 1.65ms = 0.49ms (17.5%) - TIGHT!                   │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
@@ -276,11 +276,11 @@ Write Loop @ 500Hz:
 - Margin: 2ms - 0.85ms = 1.15ms (57.5%)
 - Conclusion: FEASIBLE with good margin
 
-Read Loop @ 100Hz:
-- Period: 10ms
-- Operation: Read only (1.2ms)
-- Margin: 10ms - 1.2ms = 8.8ms (88%)
-- Conclusion: VERY COMFORTABLE margin
+Read Loop @ 200Hz:
+- Period: 5ms
+- Operation: Read only (1.0ms)
+- Margin: 5ms - 1.0ms = 4.0ms (80%)
+- Conclusion: COMFORTABLE margin
 ```
 
 ### 4.5 Communication Timing Summary
@@ -288,11 +288,11 @@ Read Loop @ 100Hz:
 | Component | Rate | Direction | Estimated Time | Margin |
 |-----------|------|-----------|----------------|--------|
 | Arm Write | 500Hz | CAN-FD TX | ~0.3ms | 85% |
-| Arm Read | 100Hz | CAN-FD RX | ~0.4ms | 96% |
+| Arm Read | 200Hz | CAN-FD RX | ~0.4ms | 84% |
 | Hand Write | 500Hz | Serial TX | ~0.25ms | 87% |
-| Hand Read | 100Hz | Serial RX | ~0.4ms | 96% |
+| Hand Read | 200Hz | Serial RX | ~0.4ms | 84% |
 | **Total Write** | 500Hz | - | **~0.55ms** | **72%** |
-| **Total Read** | 100Hz | - | **~0.8ms** | **92%** |
+| **Total Read** | 200Hz | - | **~0.8ms** | **84%** |
 | **GR00T Feedback** | 50Hz | ROS2 | ~5-10ms | - |
 
 ---
@@ -328,7 +328,7 @@ Read Loop @ 100Hz:
 │                                                                 │
 │  READ PATH (State Feedback)                                     │
 │  ┌─────────────────────────────────────────────────────────────┐│
-│  │ state_read_loop() @ 100Hz                                   ││
+│  │ state_read_loop() @ 200Hz                                   ││
 │  │ - Read motor states from CAN and Serial                     ││
 │  │ - Apply low-pass filtering                                  ││
 │  │ - Update shared state buffers                               ││
@@ -338,7 +338,7 @@ Read Loop @ 100Hz:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │ gr00t_state_publisher.py @ 50Hz                             ││
 │  │ - Subscribes to /joint_states                               ││
-│  │ - Applies additional filtering                              ││
+│  │ - Reorders joints for GR00T format (passthrough, no LPF)   ││
 │  │ - Publishes efficient message format                        ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                                                                 │
@@ -350,7 +350,7 @@ Read Loop @ 100Hz:
 | Rate | Purpose | Rationale |
 |------|---------|-----------|
 | 500Hz | Write | Smooth motor control interpolation, standard for high-performance robots |
-| 100Hz | Read | Sufficient for state feedback, reduces CAN bus contention |
+| 200Hz | Read | Fast state feedback with LPF; reduces CAN bus contention via decoupled thread |
 | 50Hz | GR00T | Matches inference time (40-80ms), slightly faster for responsiveness |
 
 ---
@@ -363,11 +363,11 @@ Read Loop @ 100Hz:
 ```cpp
 // ========== CONFIGURABLE CONTROL RATES ==========
 static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // Motor command frequency
-static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // State reading frequency
+static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // Decoupled state read thread frequency
 static constexpr double GROOT_FEEDBACK_RATE_HZ = 50.0;  // VLA feedback frequency
 
 // Low-pass filter cutoff frequency for state smoothing
-static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;
+static constexpr double STATE_FILTER_CUTOFF_HZ = 50.0;
 
 // Health monitoring thresholds
 static constexpr double MAX_COMM_LATENCY_MS = 5.0;
@@ -405,7 +405,7 @@ struct LowPassFilter {
 ```cpp
 std::thread state_read_thread_;
 std::atomic<bool> state_read_thread_running_;
-void state_read_loop();  // @ 100Hz
+void state_read_loop();  // @ 200Hz
 ```
 
 ### 6.2 Hardware Interface Source (`v10_simple_hardware.cpp`)
@@ -438,7 +438,8 @@ if (has_leap_hand_) {
 - Builds multi-point trajectories with timestamps
 - Sends synchronized goals to all controllers simultaneously
 - Uses `MultiThreadedExecutor` for concurrent action handling
-- **Receding Horizon Control:** Handles inference latency by interpolating trajectory start to current state
+- **Receding Horizon Control:** Implements latency-aware logic by discarding stale timestamps relative to the inference `received_time` and dynamically shifting trajectory execution times via interpolation.
+- **Performance Monitoring:** Tracks processing and acceptance latencies to continually assess control system throughput.
 
 **Message Format (497 floats):**
 ```
@@ -451,11 +452,11 @@ if (has_leap_hand_) {
 
 ### 6.4 New Script: `scripts/gr00t_state_publisher.py`
 
-**Purpose:** Publish filtered joint states for GR00T at 50Hz
+**Purpose:** Publish reordered joint states for GR00T at 50Hz
 
 **Key Features:**
 - Subscribes to `/joint_states` at 100Hz
-- Applies low-pass filtering (alpha = 0.3)
+- Reorders joints into GR00T format (no additional filtering — LPF handled in C++)
 - Publishes to `/gr00t/joint_states` at 50Hz
 - Health monitoring with latency/jitter tracking
 - Publishes to `/gr00t/state_health` for diagnostics
@@ -467,30 +468,6 @@ if (has_leap_hand_) {
 [2:9]: left_arm positions (7 values)
 [9:16]: right_arm positions (7 values)
 [16:32]: right_hand positions (16 values)
-```
-
-### 6.5 Updated Script: `scripts/bimanual_gui_controller_action.py`
-
-**Added Synchronized Methods:**
-```python
-def publish_synchronized_positions(self, left_positions, right_positions, 
-                                    hand_positions, time_from_start_sec=0.8):
-    """
-    Send synchronized positions to all controllers simultaneously.
-    All controllers receive commands with the same time_from_start.
-    """
-    # Build goals with same duration for all controllers
-    # Send all goals simultaneously
-```
-
-```python
-def publish_multi_point_trajectory(self, controller, trajectory_points, timestamps):
-    """
-    Send multi-point trajectory with proper timestamps.
-    Useful for executing action chunks from VLA models.
-    """
-    # Build trajectory points with timestamps
-    # Send as single FollowJointTrajectory goal
 ```
 
 ---
@@ -584,7 +561,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │              DECOUPLED CONTROL LOOPS (FINAL ARCHITECTURE)                       │ │
 │  │                                                                                 │ │
 │  │  ╔═══════════════════════════════════════════════════════════════════════════╗ │ │
-│  │  ║ arm_control_loop() @ 500Hz (READ + WRITE combined)                          ║ │ │
+│  │  ║ arm_control_loop() @ 500Hz (WRITE ONLY)                                     ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Period: 2ms (2000us)                                                      ║ │ │
 │  │  ║ Thread: arm_control_thread_                                               ║ │ │
@@ -604,7 +581,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │  ╔═══════════════════════════════════════════════════════════════════════════╗ │ │
 │  │  ║ leap_control_loop() @ 500Hz (WRITE ONLY)                                  ║ │ │
 │  │  ║                                                                           ║ │ │
-│  │  ║ Period: 2ms (2000us) - SYNCHRONIZED with arm via sync_enabled_            ║ │ │
+│  │  ║ Period: 2ms (2000us) - Write-only, serial_mutex_ protects RS-485          ║ │ │
 │  │  ║ Thread: leap_control_thread_                                              ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Each cycle:                                                               ║ │ │
@@ -618,9 +595,9 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │  ╚═══════════════════════════════════════════════════════════════════════════╝ │ │
 │  │                                                                                 │ │
 │  │  ╔═══════════════════════════════════════════════════════════════════════════╗ │ │
-│  │  ║ state_read_loop() @ 100Hz (READ ONLY)                                     ║ │ │
+│  │  ║ state_read_loop() @ 200Hz (READ ONLY)                                     ║ │ │
 │  │  ║                                                                           ║ │ │
-│  │  ║ Period: 10ms (10000us)                                                    ║ │ │
+│  │  ║ Period: 5ms (5000us)                                                      ║ │ │
 │  │  ║ Thread: state_read_thread_                                                ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Each cycle:                                                               ║ │ │
@@ -631,11 +608,11 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │  ║ 5. Lock arm_state_mutex_, update buffers (0.01ms)                         ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Total execution: ~1.0ms                                                   ║ │ │
-│  │  ║ Margin: 10ms - 1.0ms = 9.0ms (90%)                                        ║ │ │
+│  │  ║ Margin: 5ms - 1.0ms = 4.0ms (80%)                                        ║ │ │
 │  │  ╚═══════════════════════════════════════════════════════════════════════════╝ │ │
 │  │                                                                                 │ │
 │  │  ╔═══════════════════════════════════════════════════════════════════════════╗ │ │
-│  │  ║ HEALTH MONITORING                                                         ║ │ │
+│  │  ║ HEALTH MONITORING (health_monitor_thread @ 1Hz)                           ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Tracked metrics:                                                          ║ │ │
 │  │  ║ - consecutive_read_failures: Alert if > 10                                ║ │ │
@@ -665,14 +642,15 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │ - arm_state_mutex_ protects arm state buffers                                │    │
 │  │ - leap_command_mutex_ protects leap command buffers                          │    │
 │  │ - leap_state_mutex_ protects leap state buffers                              │    │
+│  │ - serial_mutex_ protects RS-485 half-duplex access (read vs write)           │    │
 │  └─────────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                      │
 │  Low-Pass Filters:                                                                   │
 │  ┌─────────────────────────────────────────────────────────────────────────────┐    │
 │  │ arm_state_filter_:                                                           │    │
-│  │ - Cutoff frequency: 30 Hz                                                    │    │
-│  │ - Sample rate: 100 Hz                                                        │    │
-│  │ - Alpha: dt / (RC + dt) ≈ 0.35                                               │    │
+│  │ - Cutoff frequency: 50 Hz                                                    │    │
+│  │ - Sample rate: 200 Hz                                                        │    │
+│  │ - Alpha: dt/(RC+dt) ≈ 0.61                                               │    │
 │  │ - Purpose: Smooth state feedback for better control                          │    │
 │  │                                                                              │    │
 │  │ leap_state_filter_:                                                          │    │
@@ -690,7 +668,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │ - 1 gripper (DM4310)                                                           │ │
 │  │ - Communication: CAN-FD @ 8 Mbps                                               │ │
 │  │ - Command rate: 500 Hz                                                         │ │
-│  │ - State rate: 100 Hz                                                           │ │
+│  │ - State rate: 200 Hz                                                           │ │
 │  └────────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                       │
 │  ┌────────────────────────────────────────────────────────────────────────────────┐ │
@@ -699,7 +677,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │ - 1 gripper (DM4310)                                                           │ │
 │  │ - Communication: CAN-FD @ 8 Mbps                                               │ │
 │  │ - Command rate: 500 Hz                                                         │ │
-│  │ - State rate: 100 Hz                                                           │ │
+│  │ - State rate: 200 Hz                                                           │ │
 │  └────────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                       │
 │  ┌────────────────────────────────────────────────────────────────────────────────┐ │
@@ -707,7 +685,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │ - 16 Dynamixel XH motors                                                       │ │
 │  │ - Communication: RS-485 Serial @ 4 Mbps                                        │ │
 │  │ - Command rate: 500 Hz (CHANGED from 100 Hz)                                   │ │
-│  │ - State rate: 100 Hz                                                           │ │
+│  │ - State rate: 200 Hz                                                           │ │
 │  │                                                                                │ │
 │  │ Joint mapping:                                                                 │ │
 │  │ - Index: MCP_side, MCP_forward, PIP, DIP (4 joints)                           │ │
@@ -739,8 +717,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │                                       │                                       │       │
 │                                       │ Configuration:                        │       │
 │                                       │ - feedback_rate_hz: 50 Hz             │       │
-│                                       │ - low_pass_alpha: 0.3                 │       │
-│                                       │ - enable_filtering: True              │       │
+│                                       │ - No Python LPF (handled in C++)      │       │
 │                                       │                                       │       │
 │                                       │ Subscribers:                          │       │
 │                                       │ - /joint_states (JointState)          │       │
@@ -752,8 +729,8 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │                                       │ Processing:                           │       │
 │                                       │ 1. Receive joint_states @ 100Hz       │       │
 │                                       │ 2. Reorder joints for GR00T format    │       │
-│                                       │ 3. Apply low-pass filter (alpha=0.3)  │       │
-│                                       │ 4. Publish at 50 Hz                   │       │
+│                                       │ 3. Publish at 50 Hz (passthrough)     │       │
+│                                       │                                       │       │
 │                                       │                                       │       │
 │                                       │ Health Monitoring:                    │       │
 │                                       │ - Track latency, jitter, message rate │       │
@@ -800,11 +777,11 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 | Component | Rate | Direction | Estimated Time | Margin | Status |
 |-----------|------|-----------|----------------|--------|--------|
 | Arm Write | 500Hz | CAN-FD TX | ~0.3ms | 85% | ✅ OK |
-| Arm Read | 100Hz | CAN-FD RX | ~0.4ms | 96% | ✅ OK |
+| Arm Read | 200Hz | CAN-FD RX | ~0.4ms | 84% | ✅ OK |
 | Hand Write | 500Hz | Serial TX | ~0.25ms | 87% | ✅ OK |
-| Hand Read | 100Hz | Serial RX | ~0.4ms | 96% | ✅ OK |
+| Hand Read | 200Hz | Serial RX | ~0.4ms | 84% | ✅ OK |
 | **Total Write** | 500Hz | - | **~0.55ms** | **72%** | ✅ OK |
-| **Total Read** | 100Hz | - | **~0.8ms** | **92%** | ✅ OK |
+| **Total Read** | 200Hz | - | **~0.8ms** | **84%** | ✅ OK |
 | **GR00T Feedback** | 50Hz | ROS2 | ~5-10ms | - | ✅ OK |
 
 ---
@@ -819,25 +796,28 @@ All rates are defined as constants and can be modified:
 ```cpp
 // Line ~97-109
 static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // Motor command frequency
-static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // State reading frequency (filter init only)
-static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // LPF cutoff
+static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // Decoupled state read thread frequency
+static constexpr double STATE_FILTER_CUTOFF_HZ = 50.0;  // LPF cutoff
 static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Health threshold
 static constexpr size_t MAX_CONSECUTIVE_FAILURES = 10;  // Health threshold
 ```
 
 > **Note:** `GROOT_FEEDBACK_RATE_HZ` is **not** defined in the C++ header. The GR00T feedback rate is configured only in `gr00t_state_publisher.py` as the Python constant `GR00T_FEEDBACK_RATE_HZ = 50.0`.
 
-> **Note:** The actual `arm_control_loop()` implementation performs **both read and write at 500Hz** (no separate `state_read_loop()` thread). The `CONTROL_READ_RATE_HZ` constant is used only for LPF alpha initialization.
+> **Note:** The `arm_control_loop()` is **write-only** at 500Hz. A separate `state_read_loop()` thread runs at 200Hz for decoupled state reading with LPF. The `CONTROL_READ_RATE_HZ` constant controls this read thread's frequency.
 
 **In Python (`gr00t_state_publisher.py`):**
 ```python
-# Line ~40-45
+# Line ~40
 GROOT_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
-STATE_BUFFER_SIZE = 10         # Number of states to keep for filtering
-LOW_PASS_ALPHA = 0.3           # Low-pass filter coefficient (0-1)
+STATE_BUFFER_SIZE = 10         # Number of states to keep for health monitoring
+# Note: No Python-side LPF. Filtering is done entirely in C++ state_read_loop().
 ```
 
 ### 8.2 Filter Tuning
+
+The system uses a **single LPF** in the C++ `state_read_loop()` at 200Hz.
+The Python `gr00t_state_publisher.py` does **no filtering** — it passes through positions directly.
 
 **Low-Pass Filter Alpha Calculation:**
 ```
@@ -846,20 +826,15 @@ where:
   dt = 1 / sample_rate
   RC = 1 / (2 * π * cutoff_freq)
 
-For C++ hardware interface (cutoff = 30 Hz, sample = 500 Hz — actual loop rate):
-  RC = 1 / (2 * π * 30) = 0.00531
-  dt = 1 / 500 = 0.002
-  alpha = 0.002 / (0.00531 + 0.002) = 0.274
+For C++ state_read_loop (cutoff = 50 Hz, sample = 200 Hz):
+  RC = 1 / (2 * π * 50) = 0.00318
+  dt = 1 / 200 = 0.005
+  alpha = 0.005 / (0.00318 + 0.005) = 0.611 ≈ 0.61
+  Group delay ≈ RC/2 ≈ 1.59ms
 
-For C++ with CONTROL_READ_RATE_HZ = 100 Hz (used only in filter init):
-  dt = 1 / 100 = 0.01
-  alpha = 0.01 / (0.0053 + 0.01) = 0.654
-
-Note: The Python gr00t_state_publisher.py uses exponential moving average
-with default alpha = 0.3, giving a time constant of:
-  τ = dt × (1-α)/α = 0.02 × 0.7/0.3 ≈ 47ms (at 50Hz publish rate)
-This provides strong smoothing and introduces ~23ms group delay at 30Hz signal.
-Consider increasing alpha to 0.5–0.6 to reduce state feedback lag for VLA inference.
+Total state feedback latency to GR00T:
+  LPF group delay (~1.6ms) + CM read period (10ms) + publish period (20ms)
+  ≈ 31ms worst case, ~21ms average
 ```
 
 ### 8.3 Health Monitoring Thresholds
@@ -908,7 +883,13 @@ python3 your_gr00t_inference_script.py
 
 **Option 2: Using the Launch Script (Recommended)**
 
-A launch script has been created at `scripts/launch_vla_control.sh`.
+A launch script has been created at `scripts/launch_vla_control.py`.
+
+```bash
+python3 scripts/launch_vla_control.py              # Launch everything
+python3 scripts/launch_vla_control.py --build       # Build first, then launch
+python3 scripts/launch_vla_control.py --no-hardware  # Simulation mode
+```
 
 ---
 
@@ -917,11 +898,11 @@ A launch script has been created at `scripts/launch_vla_control.sh`.
 | File | Type | Changes |
 |------|------|---------|
 | `openarm_hardware/include/openarm_hardware/v10_simple_hardware.hpp` | Modified | Added configurable rates, health monitoring, LPF, state read thread |
-| `openarm_hardware/src/v10_simple_hardware.cpp` | Modified | Changed LEAP rate to 500Hz, initialized filters |
+| `openarm_hardware/src/v10_simple_hardware.cpp` | Modified | Decoupled read/write, 200Hz state_read_loop, health_monitor_thread, serial_mutex |
 | `scripts/action_chunk_controller.py` | New | Synchronized action chunk execution |
 | `scripts/gr00t_state_publisher.py` | New | 50Hz filtered state publisher |
 | `scripts/bimanual_gui_controller_action.py` | Modified | Added synchronized methods |
-| `scripts/launch_vla_control.sh` | New | Launch script for entire system |
+| `scripts/launch_vla_control.py` | New | Python launch script with process management |
 | `docs/VLA_CONTROL_SYSTEM_REPORT.md` | New | This report |
 
 ---
