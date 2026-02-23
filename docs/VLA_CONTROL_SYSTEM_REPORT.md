@@ -502,7 +502,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                         GR00T N1.5 VLA MODEL (External Server)                      │
 │                                                                                     │
-│  Inference Rate: 12-25 Hz (40-80ms per inference)                                  │
+│  Inference Rate: 12-50 Hz (20-80ms per inference, GPU-dependent)                   │
 │  Input: Camera Images + Joint States (30 joints)                                    │
 │  Output: 16-step Action Chunks with timestamps                                      │
 │                                                                                     │
@@ -583,7 +583,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │              DECOUPLED CONTROL LOOPS (FINAL ARCHITECTURE)                       │ │
 │  │                                                                                 │ │
 │  │  ╔═══════════════════════════════════════════════════════════════════════════╗ │ │
-│  │  ║ arm_control_loop() @ 500Hz (WRITE ONLY)                                   ║ │ │
+│  │  ║ arm_control_loop() @ 500Hz (READ + WRITE combined)                          ║ │ │
 │  │  ║                                                                           ║ │ │
 │  │  ║ Period: 2ms (2000us)                                                      ║ │ │
 │  │  ║ Thread: arm_control_thread_                                               ║ │ │
@@ -651,7 +651,7 @@ def publish_multi_point_trajectory(self, controller, trajectory_points, timestam
 │  │ - arm_pos_cmd_buffer_[8]  ← pos_commands_[0:7]                               │    │
 │  │ - arm_vel_cmd_buffer_[8]  ← vel_commands_[0:7]                               │    │
 │  │ - arm_tau_cmd_buffer_[8]  ← tau_commands_[0:7]                               │    │
-│  │ - leap_pos_cmd_buffer_[16] ← pos_commands_[8:23]                             │    │
+│  │ - leap_pos_cmd_buffer_[16] ← pos_commands_[8:24]  (indices 8..23, 16 joints) │    │
 │  │                                                                              │    │
 │  │ State Buffers (written by control loops, read by read()):                    │    │
 │  │ - arm_pos_state_buffer_[8]  → pos_states_[0:7]                               │    │
@@ -816,14 +816,17 @@ All rates are defined as constants and can be modified:
 
 **In C++ Header (`v10_simple_hardware.hpp`):**
 ```cpp
-// Line ~70-85
+// Line ~97-109
 static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // Motor command frequency
-static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // State reading frequency
-static constexpr double GROOT_FEEDBACK_RATE_HZ = 50.0;  // VLA feedback frequency
+static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // State reading frequency (filter init only)
 static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // LPF cutoff
 static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Health threshold
 static constexpr size_t MAX_CONSECUTIVE_FAILURES = 10;  // Health threshold
 ```
+
+> **Note:** `GROOT_FEEDBACK_RATE_HZ` is **not** defined in the C++ header. The GR00T feedback rate is configured only in `gr00t_state_publisher.py` as the Python constant `GR00T_FEEDBACK_RATE_HZ = 50.0`.
+
+> **Note:** The actual `arm_control_loop()` implementation performs **both read and write at 500Hz** (no separate `state_read_loop()` thread). The `CONTROL_READ_RATE_HZ` constant is used only for LPF alpha initialization.
 
 **In Python (`gr00t_state_publisher.py`):**
 ```python
@@ -842,13 +845,20 @@ where:
   dt = 1 / sample_rate
   RC = 1 / (2 * π * cutoff_freq)
 
-For cutoff = 30 Hz, sample = 100 Hz:
-  RC = 1 / (2 * π * 30) = 0.0053
+For C++ hardware interface (cutoff = 30 Hz, sample = 500 Hz — actual loop rate):
+  RC = 1 / (2 * π * 30) = 0.00531
+  dt = 1 / 500 = 0.002
+  alpha = 0.002 / (0.00531 + 0.002) = 0.274
+
+For C++ with CONTROL_READ_RATE_HZ = 100 Hz (used only in filter init):
   dt = 1 / 100 = 0.01
   alpha = 0.01 / (0.0053 + 0.01) = 0.654
 
-Note: The Python script uses a simpler exponential moving average
-with configurable alpha (default 0.3 for more smoothing).
+Note: The Python gr00t_state_publisher.py uses exponential moving average
+with default alpha = 0.3, giving a time constant of:
+  τ = dt × (1-α)/α = 0.02 × 0.7/0.3 ≈ 47ms (at 50Hz publish rate)
+This provides strong smoothing and introduces ~23ms group delay at 30Hz signal.
+Consider increasing alpha to 0.5–0.6 to reduce state feedback lag for VLA inference.
 ```
 
 ### 8.3 Health Monitoring Thresholds

@@ -407,18 +407,24 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   // Return to zero position
   return_to_zero();
 
-  // Start high-frequency arm control thread (500Hz)
+  // Start high-frequency arm control thread (500Hz, write-only)
   arm_thread_running_ = true;
   arm_control_thread_ = std::thread(&OpenArm_v10HW::arm_control_loop, this);
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread started at 500Hz");
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread started at 500Hz (write-only)");
   
-  // Start LEAP Hand control thread (500Hz, synchronized with arm) if enabled
+  // Start LEAP Hand control thread (500Hz, write-only) if enabled
   if (has_leap_hand_ && leap_connected_) {
     leap_thread_running_ = true;
-    sync_enabled_ = true;  // Enable synchronization
     leap_control_thread_ = std::thread(&OpenArm_v10HW::leap_control_loop, this);
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 500Hz (synchronized)");
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 500Hz (write-only)");
   }
+
+  // Start decoupled state read thread (reads CAN arm + LEAP serial + applies LPF)
+  state_read_thread_running_ = true;
+  state_read_thread_ = std::thread(&OpenArm_v10HW::state_read_loop, this);
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "State read thread started at %.0fHz (decoupled R/W architecture)",
+              CONTROL_READ_RATE_HZ);
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
   return CallbackReturn::SUCCESS;
@@ -447,6 +453,15 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
       leap_control_thread_.join();
     }
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread stopped");
+  }
+
+  // Stop decoupled state read thread
+  if (state_read_thread_running_) {
+    state_read_thread_running_ = false;
+    if (state_read_thread_.joinable()) {
+      state_read_thread_.join();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "State read thread stopped");
   }
 
   // Disconnect LEAP Hand if connected
@@ -809,34 +824,13 @@ void OpenArm_v10HW::arm_control_loop() {
       tau_cmd = arm_tau_cmd_buffer_;
     }
     
-    // Read current states
-    openarm_->refresh_all();
-    openarm_->recv_all();
-    
-    const auto& arm_motors = openarm_->get_arm().get_motors();
-    for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
-      pos_state[i] = arm_motors[i].get_position();
-      vel_state[i] = arm_motors[i].get_velocity();
-      tau_state[i] = arm_motors[i].get_torque();
-    }
-    
-    // Read gripper state if enabled
-    if (hand_) {
-      const auto& gripper_motors = openarm_->get_gripper().get_motors();
-      if (!gripper_motors.empty()) {
-        double motor_pos = gripper_motors[0].get_position();
-        pos_state[ARM_DOF] = motor_radians_to_joint(motor_pos);
-        vel_state[ARM_DOF] = 0.0;
-        tau_state[ARM_DOF] = 0.0;
-      }
-    }
-    
-    // Update state buffer (thread-safe)
+    // Copy latest states from decoupled state_read_loop @ 200Hz (thread-safe).
+    // state_read_loop applies LPF and updates these buffers independently.
     {
       std::lock_guard<std::mutex> lock(arm_state_mutex_);
-      arm_pos_state_buffer_ = pos_state;
-      arm_vel_state_buffer_ = vel_state;
-      arm_tau_state_buffer_ = tau_state;
+      pos_state = arm_pos_state_buffer_;
+      vel_state = arm_vel_state_buffer_;
+      tau_state = arm_tau_state_buffer_;
     }
     
     // Compute gravity compensation
@@ -1006,7 +1000,6 @@ void OpenArm_v10HW::leap_control_loop() {
               "LEAP Hand control loop started (500Hz, synchronized with arm)");
   
   std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
-  std::vector<double> pos_state(LEAP_HAND_DOF, 0.0);
   
   while (leap_thread_running_) {
     // Copy commands from buffer (thread-safe)
@@ -1036,39 +1029,7 @@ void OpenArm_v10HW::leap_control_loop() {
       
       leap_group_sync_write_->txPacket();
       
-      // Read LEAP Hand states
-      int dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
-      if (dxl_comm_result == COMM_SUCCESS) {
-        for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-          uint8_t motor_id = leap_motor_ids_[i];
-          if (leap_group_sync_read_pos_->isAvailable(motor_id, LEAP_ADDR_PRESENT_POSITION, 
-                                                      LEAP_LEN_PRESENT_POSITION)) {
-            int32_t position_ticks = leap_group_sync_read_pos_->getData(
-              motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
-            double leap_pos = static_cast<double>(position_ticks) * LEAP_POS_SCALE;
-            pos_state[i] = leap_to_urdf(leap_pos);
-          }
-        }
-        
-        // Update state buffer (thread-safe)
-        {
-          std::lock_guard<std::mutex> lock(leap_state_mutex_);
-          leap_pos_state_buffer_ = pos_state;
-        }
-        
-        // Update health status - successful read
-        health_status_.consecutive_read_failures = 0;
-        health_status_.leap_healthy = true;
-      } else {
-        // Update health status - failed read
-        health_status_.consecutive_read_failures++;
-        if (health_status_.consecutive_read_failures > MAX_CONSECUTIVE_FAILURES) {
-          health_status_.leap_healthy = false;
-          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"),
-                      "LEAP Hand health check: %zu consecutive read failures",
-                      health_status_.consecutive_read_failures.load());
-        }
-      }
+      // State reading is handled by the decoupled state_read_loop() @ 200Hz.
     }
     
     // Sleep until next cycle
@@ -1078,6 +1039,103 @@ void OpenArm_v10HW::leap_control_loop() {
   
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
               "LEAP Hand control loop stopped");
+}
+
+// Decoupled state read loop — reads both CAN arm and LEAP Hand serial, applies LPF.
+// Runs at CONTROL_READ_RATE_HZ (200Hz) independently of the 500Hz write loops.
+// This prevents RS-485 read latency from stalling CAN command sending.
+void OpenArm_v10HW::state_read_loop() {
+  using namespace std::chrono;
+  const auto loop_period =
+    microseconds(static_cast<int>(1000000.0 / CONTROL_READ_RATE_HZ));
+  auto next_cycle = steady_clock::now() + loop_period;
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
+              "State read loop started (target: %.0f Hz)", CONTROL_READ_RATE_HZ);
+
+  const size_t arm_buf_size = ARM_DOF + (hand_ ? 1 : 0);
+  std::vector<double> pos_state(arm_buf_size, 0.0);
+  std::vector<double> vel_state(arm_buf_size, 0.0);
+  std::vector<double> tau_state(arm_buf_size, 0.0);
+  std::vector<double> leap_pos_state(LEAP_HAND_DOF, 0.0);
+
+  while (state_read_thread_running_) {
+    // ---- ARM STATE READ (CAN-FD) ----
+    openarm_->refresh_all();
+    openarm_->recv_all();
+
+    const auto& arm_motors = openarm_->get_arm().get_motors();
+    for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
+      pos_state[i] = arm_motors[i].get_position();
+      vel_state[i] = arm_motors[i].get_velocity();
+      tau_state[i] = arm_motors[i].get_torque();
+    }
+
+    // Read gripper state if enabled
+    if (hand_ && arm_buf_size > ARM_DOF) {
+      const auto& gripper_motors = openarm_->get_gripper().get_motors();
+      if (!gripper_motors.empty()) {
+        pos_state[ARM_DOF] = motor_radians_to_joint(gripper_motors[0].get_position());
+        vel_state[ARM_DOF] = 0.0;
+        tau_state[ARM_DOF] = 0.0;
+      }
+    }
+
+    // Apply low-pass filter to arm position states (LPF cutoff=30Hz, sample=200Hz, alpha≈0.49)
+    arm_state_filter_.update(pos_state);
+    const std::vector<double>& filtered_pos = arm_state_filter_.get();
+
+    // Update arm state buffers (thread-safe, read by arm_control_loop and read())
+    {
+      std::lock_guard<std::mutex> lock(arm_state_mutex_);
+      arm_pos_state_buffer_ = filtered_pos;  // LPF-smoothed positions
+      arm_vel_state_buffer_ = vel_state;     // Raw velocities (LPF on pos is sufficient)
+      arm_tau_state_buffer_ = tau_state;
+    }
+
+    // ---- LEAP HAND STATE READ (RS-485) ----
+    if (has_leap_hand_ && leap_connected_) {
+      int dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
+      if (dxl_comm_result == COMM_SUCCESS) {
+        for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+          uint8_t motor_id = leap_motor_ids_[i];
+          if (leap_group_sync_read_pos_->isAvailable(
+                motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION)) {
+            int32_t ticks = leap_group_sync_read_pos_->getData(
+              motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
+            leap_pos_state[i] = leap_to_urdf(static_cast<double>(ticks) * LEAP_POS_SCALE);
+          }
+        }
+
+        // Apply low-pass filter to LEAP position states
+        leap_state_filter_.update(leap_pos_state);
+        const std::vector<double>& filtered_leap = leap_state_filter_.get();
+
+        // Update LEAP state buffer (thread-safe)
+        {
+          std::lock_guard<std::mutex> lock(leap_state_mutex_);
+          leap_pos_state_buffer_ = filtered_leap;
+        }
+
+        // Health: successful read
+        health_status_.consecutive_read_failures = 0;
+        health_status_.leap_healthy = true;
+      } else {
+        health_status_.consecutive_read_failures++;
+        if (health_status_.consecutive_read_failures > MAX_CONSECUTIVE_FAILURES) {
+          health_status_.leap_healthy = false;
+          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"),
+                      "State read loop: %zu consecutive LEAP read failures",
+                      health_status_.consecutive_read_failures.load());
+        }
+      }
+    }
+
+    std::this_thread::sleep_until(next_cycle);
+    next_cycle += loop_period;
+  }
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), "State read loop stopped");
 }
 
 // Health monitoring functions

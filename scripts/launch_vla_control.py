@@ -102,6 +102,7 @@ class VLALauncher:
         if background:
             proc = subprocess.Popen(
                 cmd,
+                env=env,  # Pass sourced ROS2 workspace environment
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid if os.name != 'nt' else None
@@ -110,7 +111,7 @@ class VLALauncher:
             print_colored(f"    PID: {proc.pid}", Colors.GREEN)
             return proc
         else:
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if result.returncode != 0:
                 print_colored(f"    Error: {result.stderr}", Colors.RED)
                 return None

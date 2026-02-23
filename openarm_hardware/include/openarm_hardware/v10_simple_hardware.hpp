@@ -97,9 +97,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // ========== CONFIGURABLE CONTROL RATES ==========
   // These can be tuned based on system performance requirements
   // Write rate: Motor command frequency (Hz)
-  static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz for smooth motor control
-  // Read rate: Motor state reading frequency (Hz) - used for filter initialization only
-  static constexpr double CONTROL_READ_RATE_HZ = 100.0;   // 100Hz for state feedback
+  static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz write-only (CAN-FD/Serial TX)
+  // Read rate: Decoupled state read thread frequency (Hz) - separate from write loop
+  static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // 200Hz decoupled state read thread
 
   // Low-pass filter cutoff frequency for state smoothing (Hz)
   static constexpr double STATE_FILTER_CUTOFF_HZ = 30.0;  // Smooth states for VLA feedback
@@ -197,22 +197,19 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> leap_pos_cmd_buffer_;
   std::vector<double> leap_pos_state_buffer_;
   
-  // ========== SYNCHRONIZATION PRIMITIVES ==========
-  // These ensure arm and hand commands are executed synchronously
-  std::mutex sync_mutex_;                    // Mutex for synchronization
-  std::condition_variable sync_cv_;          // Condition variable for thread sync
-  std::atomic<uint64_t> command_tick_{0};    // Monotonic tick counter for sync
-  std::atomic<uint64_t> arm_executed_tick_{0};
-  std::atomic<uint64_t> leap_executed_tick_{0};
-  std::atomic<bool> sync_enabled_{false};    // Enable/disable synchronization
+  // ========== DECOUPLED STATE READ THREAD ==========
+  // Reads CAN arm + LEAP serial states at CONTROL_READ_RATE_HZ, applies LPF.
+  // Decoupled from write loops so RS-485 read latency does not stall CAN commands.
+  std::thread state_read_thread_;
+  std::atomic<bool> state_read_thread_running_;
   
   // Debug CSV logging (one file per arm instance)
   std::ofstream debug_csv_;
   bool csv_initialized_;
   size_t csv_sample_count_;
 
-  // Note: State reading is done inside arm_control_loop() and leap_control_loop()
-  // at 500Hz for synchronized operation. No separate read thread needed.
+  // Note: State reading is handled exclusively by state_read_loop().
+  // arm_control_loop() and leap_control_loop() are pure write-only threads.
   
   // ========== HEALTH MONITORING ==========
   struct HealthStatus {
@@ -260,8 +257,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void generate_joint_names();
   
   // Thread control loops
-  void arm_control_loop();        // Write loop @ 500Hz (includes reading for state feedback)
-  void leap_control_loop();       // Write loop @ 500Hz (includes reading for state feedback)
+  void arm_control_loop();        // Write-only loop @ 500Hz (CAN-FD MIT commands)
+  void leap_control_loop();       // Write-only loop @ 500Hz (LEAP Hand serial TX)
+  void state_read_loop();         // Read-only loop @ CONTROL_READ_RATE_HZ (CAN + serial + LPF)
   
   // Health monitoring methods
   void check_health();

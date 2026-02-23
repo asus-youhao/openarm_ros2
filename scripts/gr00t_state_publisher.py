@@ -40,7 +40,7 @@ import statistics
 # These can be modified based on system requirements
 GR00T_FEEDBACK_RATE_HZ = 50.0  # Publishing rate for GR00T feedback
 STATE_BUFFER_SIZE = 10         # Number of states to keep for filtering
-LOW_PASS_ALPHA = 0.3           # Low-pass filter coefficient (0-1)
+LOW_PASS_ALPHA = 0.5           # Low-pass filter coefficient (0-1, higher=faster response/less smoothing)
 
 
 @dataclass
