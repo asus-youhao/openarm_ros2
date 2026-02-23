@@ -62,6 +62,10 @@ TRAJECTORY_START_DELAY_SEC = 0.05  # Lead time added to now before trajectory st
                                    # Gives all 3 controllers time to accept the goal
                                    # before t=0 of the trajectory.
 RECEDING_HORIZON_ENABLED = True    # Enable receding horizon control for timing correction
+
+# Performance monitoring
+PERFORMANCE_MONITORING_ENABLED = True  # Enable detailed performance tracking
+PERFORMANCE_LOG_INTERVAL = 10.0      # Log performance stats every 10 seconds
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -140,6 +144,16 @@ class ActionChunkController(Node):
 
         # Chunk ID counter (for logging)
         self.chunk_id_counter = 0
+
+        # Performance tracking variables
+        self.performance_start_time = time.time()
+        self.last_performance_log = time.time()
+        self.chunk_execution_times = []
+        self.chunk_processing_times = []
+        self.trajectory_acceptance_times = []
+        self.total_chunks_processed = 0
+        self.total_chunks_accepted = 0
+        self.total_chunks_rejected = 0
 
         # Joint state subscriber (for current-position fallback / logging)
         self.current_joint_states: Dict[str, float] = {}
@@ -566,6 +580,81 @@ class ActionChunkController(Node):
             self.get_logger().info(f'Loaded {len(chunks)} chunk(s) from {filepath}')
         except Exception as e:
             self.get_logger().error(f'Failed to load chunks from {filepath}: {e}')
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Performance monitoring
+
+    def _log_performance_stats(self):
+        """Log performance statistics if monitoring is enabled."""
+        if not PERFORMANCE_MONITORING_ENABLED:
+            return
+            
+        current_time = time.time()
+        if current_time - self.last_performance_log < PERFORMANCE_LOG_INTERVAL:
+            return
+            
+        self.last_performance_log = current_time
+        
+        # Calculate statistics
+        if self.chunk_processing_times:
+            avg_processing = sum(self.chunk_processing_times) / len(self.chunk_processing_times)
+            max_processing = max(self.chunk_processing_times)
+        else:
+            avg_processing = max_processing = 0.0
+            
+        if self.trajectory_acceptance_times:
+            avg_acceptance = sum(self.trajectory_acceptance_times) / len(self.trajectory_acceptance_times)
+            max_acceptance = max(self.trajectory_acceptance_times)
+        else:
+            avg_acceptance = max_acceptance = 0.0
+            
+        # Calculate success rate
+        total_goals = self.total_chunks_accepted + self.total_chunks_rejected
+        success_rate = (self.total_chunks_accepted / total_goals * 100) if total_goals > 0 else 0.0
+        
+        # Calculate uptime
+        uptime = current_time - self.performance_start_time
+        
+        self.get_logger().info(
+            f'=== Performance Statistics (Uptime: {uptime:.1f}s) ===\n'
+            f'Chunks processed: {self.total_chunks_processed}\n'
+            f'Goal acceptance: {self.total_chunks_accepted}/{total_goals} ({success_rate:.1f}%)\n'
+            f'Avg processing time: {avg_processing*1000:.1f} ms (max: {max_processing*1000:.1f} ms)\n'
+            f'Avg acceptance time: {avg_acceptance*1000:.1f} ms (max: {max_acceptance*1000:.1f} ms)\n'
+            f'========================================================'
+        )
+
+    def _record_chunk_processing_time(self, processing_time: float):
+        """Record the time taken to process a chunk."""
+        if PERFORMANCE_MONITORING_ENABLED:
+            self.chunk_processing_times.append(processing_time)
+            # Keep only last 1000 measurements to prevent memory growth
+            if len(self.chunk_processing_times) > 1000:
+                self.chunk_processing_times.pop(0)
+
+    def _record_trajectory_acceptance_time(self, acceptance_time: float):
+        """Record the time taken for trajectory acceptance."""
+        if PERFORMANCE_MONITORING_ENABLED:
+            self.trajectory_acceptance_times.append(acceptance_time)
+            # Keep only last 1000 measurements to prevent memory growth
+            if len(self.trajectory_acceptance_times) > 1000:
+                self.trajectory_acceptance_times.pop(0)
+
+    def _increment_chunk_count(self):
+        """Increment the total chunks processed counter."""
+        if PERFORMANCE_MONITORING_ENABLED:
+            self.total_chunks_processed += 1
+            self._log_performance_stats()
+
+    def _increment_acceptance_count(self):
+        """Increment the accepted goals counter."""
+        if PERFORMANCE_MONITORING_ENABLED:
+            self.total_chunks_accepted += 1
+
+    def _increment_rejection_count(self):
+        """Increment the rejected goals counter."""
+        if PERFORMANCE_MONITORING_ENABLED:
+            self.total_chunks_rejected += 1
 
 
 def main(args=None):

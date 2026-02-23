@@ -222,7 +222,19 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
     std::atomic<bool> leap_healthy{true};
     std::atomic<uint64_t> last_successful_read_time{0};
     std::atomic<uint64_t> last_successful_write_time{0};
+    std::atomic<size_t> total_read_operations{0};
+    std::atomic<size_t> total_write_operations{0};
+    std::atomic<size_t> total_errors{0};
+    std::atomic<double> average_read_latency_ms{0.0};
+    std::atomic<double> average_write_latency_ms{0.0};
+    std::atomic<bool> system_healthy{true};
+    std::atomic<bool> emergency_stop_triggered{false};
   } health_status_;
+
+  // Health monitoring thread
+  std::thread health_monitor_thread_;
+  std::atomic<bool> health_monitor_running_;
+  std::mutex health_mutex_;
   
   // ========== LOW-PASS FILTER FOR STATE SMOOTHING ==========
   struct LowPassFilter {
@@ -266,6 +278,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void check_health();
   void report_health_status();
   bool is_healthy() const;
+  void health_monitor_loop();
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);

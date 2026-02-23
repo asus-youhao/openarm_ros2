@@ -282,6 +282,16 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
                 leap_serial_port_.c_str(), leap_baudrate_);
   }
 
+  // Initialize health monitoring
+  health_monitor_running_ = false;
+  health_status_.system_healthy = true;
+  health_status_.emergency_stop_triggered = false;
+  health_status_.total_read_operations = 0;
+  health_status_.total_write_operations = 0;
+  health_status_.total_errors = 0;
+  health_status_.average_read_latency_ms = 0.0;
+  health_status_.average_write_latency_ms = 0.0;
+
   // Initialize gravity compensation (default: enabled)
   auto it = info.hardware_parameters.find("use_gravity_compensation");
   use_gravity_compensation_ = (it == info.hardware_parameters.end() || it->second != "false");
@@ -425,6 +435,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "State read thread started at %.0fHz (decoupled R/W architecture)",
               CONTROL_READ_RATE_HZ);
+
+  // Start health monitoring thread
+  health_monitor_running_ = true;
+  health_monitor_thread_ = std::thread(&OpenArm_v10HW::health_monitor_loop, this);
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Health monitoring thread started");
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 activated");
   return CallbackReturn::SUCCESS;
@@ -1190,12 +1205,48 @@ bool OpenArm_v10HW::is_healthy() const {
   return health_status_.arm_healthy && health_status_.leap_healthy;
 }
 
+// Health monitoring thread implementation
+void OpenArm_v10HW::health_monitor_loop() {
+  using namespace std::chrono;
+  const auto loop_period = seconds(1);  // Check health every second
+  auto next_cycle = steady_clock::now() + loop_period;
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Health"), "Health monitoring thread started");
+  
+  while (health_monitor_running_) {
+    // Check system health
+    check_health();
+    
+    // Update system health status
+    health_status_.system_healthy = is_healthy();
+    
+    // Log health status periodically
+    if (enable_frequency_diagnostics_) {
+      report_health_status();
+    }
+    
+    // Check for emergency stop conditions
+    if (!health_status_.system_healthy && !health_status_.emergency_stop_triggered) {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW_Health"),
+                   "System health check failed, triggering emergency stop");
+      health_status_.emergency_stop_triggered = true;
+      
+      // Trigger emergency stop by disabling all motors
+      if (openarm_) {
+        openarm_->disable_all();
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Health"),
+                    "Emergency stop executed: all motors disabled");
+      }
+    }
+    
+    std::this_thread::sleep_until(next_cycle);
+    next_cycle += loop_period;
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Health"), "Health monitoring thread stopped");
+}
+
 }  // namespace openarm_hardware
-
-#include "pluginlib/class_list_macros.hpp"
-
-PLUGINLIB_EXPORT_CLASS(openarm_hardware::OpenArm_v10HW,
-                       hardware_interface::SystemInterface)
 
 #include "pluginlib/class_list_macros.hpp"
 
