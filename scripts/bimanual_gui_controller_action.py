@@ -551,7 +551,7 @@ class ROSNode(Node):
         return self.current_joint_states.copy()
     
     def publish_positions(self, controller, positions):
-        """Send positions via action client."""
+        """Send positions via action client (single point trajectory)."""
         # Create goal message
         goal_msg = FollowJointTrajectory.Goal()
         
@@ -565,10 +565,6 @@ class ROSNode(Node):
         elif controller == 'right_hand':
             goal_msg.trajectory.joint_names = self.right_hand_joints
             action_client = self.right_hand_client
-            # Debug: print joint names and positions
-            self.get_logger().info(f'Sending to right_hand_controller:')
-            for i, (name, pos) in enumerate(zip(self.right_hand_joints, positions)):
-                self.get_logger().info(f'  [{i}] {name}: {pos:.3f}')
         else:
             return
         
@@ -581,7 +577,7 @@ class ROSNode(Node):
         
         # Send goal asynchronously (non-blocking)
         action_client.send_goal_async(goal_msg)
-
+    
 
 def main(args=None):
     rclpy.init(args=args)

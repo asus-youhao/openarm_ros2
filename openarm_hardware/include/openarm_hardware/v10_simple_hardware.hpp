@@ -94,6 +94,20 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   static constexpr size_t LEAP_HAND_DOF = 16;
   static constexpr bool ENABLE_GRIPPER = true;
 
+  // ========== CONFIGURABLE CONTROL RATES ==========
+  // These can be tuned based on system performance requirements
+  // Write rate: Motor command frequency (Hz)
+  static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz write-only (CAN-FD/Serial TX)
+  // Read rate: Decoupled state read thread frequency (Hz) - separate from write loop
+  static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // 200Hz decoupled state read thread
+
+  // Low-pass filter cutoff frequency for state smoothing (Hz)
+  static constexpr double STATE_FILTER_CUTOFF_HZ = 50.0;  // Smooth states for VLA feedback
+  
+  // Health monitoring thresholds
+  static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Max allowed communication latency
+  static constexpr size_t MAX_CONSECUTIVE_FAILURES = 10;  // Max failures before error
+
   // Default motor configuration for V10
   const std::vector<openarm::damiao_motor::MotorType> DEFAULT_MOTOR_TYPES = {
       openarm::damiao_motor::MotorType::DM8009,  // Joint 1
@@ -173,20 +187,82 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> arm_vel_state_buffer_;
   std::vector<double> arm_tau_state_buffer_;
   
-  // LEAP Hand control thread (100Hz)
+  // LEAP Hand control thread (now 500Hz for synchronized execution)
   std::thread leap_control_thread_;
   std::atomic<bool> leap_thread_running_;
   std::mutex leap_command_mutex_;
   std::mutex leap_state_mutex_;
+  std::mutex serial_mutex_;  // Protect RS-485 serial port access (half-duplex)
   
   // LEAP Hand command/state buffers
   std::vector<double> leap_pos_cmd_buffer_;
   std::vector<double> leap_pos_state_buffer_;
   
+  // ========== DECOUPLED STATE READ THREAD ==========
+  // Reads CAN arm + LEAP serial states at CONTROL_READ_RATE_HZ, applies LPF.
+  // Decoupled from write loops so RS-485 read latency does not stall CAN commands.
+  std::thread state_read_thread_;
+  std::atomic<bool> state_read_thread_running_;
+  
   // Debug CSV logging (one file per arm instance)
   std::ofstream debug_csv_;
   bool csv_initialized_;
   size_t csv_sample_count_;
+
+  // Note: State reading is handled exclusively by state_read_loop().
+  // arm_control_loop() and leap_control_loop() are pure write-only threads.
+  
+  // ========== HEALTH MONITORING ==========
+  struct HealthStatus {
+    std::atomic<size_t> consecutive_read_failures{0};
+    std::atomic<size_t> consecutive_write_failures{0};
+    std::atomic<double> last_read_latency_ms{0.0};
+    std::atomic<double> last_write_latency_ms{0.0};
+    std::atomic<bool> arm_healthy{true};
+    std::atomic<bool> leap_healthy{true};
+    std::atomic<uint64_t> last_successful_read_time{0};
+    std::atomic<uint64_t> last_successful_write_time{0};
+    std::atomic<size_t> total_read_operations{0};
+    std::atomic<size_t> total_write_operations{0};
+    std::atomic<size_t> total_errors{0};
+    std::atomic<double> average_read_latency_ms{0.0};
+    std::atomic<double> average_write_latency_ms{0.0};
+    std::atomic<bool> system_healthy{true};
+    std::atomic<bool> emergency_stop_triggered{false};
+  } health_status_;
+
+  // Health monitoring thread
+  std::thread health_monitor_thread_;
+  std::atomic<bool> health_monitor_running_;
+  std::mutex health_mutex_;
+  
+  // ========== LOW-PASS FILTER FOR STATE SMOOTHING ==========
+  struct LowPassFilter {
+    double alpha;          // Filter coefficient
+    std::vector<double> filtered_values;
+    bool initialized = false;
+    
+    void init(size_t size, double cutoff_hz, double sample_hz) {
+      // Calculate alpha from cutoff frequency
+      double rc = 1.0 / (2.0 * M_PI * cutoff_hz);
+      double dt = 1.0 / sample_hz;
+      alpha = dt / (rc + dt);
+      filtered_values.resize(size, 0.0);
+      initialized = true;
+    }
+    
+    void update(const std::vector<double>& new_values) {
+      if (!initialized || new_values.size() != filtered_values.size()) return;
+      for (size_t i = 0; i < filtered_values.size(); ++i) {
+        filtered_values[i] = filtered_values[i] + alpha * (new_values[i] - filtered_values[i]);
+      }
+    }
+    
+    const std::vector<double>& get() const { return filtered_values; }
+  };
+  
+  LowPassFilter arm_state_filter_;
+  LowPassFilter leap_state_filter_;
 
   // Helper methods
   void return_to_zero();
@@ -194,8 +270,15 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void generate_joint_names();
   
   // Thread control loops
-  void arm_control_loop();
-  void leap_control_loop();
+  void arm_control_loop();        // Write-only loop @ 500Hz (CAN-FD MIT commands)
+  void leap_control_loop();       // Write-only loop @ 500Hz (LEAP Hand serial TX)
+  void state_read_loop();         // Read-only loop @ CONTROL_READ_RATE_HZ (CAN + serial + LPF)
+  
+  // Health monitoring methods
+  void check_health();
+  void report_health_status();
+  bool is_healthy() const;
+  void health_monitor_loop();
 
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);
