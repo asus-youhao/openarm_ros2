@@ -204,12 +204,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::thread state_read_thread_;
   std::atomic<bool> state_read_thread_running_;
   
-  // ========== DECOUPLED STATE READ THREAD ==========
-  // Reads CAN arm + LEAP serial states at CONTROL_READ_RATE_HZ, applies LPF.
-  // Decoupled from write loops so RS-485 read latency does not stall CAN commands.
-  std::thread state_read_thread_;
-  std::atomic<bool> state_read_thread_running_;
-  
   // Debug CSV logging (one file per arm instance for arm, one for LEAP Hand)
   std::ofstream debug_csv_;
   bool csv_initialized_;

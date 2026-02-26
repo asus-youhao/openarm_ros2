@@ -1210,7 +1210,6 @@ void OpenArm_v10HW::state_read_loop() {
         if (leap_csv_sample_count_ % 1 == 0 && leap_debug_csv_.is_open()) {
           auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
               std::chrono::steady_clock::now().time_since_epoch()).count();
-          
           // Motor names for readability
           const char* motor_names[] = {
             "index_side", "index_fwd", "index_pip", "index_dip",
@@ -1218,14 +1217,18 @@ void OpenArm_v10HW::state_read_loop() {
             "ring_side", "ring_fwd", "ring_pip", "ring_dip",
             "thumb_side", "thumb_fwd", "thumb_pip", "thumb_dip"
           };
-          
+          // Get latest command buffer (thread-safe)
+          std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
+          {
+            std::lock_guard<std::mutex> lock(leap_command_mutex_);
+            pos_cmd = leap_pos_cmd_buffer_;
+          }
           for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
             double pos_cmd_urdf = pos_cmd[i];
             double pos_cmd_leap = urdf_to_leap(pos_cmd_urdf);
             double pos_state_urdf = pos_state[i];
             double pos_state_leap = urdf_to_leap(pos_state_urdf);
             double pos_error = pos_cmd_urdf - pos_state_urdf;
-            
             leap_debug_csv_ << timestamp << "," << static_cast<int>(leap_motor_ids_[i]) << ","
                            << pos_cmd_urdf << "," << pos_cmd_leap << ","
                            << pos_state_urdf << "," << pos_state_leap << ","
