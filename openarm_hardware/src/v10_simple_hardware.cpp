@@ -232,6 +232,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Initialize CSV logging variables
   csv_initialized_ = false;
   csv_sample_count_ = 0;
+  leap_csv_initialized_ = false;
+  leap_csv_sample_count_ = 0;
   
   // Initialize arm thread buffers (7 DOF + optional gripper) - arm_size already declared above
   arm_pos_cmd_buffer_.resize(arm_size, 0.0);
@@ -488,12 +490,19 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   openarm_->disable_all();
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
-  // Close debug CSV if open
+  
+  // Close debug CSVs if open
   if (debug_csv_.is_open()) {
     debug_csv_.flush();
     debug_csv_.close();
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed debug CSV file on deactivate");
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed arm debug CSV file on deactivate");
   }
+  if (leap_debug_csv_.is_open()) {
+    leap_debug_csv_.flush();
+    leap_debug_csv_.close();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed LEAP Hand debug CSV file on deactivate");
+  }
+  
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -1023,6 +1032,51 @@ void OpenArm_v10HW::leap_control_loop() {
       pos_cmd = leap_pos_cmd_buffer_;
     }
     
+    // Initialize CSV file on first iteration
+    if (!leap_csv_initialized_) {
+      std::string package_share_dir;
+      try {
+        package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
+      } catch (const std::exception& e) {
+        package_share_dir = "/tmp";
+      }
+      
+      auto now = std::chrono::system_clock::now();
+      auto time_t_now = std::chrono::system_clock::to_time_t(now);
+      std::tm tm_now;
+      localtime_r(&time_t_now, &tm_now);
+      
+      std::ostringstream tmp_date;
+      tmp_date << std::put_time(&tm_now, "%Y%m%d");
+      std::string date_str = tmp_date.str();
+      
+      std::filesystem::path dir_path = std::filesystem::path(package_share_dir) / "debug_csvs" / date_str;
+      try {
+        std::filesystem::create_directories(dir_path);
+      } catch (const std::exception &e) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+                    "Failed to create LEAP debug CSV directory '%s': %s", 
+                    dir_path.c_str(), e.what());
+      }
+      
+      std::ostringstream oss;
+      oss << dir_path.string() << "/debug_leap_hand_"
+          << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << ".csv";
+      std::string csv_filename = oss.str();
+      leap_debug_csv_.open(csv_filename);
+      
+      if (!leap_debug_csv_.is_open()) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+                    "Failed to open LEAP debug CSV: %s", csv_filename.c_str());
+      } else {
+        leap_debug_csv_ << "timestamp,motor_id,pos_cmd_urdf,pos_cmd_leap,pos_state_urdf,"
+                        << "pos_state_leap,pos_error_urdf,motor_name\n";
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
+                    "LEAP Hand debug CSV created: %s", csv_filename.c_str());
+      }
+      leap_csv_initialized_ = true;
+    }
+    
     // Send LEAP Hand commands
     if (leap_connected_) {
       // Clear previous sync write data
@@ -1151,6 +1205,34 @@ void OpenArm_v10HW::state_read_loop() {
                       "State read loop: %zu consecutive LEAP read failures",
                       health_status_.consecutive_read_failures.load());
         }
+        
+        // Log data to CSV every 10 iterations (10Hz) to reduce file size
+        if (leap_csv_sample_count_ % 1 == 0 && leap_debug_csv_.is_open()) {
+          auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          
+          // Motor names for readability
+          const char* motor_names[] = {
+            "index_side", "index_fwd", "index_pip", "index_dip",
+            "middle_side", "middle_fwd", "middle_pip", "middle_dip",
+            "ring_side", "ring_fwd", "ring_pip", "ring_dip",
+            "thumb_side", "thumb_fwd", "thumb_pip", "thumb_dip"
+          };
+          
+          for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
+            double pos_cmd_urdf = pos_cmd[i];
+            double pos_cmd_leap = urdf_to_leap(pos_cmd_urdf);
+            double pos_state_urdf = pos_state[i];
+            double pos_state_leap = urdf_to_leap(pos_state_urdf);
+            double pos_error = pos_cmd_urdf - pos_state_urdf;
+            
+            leap_debug_csv_ << timestamp << "," << static_cast<int>(leap_motor_ids_[i]) << ","
+                           << pos_cmd_urdf << "," << pos_cmd_leap << ","
+                           << pos_state_urdf << "," << pos_state_leap << ","
+                           << pos_error << "," << motor_names[i] << "\n";
+          }
+        }
+        leap_csv_sample_count_++;
       }
     }
 
