@@ -1,0 +1,47 @@
+# O6 Hand (LinkerHand) controller configuration for standalone testing
+# 
+# This file configures the joint state broadcaster and controller
+# for the O6 hand hardware interface.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    o6_hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+# O6 Hand Controller - JointTrajectoryController with action server
+o6_hand_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+    
+    command_interfaces:
+      - position
+    
+    state_interfaces:
+      - position
+      - velocity
+    
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    
+    allow_partial_joints_goal: false
+    allow_integration_in_goal_trajectories: true
+    
+    # Start with current position, don't move to zero on activation
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: true
+    
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+

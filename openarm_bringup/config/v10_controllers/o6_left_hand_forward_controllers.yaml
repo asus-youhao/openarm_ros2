@@ -1,0 +1,27 @@
+# O6 Left Hand forward controller configuration for standalone testing
+# 
+# This file configures the joint state broadcaster and forward command controller
+# for the left O6 hand hardware interface.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    o6_hand_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# O6 Left Hand Controller - ForwardCommandController
+o6_hand_controller:
+  ros__parameters:
+    joints:
+      - L_thumb_cmc_yaw
+      - L_thumb_cmc_pitch
+      - L_index_mcp_pitch
+      - L_middle_mcp_pitch
+      - L_ring_mcp_pitch
+      - L_pinky_mcp_pitch
+    
+    interface_name: position

@@ -1,0 +1,180 @@
+<?xml version="1.0"?>
+<!--
+  O6 Hands Bimanual standalone test URDF
+  
+  This file creates a minimal robot description with both O6 hands (right and left)
+  for bimanual testing without the full arm system.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="o6_bimanual">
+
+  <!-- Arguments -->
+  <xacro:arg name="use_fake_hardware" default="false" />
+  <xacro:arg name="move_to_home" default="false" />
+
+  <!-- World link -->
+  <link name="world"/>
+  
+  <!-- Right hand mount -->
+  <link name="right_hand_mount">
+    <visual>
+      <geometry>
+        <box size="0.05 0.1 0.02"/>
+      </geometry>
+      <material name="mount_material_right">
+        <color rgba="0.8 0.3 0.3 1.0"/>
+      </material>
+    </visual>
+  </link>
+  
+  <!-- Left hand mount -->
+  <link name="left_hand_mount">
+    <visual>
+      <geometry>
+        <box size="0.05 0.1 0.02"/>
+      </geometry>
+      <material name="mount_material_left">
+        <color rgba="0.3 0.3 0.8 1.0"/>
+      </material>
+    </visual>
+  </link>
+  
+  <!-- Fixed joints from world to hand mounts -->
+  <joint name="world_to_right_hand" type="fixed">
+    <parent link="world"/>
+    <child link="right_hand_mount"/>
+    <origin xyz="0 -0.3 0.1" rpy="0 0 0"/>
+  </joint>
+  
+  <joint name="world_to_left_hand" type="fixed">
+    <parent link="world"/>
+    <child link="left_hand_mount"/>
+    <origin xyz="0 0.3 0.1" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Include O6 hand xacros from external openarm_description package -->
+  <xacro:include filename="$(find openarm_description)/urdf/ee/o6_hand_right.xacro" ns="o6_right"/>
+  <xacro:include filename="$(find openarm_description)/urdf/ee/o6_hand_left.xacro" ns="o6_left"/>
+  
+  <!-- Instantiate right hand -->
+  <xacro:o6_right.o6_hand_right_impl connected_to="right_hand_mount" xyz_ee="0 0 0" rpy_ee="0 0 0"/>
+  
+  <!-- Instantiate left hand -->
+  <xacro:o6_left.o6_hand_left_impl connected_to="left_hand_mount" xyz_ee="0 0 0" rpy_ee="0 0 0"/>
+
+  <!-- ros2_control hardware interface for right hand -->
+  <ros2_control name="RightO6HandHardware" type="system">
+    <hardware>
+      <xacro:if value="$(arg use_fake_hardware)">
+        <plugin>mock_components/GenericSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="$(arg use_fake_hardware)">
+        <plugin>openarm_hardware/O6HandHardware</plugin>
+        <param name="can_interface">can2</param>
+        <param name="hand_type">right</param>
+        <param name="hand_prefix">R_</param>
+        <param name="move_to_home">$(arg move_to_home)</param>
+      </xacro:unless>
+    </hardware>
+
+    <joint name="R_thumb_cmc_yaw">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="R_thumb_cmc_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="R_index_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="R_middle_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="R_ring_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="R_pinky_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+
+  <!-- ros2_control hardware interface for left hand -->
+  <ros2_control name="LeftO6HandHardware" type="system">
+    <hardware>
+      <xacro:if value="$(arg use_fake_hardware)">
+        <plugin>mock_components/GenericSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="$(arg use_fake_hardware)">
+        <plugin>openarm_hardware/O6HandHardware</plugin>
+        <param name="can_interface">can3</param>
+        <param name="hand_type">left</param>
+        <param name="hand_prefix">L_</param>
+        <param name="move_to_home">$(arg move_to_home)</param>
+      </xacro:unless>
+    </hardware>
+
+    <joint name="L_thumb_cmc_yaw">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="L_thumb_cmc_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="L_index_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="L_middle_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="L_ring_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    
+    <joint name="L_pinky_mcp_pitch">
+      <command_interface name="position"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+
+</robot>
