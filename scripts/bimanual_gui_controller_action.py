@@ -125,6 +125,11 @@ class BimanualGUIController:
         tk.Button(control_frame, text='Open Hand', 
                  command=self.send_open_hand).pack(side='left', padx=5)
         
+        # Test Hand Interpolation button
+        tk.Button(control_frame, text='Test Hand Interpolation',
+                  bg='#FFEB3B', fg='black', font=('Arial', 10, 'bold'),
+                  command=self.test_send_hand_interpolation_btn).pack(side='left', padx=5)
+        
         # Position recording section
         recording_frame = tk.Frame(self.root, bg='lightblue', padx=10, pady=10)
         recording_frame.pack(fill='x')
@@ -304,14 +309,14 @@ class BimanualGUIController:
     def send_grasp_pose(self):
         """Set hand to grasp pose."""
         grasp_positions = {
-            'right_index_mcp_side': 0.0, 'right_index_mcp_forward': 0.0,
-            'right_index_pip': 0.525, 'right_index_dip': 1.11,
-            'right_middle_mcp_side': 0.0, 'right_middle_mcp_forward': 0.0,
-            'right_middle_pip': 0.525, 'right_middle_dip': 1.11,
-            'right_ring_mcp_side': 0.0, 'right_ring_mcp_forward': 0.0,
-            'right_ring_pip': 0.525, 'right_ring_dip': 1.11,
-            'right_thumb_mcp_forward': 1.46, 'right_thumb_mcp_side': 0.0,
-            'right_thumb_pip_joint': 0.56, 'right_thumb_dip_joint': 0.71,
+            'right_index_mcp_side': 0.00159, 'right_index_mcp_forward': 1.46159,
+            'right_index_pip': 0.17559, 'right_index_dip': 0.52159,
+            'right_middle_mcp_side': 0.00159, 'right_middle_mcp_forward': 1.46159,
+            'right_middle_pip': 0.17559, 'right_middle_dip': 0.52159,
+            'right_ring_mcp_side': 0.00159, 'right_ring_mcp_forward': 1.46159,
+            'right_ring_pip': 0.17559, 'right_ring_dip': 0.52159,
+            'right_thumb_mcp_forward': 1.70159, 'right_thumb_mcp_side': 0.00159,
+            'right_thumb_pip_joint': 0.43759, 'right_thumb_dip_joint': 0.17159,
         }
         for joint_name, position in grasp_positions.items():
             if joint_name in self.joint_sliders:
@@ -494,6 +499,10 @@ class BimanualGUIController:
             f'Total duration: {current_time:.1f}s, Commands: {len(recordings)}'
         )
     
+    def test_send_hand_interpolation_btn(self):
+        # Run interpolation in a thread to avoid blocking GUI
+        threading.Thread(target=self.ros_node.test_send_hand_interpolation, args=(16,), daemon=True).start()
+    
     def run(self):
         """Run the GUI."""
         self.root.mainloop()
@@ -551,7 +560,7 @@ class ROSNode(Node):
         return self.current_joint_states.copy()
     
     def publish_positions(self, controller, positions):
-        """Send positions via action client."""
+        """Send positions via action client (single point trajectory)."""
         # Create goal message
         goal_msg = FollowJointTrajectory.Goal()
         
@@ -565,24 +574,42 @@ class ROSNode(Node):
         elif controller == 'right_hand':
             goal_msg.trajectory.joint_names = self.right_hand_joints
             action_client = self.right_hand_client
-            # Debug: print joint names and positions
-            self.get_logger().info(f'Sending to right_hand_controller:')
-            for i, (name, pos) in enumerate(zip(self.right_hand_joints, positions)):
-                self.get_logger().info(f'  [{i}] {name}: {pos:.3f}')
         else:
             return
         
         # Create trajectory point
         point = JointTrajectoryPoint()
         point.positions = positions
-        point.time_from_start = Duration(sec=0, nanosec=800000000)  # 800ms
+        point.time_from_start = Duration(sec=0, nanosec=100000000)  # 100ms
         
         goal_msg.trajectory.points = [point]
         
         # Send goal asynchronously (non-blocking)
         action_client.send_goal_async(goal_msg)
+    
+    def test_send_hand_interpolation(self, steps=16):
+        import numpy as np
+        from trajectory_msgs.msg import JointTrajectoryPoint
+        from builtin_interfaces.msg import Duration
 
+        open_pose = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.03, 0.0, 0.0, 0.0])
+        closed_pose = np.array([0.00159, 1.46159, 0.17559, 0.52159, 0.00159, 1.46159, 0.17559, 0.52159, 0.00159, 1.46159, 0.17559, 0.52159, 1.70159, 0.00159, 0.43759, 0.17159])
 
+        points = []
+        for i in range(steps):
+            alpha = i / (steps - 1)
+            interp_pose = (1 - alpha) * open_pose + alpha * closed_pose
+            point = JointTrajectoryPoint()
+            point.positions = interp_pose.tolist()
+            point.time_from_start = Duration(sec=0, nanosec=int(1e9 * i / 32))  # 16fps
+            points.append(point)
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory.joint_names = self.right_hand_joints
+        goal_msg.trajectory.points = points
+
+        self.right_hand_client.send_goal_async(goal_msg)
+        self.get_logger().info(f'Sent trajectory with {steps} points to right_hand_controller')
 def main(args=None):
     rclpy.init(args=args)
     
