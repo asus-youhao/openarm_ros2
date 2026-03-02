@@ -60,6 +60,8 @@ def launch_setup(context, *args, **kwargs):
     robot_controller = LaunchConfiguration("robot_controller").perform(context)
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     move_to_home = LaunchConfiguration("move_to_home")
+    init_speed = LaunchConfiguration("init_speed")
+    init_torque = LaunchConfiguration("init_torque")
     use_rviz = LaunchConfiguration("use_rviz")
 
     # Get URDF via xacro
@@ -77,6 +79,12 @@ def launch_setup(context, *args, **kwargs):
             " ",
             "move_to_home:=",
             move_to_home,
+            " ",
+            "init_speed:=",
+            init_speed,
+            " ",
+            "init_torque:=",
+            init_torque,
         ]
     )
     
@@ -227,6 +235,22 @@ def generate_launch_description():
     
     declared_arguments.append(
         DeclareLaunchArgument(
+            "init_speed",
+            default_value="150",
+            description="Initial speed for O6 Hand joints (0-250, default: 150).",
+        )
+    )
+    
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "init_torque",
+            default_value="150",
+            description="Initial torque for O6 Hand joints (0-250, default: 150).",
+        )
+    )
+    
+    declared_arguments.append(
+        DeclareLaunchArgument(
             "use_rviz",
             default_value="false",
             description="Launch RViz for visualization.",
@@ -239,6 +263,8 @@ def generate_launch_description():
     robot_controller = LaunchConfiguration("robot_controller")
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     move_to_home = LaunchConfiguration("move_to_home")
+    init_speed = LaunchConfiguration("init_speed")
+    init_torque = LaunchConfiguration("init_torque")
     use_rviz = LaunchConfiguration("use_rviz")
 
     # OpaqueFunction to setup launch with evaluated configurations

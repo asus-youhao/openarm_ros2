@@ -52,7 +52,7 @@ class BimanualHandTester(Node):
         self.left_client.wait_for_server()
         self.get_logger().info('Action servers ready!')
 
-    def send_trajectory(self, right_positions, left_positions, duration_sec=2.0):
+    def send_trajectory(self, right_positions, left_positions, duration_sec=0.5):
         """Send trajectory to both hands."""
         
         # Joint names

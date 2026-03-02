@@ -10,6 +10,8 @@
   <!-- Arguments -->
   <xacro:arg name="use_fake_hardware" default="false" />
   <xacro:arg name="move_to_home" default="false" />
+  <xacro:arg name="init_speed" default="150" />
+  <xacro:arg name="init_torque" default="150" />
 
   <!-- World link -->
   <link name="world"/>
@@ -73,6 +75,8 @@
         <param name="hand_type">right</param>
         <param name="hand_prefix">R_</param>
         <param name="move_to_home">$(arg move_to_home)</param>
+        <param name="init_speed">$(arg init_speed)</param>
+        <param name="init_torque">$(arg init_torque)</param>
       </xacro:unless>
     </hardware>
 
@@ -131,6 +135,8 @@
         <param name="hand_type">left</param>
         <param name="hand_prefix">L_</param>
         <param name="move_to_home">$(arg move_to_home)</param>
+        <param name="init_speed">$(arg init_speed)</param>
+        <param name="init_torque">$(arg init_torque)</param>
       </xacro:unless>
     </hardware>
 

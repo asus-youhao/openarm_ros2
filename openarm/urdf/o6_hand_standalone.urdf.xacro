@@ -18,6 +18,8 @@
   <xacro:arg name="move_to_home" default="false" />
   <xacro:arg name="hand_prefix" default="R_" />
   <xacro:arg name="description_pkg" default="openarm_description" />
+  <xacro:arg name="init_speed" default="150" />
+  <xacro:arg name="init_torque" default="150" />
 
   <!-- World link -->
   <link name="world"/>
@@ -67,6 +69,8 @@
         <param name="hand_type">$(arg hand_type)</param>
         <param name="hand_prefix">$(arg hand_prefix)</param>
         <param name="move_to_home">$(arg move_to_home)</param>
+        <param name="init_speed">$(arg init_speed)</param>
+        <param name="init_torque">$(arg init_torque)</param>
       </xacro:unless>
     </hardware>
 

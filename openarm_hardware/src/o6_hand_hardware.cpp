@@ -75,10 +75,39 @@ hardware_interface::CallbackReturn O6HandHardware::on_init(
     move_to_home_on_activate_ = (move_to_home_str == "true" || move_to_home_str == "True");
   }
 
+  // Get init_speed parameter (0-255, default: 150)
+  init_speed_ = 150;
+  if (info_.hardware_parameters.find("init_speed") != info_.hardware_parameters.end())
+  {
+    try {
+      int speed = std::stoi(info_.hardware_parameters["init_speed"]);
+      init_speed_ = static_cast<uint8_t>(std::max(0, std::min(255, speed)));
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(rclcpp::get_logger("O6HandHardware"),
+                  "Invalid init_speed parameter, using default: 150");
+    }
+  }
+
+  // Get init_torque parameter (0-255, default: 150)
+  init_torque_ = 150;
+  if (info_.hardware_parameters.find("init_torque") != info_.hardware_parameters.end())
+  {
+    try {
+      int torque = std::stoi(info_.hardware_parameters["init_torque"]);
+      init_torque_ = static_cast<uint8_t>(std::max(0, std::min(255, torque)));
+    } catch (const std::exception& e) {
+      RCLCPP_WARN(rclcpp::get_logger("O6HandHardware"),
+                  "Invalid init_torque parameter, using default: 150");
+    }
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), 
               "O6 Hand CAN interface: %s, hand_type: %s, prefix: %s, move_to_home: %s", 
               can_interface_.c_str(), hand_type_.c_str(), hand_prefix_.c_str(),
               move_to_home_on_activate_ ? "true" : "false");
+  RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"),
+              "O6 Hand init_speed: %d, init_torque: %d", 
+              init_speed_, init_torque_);
 
   // Initialize state and command vectors (O6 has 6 DOF)
   hw_states_position_.resize(info_.joints.size(), 0.0);
@@ -319,11 +348,26 @@ bool O6HandHardware::connect_hand()
     // Create LinkerHandApi instance for O6 hand
     hand_api_ = std::make_unique<LinkerHandApi>(LINKER_HAND::O6, hand_enum, channel);
     
-    // Enable the hand
+    // Enable the hand first
     hand_api_->setEnable();
     
-    // Small delay to ensure connection is stable
+    // Delay to ensure hand is fully enabled and ready
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    // Initialize speed and torque settings from parameters (one-time setup)
+    std::vector<uint8_t> init_speed(NUM_JOINTS, init_speed_);
+    hand_api_->setSpeed(init_speed);
+    RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), 
+                "Set initial speed to %d for all %zu joints", init_speed_, NUM_JOINTS);
+    
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    std::vector<uint8_t> init_torque(NUM_JOINTS, init_torque_);
+    hand_api_->setTorque(init_torque);
+    RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), 
+                "Set initial torque to %d for all %zu joints", init_torque_, NUM_JOINTS);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     is_connected_ = true;
     RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), 
@@ -367,17 +411,8 @@ bool O6HandHardware::send_position_command(const std::vector<double> & positions
   }
 
   try {
-    // IMPORTANT: Reorder positions from URDF order to LinkerHandApi order
-    // URDF order:          [thumb_yaw, thumb_pitch, index, middle, ring, pinky]
-    // LinkerHandApi order: [thumb_pitch, thumb_yaw, index, middle, ring, pinky]
-    // So we need to swap indices 0 and 1
-    std::vector<double> reordered_positions = positions;
-    if (reordered_positions.size() >= 2) {
-      std::swap(reordered_positions[0], reordered_positions[1]);
-    }
-    
     // Convert radians to range values (0-255)
-    auto range_values = radians_to_range(reordered_positions);
+    auto range_values = radians_to_range(positions);
     
     // Send command using SDK fingerMove API
     hand_api_->fingerMove(range_values);
@@ -426,14 +461,6 @@ bool O6HandHardware::read_joint_states(std::vector<double> & positions,
     
     // Convert and validate
     auto new_positions = range_to_radians(range_values);
-    
-    // IMPORTANT: Reorder positions to match URDF joint order
-    // LinkerHandApi order: [thumb_pitch, thumb_yaw, index, middle, ring, pinky]
-    // URDF order:          [thumb_yaw, thumb_pitch, index, middle, ring, pinky]
-    // So we need to swap indices 0 and 1
-    if (new_positions.size() >= 2) {
-      std::swap(new_positions[0], new_positions[1]);
-    }
     
     // Sanity check: all values should be within reasonable bounds
     bool all_valid = true;

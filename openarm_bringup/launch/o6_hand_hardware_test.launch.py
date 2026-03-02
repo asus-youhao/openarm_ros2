@@ -76,6 +76,8 @@ def launch_setup(context, *args, **kwargs):
     hand_prefix = LaunchConfiguration("hand_prefix")
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     move_to_home = LaunchConfiguration("move_to_home")
+    init_speed = LaunchConfiguration("init_speed")
+    init_torque = LaunchConfiguration("init_torque")
     use_rviz = LaunchConfiguration("use_rviz")
     controller_rate = LaunchConfiguration("controller_rate")
     send_initial_command = LaunchConfiguration("send_initial_command")
@@ -100,6 +102,12 @@ def launch_setup(context, *args, **kwargs):
                 " ",
                 "move_to_home:=",
                 move_to_home,
+                " ",
+                "init_speed:=",
+                init_speed,
+                " ",
+                "init_torque:=",
+                init_torque,
             ]
         )
     else:
@@ -126,6 +134,12 @@ def launch_setup(context, *args, **kwargs):
                 " ",
                 "move_to_home:=",
                 move_to_home,
+                " ",
+                "init_speed:=",
+                init_speed,
+                " ",
+                "init_torque:=",
+                init_torque,
             ]
         )
     
@@ -406,6 +420,22 @@ def generate_launch_description():
             "move_to_home",
             default_value="false",
             description="Move O6 Hand to home position on activation.",
+        )
+    )
+    
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "init_speed",
+            default_value="150",
+            description="Initial speed for O6 Hand joints (0-250, default: 150).",
+        )
+    )
+    
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "init_torque",
+            default_value="150",
+            description="Initial torque for O6 Hand joints (0-250, default: 150).",
         )
     )
     

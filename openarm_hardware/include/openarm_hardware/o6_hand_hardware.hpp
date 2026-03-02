@@ -72,6 +72,10 @@ private:
   std::string hand_prefix_;       // Joint name prefix (e.g., "right_")
   bool is_connected_;
   bool move_to_home_on_activate_;
+  
+  // Speed and torque parameters (0-250)
+  uint8_t init_speed_;            // Initial speed (default: 150)
+  uint8_t init_torque_;           // Initial torque (default: 150)
 
   // LinkerHandApi SDK interface
   std::unique_ptr<LinkerHandApi> hand_api_;
