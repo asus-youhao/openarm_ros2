@@ -29,6 +29,11 @@
 
 #include "openarm_hardware/visibility_control.h"
 
+// ROS2 message types for touch sensor data
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "sensor_msgs/msg/point_cloud2.hpp"
+
 // Forward declare LinkerHandApi to avoid including the header here
 class LinkerHandApi;
 
@@ -90,6 +95,12 @@ private:
 
   // Joint names
   std::vector<std::string> joint_names_;
+
+  // ROS2 node and publishers for touch sensor data
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr touch_matrix_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr touch_mass_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr touch_pc_pub_;
 
   // Internal methods
   bool connect_hand();

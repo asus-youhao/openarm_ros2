@@ -139,6 +139,26 @@ hardware_interface::CallbackReturn O6HandHardware::on_configure(
 {
   RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), "Configuring O6 Hand hardware...");
   
+  // Create ROS2 node for publishing touch sensor data
+  // Use hand_prefix_ to create appropriate topic names
+  std::string node_name = hand_type_ + "_hand_touch_publisher";
+  node_ = std::make_shared<rclcpp::Node>(node_name);
+  
+  // Create topic names based on hand type (left or right)
+  std::string prefix = "cb_" + hand_type_ + "_hand";
+  std::string touch_topic = prefix + "_matrix_touch";
+  std::string mass_topic = prefix + "_matrix_touch_mass";
+  std::string pc_topic = prefix + "_matrix_touch_pc";
+  
+  // Initialize publishers
+  touch_matrix_pub_ = node_->create_publisher<std_msgs::msg::String>(touch_topic, 10);
+  touch_mass_pub_ = node_->create_publisher<std_msgs::msg::String>(mass_topic, 10);
+  touch_pc_pub_ = node_->create_publisher<sensor_msgs::msg::PointCloud2>(pc_topic, 10);
+  
+  RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), 
+              "Created touch sensor publishers: %s, %s, %s",
+              touch_topic.c_str(), mass_topic.c_str(), pc_topic.c_str());
+  
   RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"), "O6 Hand configured");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -272,6 +292,189 @@ hardware_interface::return_type O6HandHardware::read(
       hw_states_position_ = temp_pos;
       hw_states_velocity_ = temp_vel;
       hw_states_effort_ = temp_eff;
+      
+      // Read and publish touch sensor data
+      try {
+        auto force_data = hand_api_->getForce();
+        
+        // Debug: Log force_data structure
+        static int debug_count = 0;
+        if (debug_count < 5) {  // Only log first 5 times
+          RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"),
+                      "DEBUG: getForce() returned %zu fingers", force_data.size());
+          for (size_t i = 0; i < force_data.size(); ++i) {
+            RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"),
+                        "  Finger[%zu]: %zu rows", i, force_data[i].size());
+            if (!force_data[i].empty()) {
+              RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"),
+                          "    Row[0]: %zu columns", force_data[i][0].size());
+              // Print first few values
+              std::stringstream ss;
+              for (size_t j = 0; j < std::min(size_t(6), force_data[i][0].size()); ++j) {
+                ss << static_cast<int>(force_data[i][0][j]) << " ";
+              }
+              RCLCPP_INFO(rclcpp::get_logger("O6HandHardware"),
+                          "    First values: %s", ss.str().c_str());
+            }
+          }
+          debug_count++;
+        }
+        
+        // Check if force_data is valid and has expected size (5 fingers for O6 hand)
+        if (force_data.empty()) {
+          static auto last_empty_warn = std::chrono::steady_clock::now();
+          auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration_cast<std::chrono::seconds>(now - last_empty_warn).count() >= 5) {
+            RCLCPP_WARN(rclcpp::get_logger("O6HandHardware"),
+                        "getForce() returned empty data - touch sensor may not be available");
+            last_empty_warn = now;
+          }
+          return hardware_interface::return_type::OK;
+        }
+        
+        // Publish touch matrix data (JSON format matching Python SDK)
+        if (touch_matrix_pub_ && touch_matrix_pub_->get_subscription_count() > 0) {
+          std_msgs::msg::String touch_msg;
+          std::stringstream ss;
+          
+          // Get current time
+          auto now = node_->get_clock()->now();
+          
+          // Build JSON: {"stamp": {"secs": ..., "nsecs": ...}, "thumb_matrix": [...], ...}
+          ss << "{";
+          ss << "\"stamp\":{\"secs\":" << now.seconds() << ",\"nsecs\":" << now.nanoseconds() % 1000000000 << "},";
+          
+          // Finger names matching Python SDK
+          const std::vector<std::string> finger_names = {
+            "thumb_matrix", "index_matrix", "middle_matrix", "ring_matrix", "little_matrix"
+          };
+          
+          for (size_t finger = 0; finger < std::min(force_data.size(), finger_names.size()); ++finger) {
+            if (finger > 0) ss << ",";
+            ss << "\"" << finger_names[finger] << "\":[";
+            for (size_t row = 0; row < force_data[finger].size(); ++row) {
+              if (row > 0) ss << ",";
+              ss << "[";
+              for (size_t col = 0; col < force_data[finger][row].size(); ++col) {
+                if (col > 0) ss << ",";
+                ss << static_cast<int>(force_data[finger][row][col]);
+              }
+              ss << "]";
+            }
+            ss << "]";
+          }
+          ss << "}";
+          touch_msg.data = ss.str();
+          touch_matrix_pub_->publish(touch_msg);
+        }
+        
+        // Publish touch mass data (JSON format matching Python SDK)
+        if (touch_mass_pub_ && touch_mass_pub_->get_subscription_count() > 0) {
+          std_msgs::msg::String mass_msg;
+          std::stringstream ss;
+          
+          // Get current time
+          auto now = node_->get_clock()->now();
+          
+          // Build JSON: {"stamp": {...}, "unit": "g", "thumb_mass": ..., ...}
+          ss << "{";
+          ss << "\"stamp\":{\"secs\":" << now.seconds() << ",\"nsecs\":" << now.nanoseconds() % 1000000000 << "},";
+          ss << "\"unit\":\"g\",";
+          
+          // Finger mass names matching Python SDK
+          const std::vector<std::string> mass_names = {
+            "thumb_mass", "index_mass", "middle_mass", "ring_mass", "little_mass"
+          };
+          
+          for (size_t finger = 0; finger < std::min(force_data.size(), mass_names.size()); ++finger) {
+            if (finger > 0) ss << ",";
+            uint32_t total_force = 0;
+            for (const auto& row : force_data[finger]) {
+              for (const auto& val : row) {
+                total_force += val;
+              }
+            }
+            ss << "\"" << mass_names[finger] << "\":" << total_force;
+          }
+          ss << "}";
+          mass_msg.data = ss.str();
+          touch_mass_pub_->publish(mass_msg);
+        }
+        
+        // Publish touch point cloud data (PointCloud2 format)
+        if (touch_pc_pub_ && touch_pc_pub_->get_subscription_count() > 0) {
+          sensor_msgs::msg::PointCloud2 pc_msg;
+          pc_msg.header.stamp = node_->get_clock()->now();
+          pc_msg.header.frame_id = hand_prefix_ + "palm_link";
+          
+          // Setup point cloud fields: x, y, z, intensity
+          pc_msg.fields.resize(4);
+          pc_msg.fields[0].name = "x";
+          pc_msg.fields[0].offset = 0;
+          pc_msg.fields[0].datatype = sensor_msgs::msg::PointField::FLOAT32;
+          pc_msg.fields[0].count = 1;
+          
+          pc_msg.fields[1].name = "y";
+          pc_msg.fields[1].offset = 4;
+          pc_msg.fields[1].datatype = sensor_msgs::msg::PointField::FLOAT32;
+          pc_msg.fields[1].count = 1;
+          
+          pc_msg.fields[2].name = "z";
+          pc_msg.fields[2].offset = 8;
+          pc_msg.fields[2].datatype = sensor_msgs::msg::PointField::FLOAT32;
+          pc_msg.fields[2].count = 1;
+          
+          pc_msg.fields[3].name = "intensity";
+          pc_msg.fields[3].offset = 12;
+          pc_msg.fields[3].datatype = sensor_msgs::msg::PointField::FLOAT32;
+          pc_msg.fields[3].count = 1;
+          
+          // Calculate total number of points
+          size_t total_points = 0;
+          for (const auto& finger : force_data) {
+            for (const auto& row : finger) {
+              for (const auto& val : row) {
+                if (val > 0) total_points++; // Only include active touch points
+              }
+            }
+          }
+          
+          pc_msg.point_step = 16; // 4 floats * 4 bytes
+          pc_msg.row_step = pc_msg.point_step * total_points;
+          pc_msg.width = total_points;
+          pc_msg.height = 1;
+          pc_msg.is_dense = true;
+          pc_msg.data.resize(pc_msg.row_step);
+          
+          // Fill point cloud data
+          size_t point_idx = 0;
+          for (size_t finger = 0; finger < force_data.size(); ++finger) {
+            for (size_t row = 0; row < force_data[finger].size(); ++row) {
+              for (size_t col = 0; col < force_data[finger][row].size(); ++col) {
+                uint8_t force_val = force_data[finger][row][col];
+                if (force_val > 0) {
+                  float* point = reinterpret_cast<float*>(&pc_msg.data[point_idx * pc_msg.point_step]);
+                  point[0] = static_cast<float>(finger) * 0.02f; // x: finger spacing
+                  point[1] = static_cast<float>(row) * 0.01f;    // y: row spacing
+                  point[2] = static_cast<float>(col) * 0.01f;    // z: column spacing
+                  point[3] = static_cast<float>(force_val);       // intensity: force value
+                  point_idx++;
+                }
+              }
+            }
+          }
+          
+          touch_pc_pub_->publish(pc_msg);
+        }
+      } catch (const std::exception& e) {
+        static auto last_touch_warn_time = std::chrono::steady_clock::now();
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_touch_warn_time).count() >= 5) {
+          RCLCPP_WARN(rclcpp::get_logger("O6HandHardware"),
+                      "Failed to read touch sensor data: %s", e.what());
+          last_touch_warn_time = now;
+        }
+      }
     }
     else
     {

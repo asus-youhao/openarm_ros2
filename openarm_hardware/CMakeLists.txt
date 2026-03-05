@@ -31,6 +31,8 @@ find_package(kdl_parser REQUIRED)
 find_package(orocos_kdl REQUIRED)
 find_package(urdf REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
@@ -103,6 +105,8 @@ ament_target_dependencies(${PROJECT_NAME}
   kdl_parser
   orocos_kdl
   urdf
+  std_msgs
+  sensor_msgs
 )
 
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)
