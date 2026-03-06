@@ -292,16 +292,16 @@ def generate_launch_description():
         args=[robot_controller, arm_prefix]
     )
 
-    gripper_controller_spawner = OpaqueFunction(
-        function=lambda context: [Node(
-            package="controller_manager",
-            executable="spawner",
-            namespace=namespace_from_context(context, arm_prefix),
-            arguments=["left_gripper_controller",
-                       "right_gripper_controller", "-c",
-                       f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
-        )]
-    )
+    # gripper_controller_spawner = OpaqueFunction(
+    #     function=lambda context: [Node(
+    #         package="controller_manager",
+    #         executable="spawner",
+    #         namespace=namespace_from_context(context, arm_prefix),
+    #         arguments=["left_gripper_controller",
+    #                    "right_gripper_controller", "-c",
+    #                    f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
+    #     )]ss
+    # )
 
     # Spawn right_hand_controller for leap_hand finger joints
     # This controller is needed for both fake and real hardware when ee_type=leap_hand_right
@@ -344,11 +344,11 @@ def generate_launch_description():
         actions=[controller_spawner_func],
         condition=UnlessCondition(use_joint_state_publisher),
     )
-    delayed_gripper_controller = TimerAction(
-        period=LAUNCH_DELAY_SECONDS,
-        actions=[gripper_controller_spawner],
-        condition=UnlessCondition(use_joint_state_publisher),
-    )
+    # delayed_gripper_controller = TimerAction(
+    #     period=LAUNCH_DELAY_SECONDS,
+    #     actions=[gripper_controller_spawner],
+    #     condition=UnlessCondition(use_joint_state_publisher),
+    # )
     
     delayed_hand_controller = TimerAction(
         period=LAUNCH_DELAY_SECONDS,
@@ -364,7 +364,7 @@ def generate_launch_description():
         [
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
-            delayed_gripper_controller,
+            # delayed_gripper_controller,
             delayed_hand_controller,
         ]
     )
