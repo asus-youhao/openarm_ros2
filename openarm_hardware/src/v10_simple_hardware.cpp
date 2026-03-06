@@ -45,6 +45,8 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   it = info.hardware_parameters.find("ee_type");
   ee_type_ = (it != info.hardware_parameters.end()) ? it->second : "default";
   has_leap_hand_ = (ee_type_ == "leap_hand_right" && arm_prefix_ == "right_");
+  // O6 hand detection: supports o6_hand (bimanual), o6_hand_left, o6_hand_right, o6_left, o6_right
+  has_o6_hand_ = (ee_type_.find("o6") != std::string::npos);
 
   // Parse gripper enable (default: true for V10)
   it = info.hardware_parameters.find("hand");
@@ -106,10 +108,11 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, leap_hand=%s, freq_diag=%s",
+              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, leap_hand=%s, o6_hand=%s, freq_diag=%s",
               can_interface_.c_str(), arm_prefix_.c_str(), ee_type_.c_str(),
               hand_ ? "enabled" : "disabled", can_fd_ ? "enabled" : "disabled",
               has_leap_hand_ ? "enabled" : "disabled",
+              has_o6_hand_ ? "enabled" : "disabled",
               enable_frequency_diagnostics_ ? "enabled" : "disabled");
   return true;
 }
@@ -161,9 +164,48 @@ void OpenArm_v10HW::generate_joint_names() {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added 16 leap_hand finger joints");
   }
 
+  // Generate O6 hand joint names if enabled
+  if (has_o6_hand_) {
+    // In bimanual setup: arm_prefix is "left_" or "right_", but O6 joints in URDF use "L_" or "R_"
+    // Determine O6 prefix based on arm_prefix (not o6_hand_type_ which might not match)
+    std::string hand_prefix;
+    if (arm_prefix_.find("left") != std::string::npos) {
+      hand_prefix = "L_";
+    } else if (arm_prefix_.find("right") != std::string::npos) {
+      hand_prefix = "R_";
+    } else {
+      // Single arm case - use o6_hand_type_ directly
+      hand_prefix = (o6_hand_type_ == "left") ? "L_" : "R_";
+    }
+    
+    // Active joints (6)
+    joint_names_.push_back(hand_prefix + "thumb_cmc_yaw");
+    joint_names_.push_back(hand_prefix + "thumb_cmc_pitch");
+    joint_names_.push_back(hand_prefix + "index_mcp_pitch");
+    joint_names_.push_back(hand_prefix + "middle_mcp_pitch");
+    joint_names_.push_back(hand_prefix + "ring_mcp_pitch");
+    joint_names_.push_back(hand_prefix + "pinky_mcp_pitch");
+    // Passive/coupled joints (5) - matching external openarm_description URDF
+    joint_names_.push_back(hand_prefix + "thumb_dip");
+    joint_names_.push_back(hand_prefix + "index_dip");
+    joint_names_.push_back(hand_prefix + "middle_dip");
+    joint_names_.push_back(hand_prefix + "ring_dip");
+    joint_names_.push_back(hand_prefix + "pinky_dip");
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added 11 O6 hand joints with prefix '%s' (arm_prefix='%s')", 
+                hand_prefix.c_str(), arm_prefix_.c_str());
+  }
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Generated %zu joint names for arm prefix '%s'",
               joint_names_.size(), arm_prefix_.c_str());
+  
+  // Debug: Print all joint names
+  std::string joint_list = "";
+  for (const auto& name : joint_names_) {
+    joint_list += name + ", ";
+  }
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Joint names: %s", joint_list.c_str());
 }
 
 hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
@@ -180,8 +222,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Generate joint names based on arm prefix
   generate_joint_names();
 
-  // Validate joint count (7 arm joints + optional gripper + optional leap_hand)
-  size_t expected_joints = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+  // Validate joint count (7 arm joints + optional gripper + optional leap_hand + optional o6_hand)
+  size_t expected_joints = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0) + (has_o6_hand_ ? O6_HAND_DOF : 0);
   if (joint_names_.size() != expected_joints) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                  "Generated %zu joint names, expected %zu", joint_names_.size(),
@@ -228,6 +270,9 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   if (has_leap_hand_) {
     leap_state_filter_.init(LEAP_HAND_DOF, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
   }
+  if (has_o6_hand_) {
+    o6_state_filter_.init(O6_HAND_DOF, STATE_FILTER_CUTOFF_HZ, 60.0);  // O6 runs at 60Hz
+  }
   
   // Initialize CSV logging variables
   csv_initialized_ = false;
@@ -247,6 +292,14 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   if (has_leap_hand_) {
     leap_pos_cmd_buffer_.resize(LEAP_HAND_DOF, 0.0);
     leap_pos_state_buffer_.resize(LEAP_HAND_DOF, 0.0);
+  }
+
+  // Initialize O6 Hand thread buffers if enabled
+  if (has_o6_hand_) {
+    // Command buffer: only 6 active joints (passive joints don't receive commands)
+    o6_pos_cmd_buffer_.resize(6, 0.0);
+    // State buffer: all 11 joints (6 active + 5 passive for full kinematics)
+    o6_pos_state_buffer_.resize(O6_HAND_DOF, 0.0);
   }
 
   // Initialize LEAP Hand if enabled
@@ -282,6 +335,40 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                 "LEAP Hand configured: port=%s, baudrate=%d", 
                 leap_serial_port_.c_str(), leap_baudrate_);
+  }
+
+  // Initialize O6 Hand if enabled
+  o6_connected_ = false;
+  if (has_o6_hand_) {
+    // Get O6 CAN interface parameter (default: can2 for right, can3 for left)
+    auto it = info.hardware_parameters.find("o6_can_interface");
+    if (it != info.hardware_parameters.end()) {
+      o6_can_interface_ = it->second;
+    } else {
+      // Default based on arm_prefix or ee_type
+      if (arm_prefix_ == "left_") {
+        o6_can_interface_ = "can1";
+      } else if (arm_prefix_ == "right_") {
+        o6_can_interface_ = "can0";
+      } else {
+        // Single arm: use ee_typeCOMM_TYPE
+        o6_can_interface_ = (ee_type_ == "o6_hand_left" || ee_type_ == "o6_left") ? "can3" : "can2";
+      }
+    }
+    
+    // Determine hand type from arm_prefix or ee_type
+    if (arm_prefix_ == "left_") {
+      o6_hand_type_ = "left";
+    } else if (arm_prefix_ == "right_") {
+      o6_hand_type_ = "right";
+    } else {
+      // Single arm: use ee_type
+      o6_hand_type_ = (ee_type_ == "o6_hand_left" || ee_type_ == "o6_left") ? "left" : "right";
+    }
+    
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand configured: can=%s, hand_type=%s", 
+                o6_can_interface_.c_str(), o6_hand_type_.c_str());
   }
 
   // Initialize health monitoring
@@ -322,7 +409,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "OpenArm V10 Simple HW initialized successfully");
+              "OpenArm V10 Simple HW initialized successfully with %zu joints ready for export",
+              joint_names_.size());
 
   return CallbackReturn::SUCCESS;
 }
@@ -370,6 +458,9 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
 std::vector<hardware_interface::StateInterface>
 OpenArm_v10HW::export_state_interfaces() {
   std::vector<hardware_interface::StateInterface> state_interfaces;
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Exporting %zu state interfaces for %zu joints",
+              joint_names_.size() * 3, joint_names_.size());
   for (size_t i = 0; i < joint_names_.size(); ++i) {
     state_interfaces.emplace_back(hardware_interface::StateInterface(
         joint_names_[i], hardware_interface::HW_IF_POSITION, &pos_states_[i]));
@@ -378,13 +469,17 @@ OpenArm_v10HW::export_state_interfaces() {
     state_interfaces.emplace_back(hardware_interface::StateInterface(
         joint_names_[i], hardware_interface::HW_IF_EFFORT, &tau_states_[i]));
   }
-
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Successfully exported %zu state interfaces", state_interfaces.size());
   return state_interfaces;
 }
 
 std::vector<hardware_interface::CommandInterface>
 OpenArm_v10HW::export_command_interfaces() {
   std::vector<hardware_interface::CommandInterface> command_interfaces;
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Exporting %zu command interfaces for %zu joints",
+              joint_names_.size() * 3, joint_names_.size());
   // TODO: consider exposing only needed interfaces to avoid undefined behavior.
   for (size_t i = 0; i < joint_names_.size(); ++i) {
     command_interfaces.emplace_back(hardware_interface::CommandInterface(
@@ -396,7 +491,8 @@ OpenArm_v10HW::export_command_interfaces() {
     command_interfaces.emplace_back(hardware_interface::CommandInterface(
         joint_names_[i], hardware_interface::HW_IF_EFFORT, &tau_commands_[i]));
   }
-
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Successfully exported %zu command interfaces", command_interfaces.size());
   return command_interfaces;
 }
 
@@ -416,6 +512,50 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     }
   }
 
+  // Connect to O6 Hand if enabled
+  if (has_o6_hand_) {
+    if (!connect_o6_hand()) {
+      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                  "Failed to connect to O6 Hand, will operate in simulation mode");
+    }
+    
+    // Initialize O6 hand to open position (0.0 rad = open)
+    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand initialization [arm_prefix=%s]: o6_start_idx=%zu (ARM_DOF=%d, hand_=%d, has_leap=%d)",
+                arm_prefix_.c_str(), o6_start_idx, ARM_DOF, hand_ ? 1 : 0, has_leap_hand_ ? 1 : 0);
+    
+    // Set command and state buffers to open position
+    for (size_t i = 0; i < 6; ++i) {
+      pos_commands_[o6_start_idx + i] = 0.0;  // Open hand position
+      pos_states_[o6_start_idx + i] = 0.0;    // Reflect open state
+    }
+    
+    // Immediately send open command to hardware to prevent controller from reading old state
+    if (o6_connected_) {
+      std::vector<double> open_pos(6, 0.0);
+      std::vector<uint8_t> motor_cmds(6, 255);  // 0 rad -> 255 motor (open)
+      try {
+        o6_hand_api_->fingerMove(motor_cmds);
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                    "O6 Hand physically opened [arm_prefix=%s]: sent motor=[255,255,255,255,255,255]",
+                    arm_prefix_.c_str());
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                    "Failed to send initial open command to O6 [arm_prefix=%s]: %s",
+                    arm_prefix_.c_str(), e.what());
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));  // Wait for hand to open
+    }
+    
+    // Verify initialization
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand initialized to open position [arm_prefix=%s]: pos_commands_[%zu..%zu] = [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+                arm_prefix_.c_str(), o6_start_idx, o6_start_idx + 5,
+                pos_commands_[o6_start_idx], pos_commands_[o6_start_idx+1], pos_commands_[o6_start_idx+2],
+                pos_commands_[o6_start_idx+3], pos_commands_[o6_start_idx+4], pos_commands_[o6_start_idx+5]);
+  }
+
   // Return to zero position
   return_to_zero();
 
@@ -429,6 +569,28 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     leap_thread_running_ = true;
     leap_control_thread_ = std::thread(&OpenArm_v10HW::leap_control_loop, this);
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 500Hz (write-only)");
+  }
+
+  // Start O6 Hand control thread (60Hz) if enabled
+  if (has_o6_hand_ && o6_connected_) {
+    // Pre-fill O6 state buffer with open position to prevent controller from reading old closed state
+    {
+      std::lock_guard<std::mutex> lock(o6_state_mutex_);
+      for (size_t i = 0; i < O6_HAND_DOF; ++i) {
+        o6_pos_state_buffer_[i] = 0.0;  // All joints at open position
+      }
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 state buffer pre-filled with open position [arm_prefix=%s]", arm_prefix_.c_str());
+    
+    o6_thread_running_ = true;
+    o6_control_thread_ = std::thread(&OpenArm_v10HW::o6_control_loop, this);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand control thread started at 60Hz [arm_prefix=%s]", arm_prefix_.c_str());
+  } else if (has_o6_hand_ && !o6_connected_) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand enabled but not connected, control thread NOT started [arm_prefix=%s]",
+                arm_prefix_.c_str());
   }
 
   // Start decoupled state read thread (reads CAN arm + LEAP serial + applies LPF)
@@ -472,6 +634,15 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread stopped");
   }
 
+  // Stop O6 Hand control thread
+  if (o6_thread_running_) {
+    o6_thread_running_ = false;
+    if (o6_control_thread_.joinable()) {
+      o6_control_thread_.join();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "O6 Hand control thread stopped");
+  }
+
   // Stop decoupled state read thread
   if (state_read_thread_running_) {
     state_read_thread_running_ = false;
@@ -484,6 +655,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   // Disconnect LEAP Hand if connected
   if (has_leap_hand_) {
     disconnect_leap_hand();
+  }
+
+  // Disconnect O6 Hand if connected
+  if (has_o6_hand_) {
+    disconnect_o6_hand();
   }
 
   // Disable all motors (like full_arm.cpp exit)
@@ -531,6 +707,17 @@ hardware_interface::return_type OpenArm_v10HW::read(
     }
   }
 
+  // Copy O6 Hand states from thread buffer if enabled (thread-safe)
+  if (has_o6_hand_ && o6_connected_) {
+    std::lock_guard<std::mutex> lock(o6_state_mutex_);
+    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    for (size_t i = 0; i < O6_HAND_DOF; ++i) {
+      pos_states_[o6_start_idx + i] = o6_pos_state_buffer_[i];
+      vel_states_[o6_start_idx + i] = 0.0;  // O6 Hand doesn't provide velocity feedback
+      tau_states_[o6_start_idx + i] = 0.0;  // O6 Hand doesn't provide torque feedback
+    }
+  }
+
   return hardware_interface::return_type::OK;
 }
 
@@ -554,6 +741,40 @@ hardware_interface::return_type OpenArm_v10HW::write(
     for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
       leap_pos_cmd_buffer_[i] = pos_commands_[leap_start_idx + i];
     }
+  }
+
+  // Update O6 Hand command buffers if enabled (thread-safe)
+  // Only copy 6 active joint commands (passive joints are mechanically coupled)
+  if (has_o6_hand_ && o6_connected_) {
+    std::lock_guard<std::mutex> lock(o6_command_mutex_);
+    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    
+    // Debug: Check if commands are non-zero
+    static int write_counter = 0;
+    bool has_nonzero = false;
+    
+    // Only copy 6 active joint commands (indices 0-5 in O6 joint list)
+    for (size_t i = 0; i < 6; ++i) {
+      o6_pos_cmd_buffer_[i] = pos_commands_[o6_start_idx + i];
+      if (std::abs(pos_commands_[o6_start_idx + i]) > 0.01) {
+        has_nonzero = true;
+      }
+    }
+    
+    // Debug: Log index calculation and buffer values
+    if (write_counter % 100 == 0) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Write"),
+                  "O6 Write [%s] - o6_start_idx=%zu (ARM_DOF=%d, hand_=%d, has_leap=%d)\n"
+                  "  pos_commands_[%zu..%zu]: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]\n"
+                  "  o6_pos_cmd_buffer_: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f]",
+                  arm_prefix_.c_str(), o6_start_idx, ARM_DOF, hand_ ? 1 : 0, has_leap_hand_ ? 1 : 0,
+                  o6_start_idx, o6_start_idx + 5,
+                  pos_commands_[o6_start_idx], pos_commands_[o6_start_idx+1], pos_commands_[o6_start_idx+2],
+                  pos_commands_[o6_start_idx+3], pos_commands_[o6_start_idx+4], pos_commands_[o6_start_idx+5],
+                  o6_pos_cmd_buffer_[0], o6_pos_cmd_buffer_[1], o6_pos_cmd_buffer_[2],
+                  o6_pos_cmd_buffer_[3], o6_pos_cmd_buffer_[4], o6_pos_cmd_buffer_[5]);
+    }
+    write_counter++;
   }
 
   return hardware_interface::return_type::OK;
@@ -1329,6 +1550,236 @@ void OpenArm_v10HW::health_monitor_loop() {
   }
   
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Health"), "Health monitoring thread stopped");
+}
+
+// ============================================================================
+// O6 Hand Functions
+// ============================================================================
+
+bool OpenArm_v10HW::connect_o6_hand() {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Connecting to O6 Hand on %s (%s hand) [arm_prefix=%s]...",
+              o6_can_interface_.c_str(), o6_hand_type_.c_str(), arm_prefix_.c_str());
+
+  try {
+    // Determine CAN channel from interface name
+    COMM_TYPE channel;
+    if (o6_can_interface_ == "can0") {
+      channel = COMM_TYPE::COMM_CAN_0;
+    } else if (o6_can_interface_ == "can1") {
+      channel = COMM_TYPE::COMM_CAN_1;
+    } else if (o6_can_interface_ == "can2") {
+      // Map additional CAN interfaces to the available COMM channels
+      channel = COMM_TYPE::COMM_CAN_0;  // can2 maps to COMM_CAN_0
+    } else if (o6_can_interface_ == "can3") {
+      channel = COMM_TYPE::COMM_CAN_1;  // can3 maps to COMM_CAN_1
+    } else {
+      RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                   "Invalid O6 CAN interface: %s", o6_can_interface_.c_str());
+      return false;
+    }
+
+    // Determine hand type
+    HAND_TYPE hand_type = (o6_hand_type_ == "left") ? HAND_TYPE::LEFT : HAND_TYPE::RIGHT;
+
+    // Create O6 hand API instance
+    o6_hand_api_ = std::make_unique<LinkerHandApi>(
+      LINKER_HAND::O6, hand_type, channel);
+
+    // IMPORTANT: Enable the hand FIRST before setting speed/torque
+    o6_hand_api_->setEnable();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    // Then set speed and torque for all 6 motors (0-255)
+    std::vector<uint8_t> speed(6, 200);    // Default speed: 200/255 (~78%)
+    o6_hand_api_->setSpeed(speed);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Set O6 Hand speed to 200 [arm_prefix=%s]", arm_prefix_.c_str());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    std::vector<uint8_t> torque(6, 200);   // Default torque: 200/255 (~78%)
+    o6_hand_api_->setTorque(torque);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Set O6 Hand torque to 200 [arm_prefix=%s]", arm_prefix_.c_str());
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Get version info
+    std::string version = o6_hand_api_->getVersion();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "O6 Hand connected successfully [arm_prefix=%s], version: %s",
+                arm_prefix_.c_str(), version.c_str());
+
+    o6_connected_ = true;
+    return true;
+
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Failed to connect O6 Hand [arm_prefix=%s]: %s",
+                 arm_prefix_.c_str(), e.what());
+    o6_connected_ = false;
+    return false;
+  }
+}
+
+void OpenArm_v10HW::disconnect_o6_hand() {
+  if (!o6_connected_ || !o6_hand_api_) {
+    return;
+  }
+
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Disconnecting O6 Hand [arm_prefix=%s]...", arm_prefix_.c_str());
+
+  try {
+    // Disable the hand
+    o6_hand_api_->setDisable();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    o6_hand_api_.reset();
+    o6_connected_ = false;
+    
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "O6 Hand disconnected");
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "Error disconnecting O6 Hand: %s", e.what());
+  }
+}
+
+bool OpenArm_v10HW::send_o6_hand_command(const std::vector<double>& positions, size_t start_idx) {
+  if (!o6_connected_ || !o6_hand_api_) {
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("OpenArm_v10HW"),
+                         *rclcpp::Clock::make_shared(), 5000,
+                         "O6 not connected, skipping command");
+    return false;
+  }
+
+  try {
+    // Convert radians to O6 motor units (0-255)
+    // Correct mapping for O6: 
+    //   0 rad (min, open hand) -> 255 motor (open)
+    //   max rad (closed hand) -> 0 motor (closed)
+    std::vector<uint8_t> motor_cmds(6);
+
+    // Only send commands for the 6 active joints
+    for (size_t i = 0; i < 6; ++i) {
+      double pos_rad = positions[start_idx + i];
+      // Clamp to joint limits
+      pos_rad = std::max(O6_JOINT_MIN[i], std::min(pos_rad, O6_JOINT_MAX[i]));
+
+      double min_angle = O6_JOINT_MIN[i];
+      double max_angle = O6_JOINT_MAX[i];
+      double normalized = 0.0;
+      if (max_angle > min_angle) {
+        normalized = (pos_rad - min_angle) / (max_angle - min_angle);
+      }
+
+      // Direct mapping: 0 rad -> 255 motor (open), max rad -> 0 motor (closed)
+      double val = 255.0 - (normalized * 255.0);
+      val = std::max(0.0, std::min(255.0, val));
+      motor_cmds[i] = static_cast<uint8_t>(std::round(val));
+    }
+
+    // Debug: Log commands periodically
+    static int debug_counter = 0;
+    if (debug_counter++ % 60 == 0) {  // Log every 60 cycles (~1Hz at 60Hz loop)
+      std::string logger_name = "OpenArm_v10HW_O6_" + arm_prefix_;
+      RCLCPP_INFO(rclcpp::get_logger(logger_name),
+                  "O6 Command (%s) - Rads: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f] -> Motor: [%d, %d, %d, %d, %d, %d]",
+                  arm_prefix_.c_str(),
+                  positions[start_idx], positions[start_idx+1], positions[start_idx+2],
+                  positions[start_idx+3], positions[start_idx+4], positions[start_idx+5],
+                  motor_cmds[0], motor_cmds[1], motor_cmds[2], motor_cmds[3], motor_cmds[4], motor_cmds[5]);
+    }
+
+    // Send command to O6 hand via SDK (fingerMove expects 6 values 0-255)
+    // Passive joints (6-10) are mechanically coupled and don't need commands
+    o6_hand_api_->fingerMove(motor_cmds);
+    return true;
+
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("OpenArm_v10HW"),
+                          *rclcpp::Clock::make_shared(), 1000,
+                          "Error sending O6 command: %s", e.what());
+    return false;
+  }
+}
+
+bool OpenArm_v10HW::read_o6_hand_states(std::vector<double>& positions, size_t start_idx) {
+  if (!o6_connected_ || !o6_hand_api_) {
+    return false;
+  }
+
+  try {
+    // Read current positions from O6 hand (range values 0-255)
+    auto motor_positions = o6_hand_api_->getState();
+    
+    // O6 Hand has 6 active motors
+    if (motor_positions.size() != 6) {
+      return false;
+    }
+
+    // Convert motor units to radians for 6 active joints
+    // Reversed mapping (matching send command): motor 255 -> 0 rad (open), motor 0 -> max rad (closed)
+    for (size_t i = 0; i < 6; ++i) {
+      // Reverse the motor value: actual motor value is inverted
+      double reversed_motor = 255.0 - motor_positions[i];
+      double normalized = reversed_motor / 255.0;
+      positions[start_idx + i] = O6_JOINT_MIN[i] + normalized * (O6_JOINT_MAX[i] - O6_JOINT_MIN[i]);
+    }
+    
+    // Simulate passive/coupled DIP joints (joints 6-10)
+    // These mimic relationships are defined in the URDF with specific multipliers
+    // Reference: external openarm_description/urdf/ros2_control/openarm.bimanual.ros2_control.xacro
+    positions[start_idx + 6] = positions[start_idx + 1] * 1.86;  // thumb_dip mimics thumb_cmc_pitch (multiplier=1.86)
+    positions[start_idx + 7] = positions[start_idx + 2] * 0.89;  // index_dip mimics index_mcp_pitch (multiplier=0.89)
+    positions[start_idx + 8] = positions[start_idx + 3] * 0.89;  // middle_dip mimics middle_mcp_pitch (multiplier=0.89)
+    positions[start_idx + 9] = positions[start_idx + 4] * 0.89;  // ring_dip mimics ring_mcp_pitch (multiplier=0.89)
+    positions[start_idx + 10] = positions[start_idx + 5] * 0.89; // pinky_dip mimics pinky_mcp_pitch (multiplier=0.89)
+
+    return true;
+
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("OpenArm_v10HW"),
+                          *rclcpp::Clock::make_shared(), 1000,
+                          "Error reading O6 states: %s", e.what());
+    return false;
+  }
+}
+
+void OpenArm_v10HW::o6_control_loop() {
+  std::string logger_name = "OpenArm_v10HW_O6_" + arm_prefix_;  // Add arm prefix to logger
+  RCLCPP_INFO(rclcpp::get_logger(logger_name), "O6 Hand control thread started for %s", arm_prefix_.c_str());
+
+  const auto loop_period = std::chrono::microseconds(16667);  // ~60Hz
+  auto next_cycle = std::chrono::steady_clock::now() + loop_period;
+
+  while (o6_thread_running_) {
+    // Read current O6 positions (all 11: 6 active + 5 passive)
+    std::vector<double> temp_positions(O6_HAND_DOF);
+    if (read_o6_hand_states(temp_positions, 0)) {
+      // Apply low-pass filter and update state buffer
+      o6_state_filter_.update(temp_positions);
+      const auto &filtered = o6_state_filter_.get();
+      {
+        std::lock_guard<std::mutex> lock(o6_state_mutex_);
+        o6_pos_state_buffer_ = filtered;
+      }
+    }
+
+    // Get command from buffer (thread-safe) - only 6 active joints
+    std::vector<double> cmd_positions(6);
+    {
+      std::lock_guard<std::mutex> lock(o6_command_mutex_);
+      cmd_positions = o6_pos_cmd_buffer_;  // Copy 6 active joint commands
+    }
+
+    // Send command to O6 hand (only 6 active joints)
+    send_o6_hand_command(cmd_positions, 0);
+
+    std::this_thread::sleep_until(next_cycle);
+    next_cycle += loop_period;
+  }
+
+  RCLCPP_INFO(rclcpp::get_logger(logger_name), "O6 Hand control thread stopped for %s", arm_prefix_.c_str());
 }
 
 }  // namespace openarm_hardware

@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "dynamixel_sdk/dynamixel_sdk.h"
+#include "LinkerHandApi.h"
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
 #include "hardware_interface/system_interface.hpp"
@@ -92,6 +93,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // V10 default configuration
   static constexpr size_t ARM_DOF = 7;
   static constexpr size_t LEAP_HAND_DOF = 16;
+  static constexpr size_t O6_HAND_DOF = 11;  // 6 active + 5 passive (matching external openarm_description URDF) (coupled) joints
   static constexpr bool ENABLE_GRIPPER = true;
 
   // ========== CONFIGURABLE CONTROL RATES ==========
@@ -155,6 +157,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool hand_;
   bool can_fd_;
   bool has_leap_hand_;
+  bool has_o6_hand_;
   bool enable_frequency_diagnostics_;  // Enable performance monitoring
 
   // OpenArm instance
@@ -317,6 +320,34 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   inline double urdf_to_leap(double urdf_pos) { return urdf_pos + M_PI; }
   inline double leap_to_urdf(double leap_pos) { return leap_pos - M_PI; }
 
+  // O6 Hand LinkerHandApi support
+  std::string o6_can_interface_;
+  std::string o6_hand_type_;  // "left" or "right"
+  bool o6_connected_;
+  std::unique_ptr<LinkerHandApi> o6_hand_api_;
+  
+  // O6 Hand thread-safe buffers and control
+  std::thread o6_control_thread_;
+  std::atomic<bool> o6_thread_running_;
+  std::mutex o6_command_mutex_;
+  std::mutex o6_state_mutex_;
+  std::vector<double> o6_pos_cmd_buffer_;
+  std::vector<double> o6_pos_state_buffer_;
+  LowPassFilter o6_state_filter_;
+  
+  // O6 Hand joint limits (radians)
+  // 0-5: Active joints (thumb_cmc_yaw, thumb_cmc_pitch, index_mcp, middle_mcp, ring_mcp, pinky_mcp)
+  // 6-10: Passive/coupled DIP joints (thumb_dip, index_dip, middle_dip, ring_dip, pinky_dip)
+  static constexpr std::array<double, O6_HAND_DOF> O6_JOINT_MIN = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  static constexpr std::array<double, O6_HAND_DOF> O6_JOINT_MAX = {0.58, 1.36, 1.6, 1.6, 1.6, 1.6, 1.09, 1.28, 1.28, 1.28, 1.28};
+  
+  bool connect_o6_hand();
+  void disconnect_o6_hand();
+  bool send_o6_hand_command(const std::vector<double>& positions, size_t start_idx);
+  bool read_o6_hand_states(std::vector<double>& positions, size_t start_idx);
+  void o6_control_loop();  // Control loop @ 60Hz (matching LinkerHand SDK default)
+  
+ 
   // Gravity compensation using KDL
   std::unique_ptr<KDL::ChainDynParam> kdl_solver_;
   KDL::Chain kdl_chain_;

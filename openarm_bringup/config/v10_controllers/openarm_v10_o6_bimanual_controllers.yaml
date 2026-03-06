@@ -1,0 +1,247 @@
+# Copyright 2026 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# OpenArm V10 Bimanual with O6 Hands controller configuration
+# This file configures controllers for:
+# - Left and right V10 arms (7 DOF each)
+# - Left and right O6 hands (6 DOF each)
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Arm controllers - trajectory mode
+    left_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    right_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # Arm controllers - forward position mode
+    left_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    right_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    # O6 Hand controllers - trajectory mode
+    left_o6_hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    right_o6_hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # O6 Hand controllers - forward position mode
+    left_o6_hand_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    right_o6_hand_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+
+# ============================================================================
+# LEFT ARM CONTROLLERS
+# ============================================================================
+
+left_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - openarm_left_joint1
+      - openarm_left_joint2
+      - openarm_left_joint3
+      - openarm_left_joint4
+      - openarm_left_joint5
+      - openarm_left_joint6
+      - openarm_left_joint7
+
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 50.0
+    action_monitor_rate: 50.0
+
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+left_forward_position_controller:
+  ros__parameters:
+    joints:
+      - openarm_left_joint1
+      - openarm_left_joint2
+      - openarm_left_joint3
+      - openarm_left_joint4
+      - openarm_left_joint5
+      - openarm_left_joint6
+      - openarm_left_joint7
+    interface_name: position
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+
+
+# ============================================================================
+# RIGHT ARM CONTROLLERS
+# ============================================================================
+
+right_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - openarm_right_joint1
+      - openarm_right_joint2
+      - openarm_right_joint3
+      - openarm_right_joint4
+      - openarm_right_joint5
+      - openarm_right_joint6
+      - openarm_right_joint7
+
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 50.0
+    action_monitor_rate: 50.0
+
+    allow_partial_joints_goal: false
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+right_forward_position_controller:
+  ros__parameters:
+    joints:
+      - openarm_right_joint1
+      - openarm_right_joint2
+      - openarm_right_joint3
+      - openarm_right_joint4
+      - openarm_right_joint5
+      - openarm_right_joint6
+      - openarm_right_joint7
+    interface_name: position
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+
+
+# ============================================================================
+# LEFT O6 HAND CONTROLLERS
+# ============================================================================
+
+left_o6_hand_controller:
+  ros__parameters:
+    joints:
+      - L_thumb_cmc_yaw
+      - L_thumb_cmc_pitch
+      - L_index_mcp_pitch
+      - L_middle_mcp_pitch
+      - L_ring_mcp_pitch
+      - L_pinky_mcp_pitch
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+
+    allow_partial_joints_goal: false
+    allow_integration_in_goal_trajectories: true
+
+    # Start with current position, don't move to zero on activation
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: true
+
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+left_o6_hand_forward_position_controller:
+  ros__parameters:
+    joints:
+      - L_thumb_cmc_yaw
+      - L_thumb_cmc_pitch
+      - L_index_mcp_pitch
+      - L_middle_mcp_pitch
+      - L_ring_mcp_pitch
+      - L_pinky_mcp_pitch
+    interface_name: position
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+
+
+# ============================================================================
+# RIGHT O6 HAND CONTROLLERS
+# ============================================================================
+
+right_o6_hand_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+
+    command_interfaces:
+      - position
+
+    state_interfaces:
+      - position
+      - velocity
+
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+
+    allow_partial_joints_goal: false
+    allow_integration_in_goal_trajectories: true
+
+    # Start with current position, don't move to zero on activation
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: true
+
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+right_o6_hand_forward_position_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+    interface_name: position
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
