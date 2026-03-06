@@ -24,7 +24,7 @@ show_usage() {
     echo "  real          - Launch with real hardware (CAN interfaces)"
     echo "  list          - List all controllers"
     echo "  test_arms     - Send test trajectory to both arms"
-    echo "  test_hands    - Send test trajectory to both O6 hands"
+    echo "  test_hands    - Send test trajectory to both O6 hands (6 active joints)"
     echo ""
 }
 
@@ -129,7 +129,7 @@ test_hands() {
     echo -e "${YELLOW}Testing O6 HAND movement...${NC}"
     echo "Sending trajectory to left O6 hand..."
     
-    # Create test trajectory for left O6 hand (11 joints: 6 active + 5 passive)
+    # Create test trajectory for left O6 hand (6 ACTIVE joints)
     ros2 action send_goal /left_o6_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory \
         "{
@@ -140,24 +140,19 @@ test_hands() {
                     'L_index_mcp_pitch',
                     'L_middle_mcp_pitch',
                     'L_ring_mcp_pitch',
-                    'L_pinky_mcp_pitch',
-                    'L_thumb_dip',
-                    'L_index_dip',
-                    'L_middle_dip',
-                    'L_ring_dip',
-                    'L_pinky_dip'
+                    'L_pinky_mcp_pitch'
                 ],
                 points: [
                     {
-                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                         time_from_start: {sec: 0, nanosec: 0}
                     },
                     {
-                        positions: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8, 0.4, 0.7, 0.7, 0.7, 0.7],
+                        positions: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8],
                         time_from_start: {sec: 2, nanosec: 0}
                     },
                     {
-                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                         time_from_start: {sec: 4, nanosec: 0}
                     }
                 ]
@@ -166,7 +161,7 @@ test_hands() {
     
     echo "Sending trajectory to right O6 hand..."
     
-    # Create test trajectory for right O6 hand (11 joints)
+    # Create test trajectory for right O6 hand (6 ACTIVE joints)
     ros2 action send_goal /right_o6_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory \
         "{
@@ -177,24 +172,19 @@ test_hands() {
                     'R_index_mcp_pitch',
                     'R_middle_mcp_pitch',
                     'R_ring_mcp_pitch',
-                    'R_pinky_mcp_pitch',
-                    'R_thumb_dip',
-                    'R_index_dip',
-                    'R_middle_dip',
-                    'R_ring_dip',
-                    'R_pinky_dip'
+                    'R_pinky_mcp_pitch'
                 ],
                 points: [
                     {
-                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                         time_from_start: {sec: 0, nanosec: 0}
                     },
                     {
-                        positions: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8, 0.4, 0.7, 0.7, 0.7, 0.7],
+                        positions: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8],
                         time_from_start: {sec: 2, nanosec: 0}
                     },
                     {
-                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                         time_from_start: {sec: 4, nanosec: 0}
                     }
                 ]
@@ -203,20 +193,44 @@ test_hands() {
 }
 
 # Parse command line arguments
+interactive_menu() {
+    echo "Select an option by number:"
+    echo "  1) Launch with fake hardware"
+    echo "  2) Launch with real hardware (CAN interfaces)"
+    echo "  3) List controllers"
+    echo "  4) Test arms (send trajectories)"
+    echo "  5) Test O6 hands (6 active joints)"
+    read -p "Enter choice [1-5]: " choice
+    case "$choice" in
+        1) launch_fake ;;
+        2) launch_real ;;
+        3) list_controllers ;;
+        4) test_arms ;;
+        5) test_hands ;;
+        *) echo "Invalid choice"; exit 1 ;;
+    esac
+}
+
+# Accept either numeric menu selection or the original string args
+if [ -z "$1" ]; then
+    interactive_menu
+    exit 0
+fi
+
 case "$1" in
-    fake)
+    1|fake)
         launch_fake
         ;;
-    real)
+    2|real)
         launch_real
         ;;
-    list)
+    3|list)
         list_controllers
         ;;
-    test_arms)
+    4|test_arms)
         test_arms
         ;;
-    test_hands)
+    5|test_hands)
         test_hands
         ;;
     *)
