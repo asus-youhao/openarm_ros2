@@ -325,6 +325,11 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool use_friction_compensation_;
   std::string urdf_string_;
   
+  // Helper function to scan URDF for tip link candidates
+  std::vector<std::string> scan_urdf_for_tip_links(
+      const std::string& urdf_content, 
+      const std::vector<std::string>& keywords);
+  
   bool init_kdl_dynamics(const std::string& urdf_content);
   void compute_gravity_compensation(std::vector<double>& gravity_torques);
   void compute_friction_compensation(std::vector<double>& friction_torques);

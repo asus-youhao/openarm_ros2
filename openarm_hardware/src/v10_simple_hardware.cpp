@@ -26,6 +26,7 @@
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/parameter_client.hpp"
 
 namespace openarm_hardware {
 
@@ -336,15 +337,34 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
 
   // Initialize KDL dynamics if gravity compensation is enabled
   if (use_gravity_compensation_) {
-    // Try to get robot_description from ROS2 parameter
+    // Try to get robot_description from ROS2 parameter using a ParameterClient
+    // Typical providers of this parameter are `robot_state_publisher` or the
+    // launch process that loaded the URDF. Creating a temporary node and
+    // declaring the parameter locally will NOT read another node's parameter
+    // (that was why the previous implementation often found an empty string).
     try {
       auto node = rclcpp::Node::make_shared("_openarm_hw_temp_node");
-      node->declare_parameter("robot_description", "");
-      std::string urdf_string = node->get_parameter("robot_description").as_string();
-      
+
+      // First try to query the commonly used provider `robot_state_publisher`.
+      rclcpp::SyncParametersClient param_client(node, "robot_state_publisher");
+      std::string urdf_string;
+
+      if (param_client.wait_for_service(std::chrono::seconds(1))) {
+        auto params = param_client.get_parameters({"robot_description"});
+        if (!params.empty() && params[0].get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+          urdf_string = params[0].as_string();
+        }
+      }
+
+      // Fallback: if we couldn't get it from robot_state_publisher, try a
+      // local parameter declaration (preserves previous behavior).
+      if (urdf_string.empty()) {
+        node->declare_parameter("robot_description", "");
+        urdf_string = node->get_parameter("robot_description").as_string();
+      }
+
       if (!urdf_string.empty()) {
         if (init_kdl_dynamics(urdf_string)) {
-          gravity_torques_.resize(ARM_DOF);
           RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                       "Gravity compensation enabled successfully");
         } else {
@@ -354,7 +374,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
         }
       } else {
         RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                    "robot_description parameter is empty, gravity compensation disabled");
+                    "robot_description parameter is empty (not found on robot_state_publisher), gravity compensation disabled");
         use_gravity_compensation_ = false;
       }
     } catch (const std::exception& e) {
@@ -726,6 +746,39 @@ bool OpenArm_v10HW::read_leap_hand_states(std::vector<double>& positions, size_t
   return true;
 }
 
+// Helper: Scan URDF for links matching keywords (palm, hand, finger, tip)
+std::vector<std::string> OpenArm_v10HW::scan_urdf_for_tip_links(
+    const std::string& urdf_content, 
+    const std::vector<std::string>& keywords) {
+  std::vector<std::string> candidates;
+  std::string urdf_lower = urdf_content;
+  std::transform(urdf_lower.begin(), urdf_lower.end(), urdf_lower.begin(), ::tolower);
+
+  size_t pos = 0;
+  while (true) {
+    size_t link_pos = urdf_lower.find("<link", pos);
+    if (link_pos == std::string::npos) break;
+    size_t name_pos = urdf_lower.find("name=", link_pos);
+    if (name_pos == std::string::npos) { pos = link_pos + 5; continue; }
+    size_t fq = urdf_lower.find_first_of("\"'", name_pos + 5);
+    if (fq == std::string::npos) { pos = link_pos + 5; continue; }
+    char q = urdf_lower[fq];
+    size_t sq = urdf_lower.find(q, fq + 1);
+    if (sq == std::string::npos) { pos = link_pos + 5; continue; }
+    std::string link_name = urdf_content.substr(fq + 1, sq - fq - 1);
+    std::string link_name_lower = urdf_lower.substr(fq + 1, sq - fq - 1);
+
+    for (const auto &kw : keywords) {
+      if (link_name_lower.find(kw) != std::string::npos) {
+        candidates.push_back(link_name);
+        break;
+      }
+    }
+    pos = sq + 1;
+  }
+  return candidates;
+}
+
 // Initialize KDL dynamics for gravity compensation
 bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
   // Build KDL tree directly from URDF string
@@ -736,31 +789,86 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
     return false;
   }
 
-  // Extract chain for this arm (only arm links, exclude hand/gripper for dynamic loads)
   std::string root_link = "openarm_body_link0";
-  std::string tip_link = "openarm_" + arm_prefix_ + "link7";  // End at link7, before hand
+  std::vector<std::string> tip_candidates;
+
+  // Build tip candidates list (prioritize fingertips over palm)
+  if (has_leap_hand_) {
+    std::string pref_no_openarm = arm_prefix_;
+    if (!pref_no_openarm.empty() && pref_no_openarm.back() == '_') {
+      pref_no_openarm.pop_back();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Scanning URDF for LEAP hand tip candidates (arm_prefix: '%s')",
+                pref_no_openarm.c_str());
+
+    // Priority 1: Scan URDF for fingertip/tip_head links (most distal)
+    std::vector<std::string> tip_keywords = {"tip_head", "fingertip"};
+    std::vector<std::string> fingertip_candidates = scan_urdf_for_tip_links(urdf_content, tip_keywords);
+    
+    for (const auto &cand : fingertip_candidates) {
+      tip_candidates.push_back(cand);
+      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+      //             "Found fingertip candidate: '%s' (priority 1)", cand.c_str());
+    }
+
+    // Priority 2: Common LEAP/O6 fingertip patterns
+    tip_candidates.push_back(pref_no_openarm + "_index_tip_head");
+    tip_candidates.push_back(pref_no_openarm + "_middle_tip_head");
+    tip_candidates.push_back(pref_no_openarm + "_ring_tip_head");
+    tip_candidates.push_back(pref_no_openarm + "_thumb_tip_head");
+    tip_candidates.push_back(pref_no_openarm + "_fingertip");
+
+    // Priority 3: Scan for palm/hand links (fallback)
+    std::vector<std::string> palm_keywords = {"palm", "hand"};
+    std::vector<std::string> palm_candidates = scan_urdf_for_tip_links(urdf_content, palm_keywords);
+    
+    for (const auto &cand : palm_candidates) {
+      tip_candidates.push_back(cand);
+      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+      //             "Found palm/hand candidate: '%s' (priority 3, fallback)", cand.c_str());
+    }
+  }
   
-  if (!kdl_tree.getChain(root_link, tip_link, kdl_chain_)) {
+  // Priority 4: Always try standard link7 as final fallback
+  tip_candidates.push_back("openarm_" + arm_prefix_ + "link7");
+
+  // Try all candidates to build KDL chain (first successful one wins)
+  bool chain_ok = false;
+  std::string tip_link;
+  for (const auto &cand : tip_candidates) {
+    if (kdl_tree.getChain(root_link, cand, kdl_chain_)) {
+      tip_link = cand;
+      chain_ok = true;
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                  "KDL chain built successfully using tip link: '%s'", cand.c_str());
+      break;
+    }
+  }
+
+  if (!chain_ok) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                 "Failed to get KDL chain from %s to %s, gravity compensation will be disabled",
-                 root_link.c_str(), tip_link.c_str());
+                "Failed to build KDL chain from %s using any tip candidate, "
+                "gravity compensation will be disabled", root_link.c_str());
     return false;
   }
 
-  if (kdl_chain_.getNrOfJoints() != ARM_DOF) {
+  // Ensure chain has at least ARM_DOF joints
+  const auto kdl_n = kdl_chain_.getNrOfJoints();
+  if (kdl_n < ARM_DOF) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "KDL chain has %u joints, expected %zu",
-                 kdl_chain_.getNrOfJoints(), ARM_DOF);
+                 "KDL chain has %u joints, expected at least %zu",
+                 kdl_n, ARM_DOF);
     return false;
   }
 
   // Create dynamics solver with gravity vector (0, 0, -9.81)
-  kdl_solver_ = std::make_unique<KDL::ChainDynParam>(
-      kdl_chain_, KDL::Vector(0.0, 0.0, -9.81));
+  kdl_solver_ = std::make_unique<KDL::ChainDynParam>(kdl_chain_, KDL::Vector(0.0, 0.0, -9.81));
+  gravity_torques_.resize(kdl_n);
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "KDL dynamics initialized: chain from %s to %s with %u joints",
-              root_link.c_str(), tip_link.c_str(), kdl_chain_.getNrOfJoints());
+              root_link.c_str(), tip_link.c_str(), kdl_n);
 
   return true;
 }
@@ -771,19 +879,28 @@ void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_to
     return;
   }
 
-  // Convert current positions to KDL format
-  KDL::JntArray q(ARM_DOF);
-  for (size_t i = 0; i < ARM_DOF; ++i) {
-    q(i) = pos_states_[i];
+  // Use full KDL chain length for gravity computation; copy first ARM_DOF outputs
+  const size_t kdl_n = kdl_chain_.getNrOfJoints();
+  KDL::JntArray q(kdl_n);
+  for (size_t i = 0; i < kdl_n; ++i) {
+    if (i < pos_states_.size()) {
+      q(i) = pos_states_[i];
+    } else {
+      q(i) = 0.0;
+    }
   }
 
-  // Compute gravity torques
-  kdl_solver_->JntToGravity(q, gravity_torques_);
+  KDL::JntArray grav(kdl_n);
+  kdl_solver_->JntToGravity(q, grav);
 
-  // Copy results
-  for (size_t i = 0; i < ARM_DOF; ++i) {
-    gravity_torques[i] = gravity_torques_(i);
+  // Copy first ARM_DOF entries back to caller buffer
+  for (size_t i = 0; i < ARM_DOF && i < kdl_n; ++i) {
+    gravity_torques[i] = grav(i);
   }
+
+  // Store full vector for diagnostics if needed
+  gravity_torques_.resize(kdl_n);
+  for (size_t i = 0; i < kdl_n; ++i) gravity_torques_(i) = grav(i);
 }
 
 // Compute friction compensation torques using LuGre model
@@ -860,16 +977,28 @@ void OpenArm_v10HW::arm_control_loop() {
     // Compute gravity compensation
     std::vector<double> gravity_comp(ARM_DOF, 0.0);
     if (use_gravity_compensation_) {
-      // Use current state for gravity computation
-      KDL::JntArray q(ARM_DOF);
-      for (size_t i = 0; i < ARM_DOF; ++i) {
-        q(i) = pos_state[i];
-      }
       if (kdl_solver_) {
-        kdl_solver_->JntToGravity(q, gravity_torques_);
-        for (size_t i = 0; i < ARM_DOF; ++i) {
-          gravity_comp[i] = gravity_torques_(i);
+        const size_t kdl_n = kdl_chain_.getNrOfJoints();
+        KDL::JntArray q(kdl_n);
+        // Fill q with arm+hand states when available (pos_state holds arm + optional gripper)
+        for (size_t i = 0; i < kdl_n; ++i) {
+          if (i < pos_state.size()) {
+            q(i) = pos_state[i];
+          } else if (i < pos_states_.size()) {
+            q(i) = pos_states_[i];
+          } else {
+            q(i) = 0.0;
+          }
         }
+        KDL::JntArray grav(kdl_n);
+        kdl_solver_->JntToGravity(q, grav);
+        // Copy the first ARM_DOF entries back to gravity_comp
+        for (size_t i = 0; i < ARM_DOF && i < kdl_n; ++i) {
+          gravity_comp[i] = grav(i);
+        }
+        // Optionally store full gravity vector if needed elsewhere
+        gravity_torques_.resize(kdl_n);
+        for (size_t i = 0; i < kdl_n; ++i) gravity_torques_(i) = grav(i);
       }
     }
     

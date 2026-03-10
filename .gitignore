@@ -4,6 +4,7 @@
 __pycache__/
 scripts/record_data/*.json
 scripts/analye_joint/*
+scripts/analy_right_arm/*
 scripts/analy_leaphand_controller/*
 
 # Ignore build artifacts
