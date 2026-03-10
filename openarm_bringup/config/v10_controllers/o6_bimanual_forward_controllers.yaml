@@ -1,0 +1,40 @@
+# O6 Bimanual Forward Command Controller configuration
+# 
+# This file configures forward command controllers for both hands (topic mode).
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    right_o6_hand_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    left_o6_hand_forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# Right Hand Controller - Forward Command Controller
+right_o6_hand_forward_position_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+    interface_name: position
+
+# Left Hand Controller - Forward Command Controller
+left_o6_hand_forward_position_controller:
+  ros__parameters:
+    joints:
+      - L_thumb_cmc_yaw
+      - L_thumb_cmc_pitch
+      - L_index_mcp_pitch
+      - L_middle_mcp_pitch
+      - L_ring_mcp_pitch
+      - L_pinky_mcp_pitch
+    interface_name: position

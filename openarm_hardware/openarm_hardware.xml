@@ -29,4 +29,11 @@
       ros2_control hardware interface for LEAP Hand via Dynamixel serial communication.
     </description>
   </class>
+  <class name="openarm_hardware/O6HandHardware"
+         type="openarm_hardware::O6HandHardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control hardware interface for O6 Hand (LinkerHand) via CAN communication using LinkerHandApi.
+    </description>
+  </class>
 </library>

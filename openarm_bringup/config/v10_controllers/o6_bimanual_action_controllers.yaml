@@ -1,0 +1,82 @@
+# O6 Bimanual Hands controller configuration for standalone testing
+# 
+# This file configures the joint state broadcaster and controllers
+# for both right and left O6 hands.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    right_o6_hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    left_o6_hand_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+# Right Hand Controller - JointTrajectoryController with action server
+right_o6_hand_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+    
+    command_interfaces:
+      - position
+    
+    state_interfaces:
+      - position
+      - velocity
+    
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    
+    allow_partial_joints_goal: false
+    allow_integration_in_goal_trajectories: true
+    
+    # Start with current position, don't move to zero on activation
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: true
+    
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+# Left Hand Controller - JointTrajectoryController with action server
+left_o6_hand_controller:
+  ros__parameters:
+    joints:
+      - L_thumb_cmc_yaw
+      - L_thumb_cmc_pitch
+      - L_index_mcp_pitch
+      - L_middle_mcp_pitch
+      - L_ring_mcp_pitch
+      - L_pinky_mcp_pitch
+    
+    command_interfaces:
+      - position
+    
+    state_interfaces:
+      - position
+      - velocity
+    
+    state_publish_rate: 50.0
+    action_monitor_rate: 20.0
+    
+    allow_partial_joints_goal: false
+    allow_integration_in_goal_trajectories: true
+    
+    # Start with current position, don't move to zero on activation
+    open_loop_control: false
+    allow_nonzero_velocity_at_trajectory_end: true
+    
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+

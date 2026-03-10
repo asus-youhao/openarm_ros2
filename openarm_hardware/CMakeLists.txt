@@ -31,14 +31,58 @@ find_package(kdl_parser REQUIRED)
 find_package(orocos_kdl REQUIRED)
 find_package(urdf REQUIRED)
 find_package(yaml-cpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Find openarm_can library
 find_package(OpenArmCAN REQUIRED)
+
+# Find LinkerHand SDK library (for O6 hand)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+    set(LIB_SUBDIR "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    set(LIB_SUBDIR "aarch64")
+else()
+    message(WARNING "Unknown architecture for LinkerHand SDK, defaulting to x86_64")
+    set(LIB_SUBDIR "x86_64")
+endif()
+
+find_library(LINKER_HAND_LIB
+    NAMES linkerhand_cpp_sdk linkerhand_cpp
+    PATHS ${CMAKE_CURRENT_SOURCE_DIR}/../linkerhand-cpp-ros2/src/linker_hand_cpp_ros2/lib/${LIB_SUBDIR}
+        /usr/local/lib/linkerhand-cpp-sdk/${LIB_SUBDIR}
+        /usr/lib/linkerhand-cpp-sdk/${LIB_SUBDIR}
+        ${CMAKE_INSTALL_PREFIX}/lib/linkerhand-cpp-sdk/${LIB_SUBDIR}
+    NO_DEFAULT_PATH
+)
+
+set(LINKER_HAND_INCLUDE_DIR
+    ${CMAKE_CURRENT_SOURCE_DIR}/../linkerhand-cpp-ros2/src/linker_hand_cpp_ros2/include
+    /usr/local/include/linkerhand-cpp-sdk
+    /usr/include/linkerhand-cpp-sdk
+    ${CMAKE_INSTALL_PREFIX}/include/linkerhand-cpp-sdk
+)
+
+if(LINKER_HAND_LIB)
+    message(STATUS "Found linkerhand_cpp_sdk library: ${LINKER_HAND_LIB}")
+    message(STATUS "Found LinkerHand headers: ${LINKER_HAND_INCLUDE_DIR}")
+    set(HAVE_LINKER_HAND TRUE)
+else()
+    message(WARNING "linkerhand_cpp_sdk library not found! O6HandHardware will not be built.")
+    set(HAVE_LINKER_HAND FALSE)
+endif()
 
 add_library(${PROJECT_NAME} SHARED
   src/v10_simple_hardware.cpp
   src/leap_hand_hardware.cpp
 )
+
+# Conditionally add O6 hand hardware if SDK is found
+if(HAVE_LINKER_HAND)
+  target_sources(${PROJECT_NAME} PRIVATE src/o6_hand_hardware.cpp)
+  target_include_directories(${PROJECT_NAME} PRIVATE ${LINKER_HAND_INCLUDE_DIR})
+  target_link_libraries(${PROJECT_NAME} ${LINKER_HAND_LIB} pthread)
+endif()
 
 target_include_directories(
   ${PROJECT_NAME}
@@ -61,6 +105,8 @@ ament_target_dependencies(${PROJECT_NAME}
   kdl_parser
   orocos_kdl
   urdf
+  std_msgs
+  sensor_msgs
 )
 
 pluginlib_export_plugin_description_file(hardware_interface openarm_hardware.xml)

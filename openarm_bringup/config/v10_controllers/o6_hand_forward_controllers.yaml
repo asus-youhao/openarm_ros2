@@ -1,0 +1,26 @@
+# O6 Hand (LinkerHand) Forward Command Controller configuration
+# 
+# This file configures the forward command controller for topic-based control.
+# Use this for simple Float64MultiArray topic control.
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    o6_hand_controller:
+      type: forward_command_controller/ForwardCommandController
+
+# O6 Hand Controller - Forward Command Controller (topic mode)
+o6_hand_controller:
+  ros__parameters:
+    joints:
+      - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
+      - R_index_mcp_pitch
+      - R_middle_mcp_pitch
+      - R_ring_mcp_pitch
+      - R_pinky_mcp_pitch
+    interface_name: position
