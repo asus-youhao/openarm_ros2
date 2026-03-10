@@ -260,6 +260,12 @@ class ActionChunkController(Node):
             left_arm_positions  = [list(la_flat[i*7  :(i+1)*7 ]) for i in range(16)]
             right_arm_positions = [list(ra_flat[i*7  :(i+1)*7 ]) for i in range(16)]
             right_hand_positions= [list(rh_flat[i*16 :(i+1)*16]) for i in range(16)]
+            # Debug print right hand positions in 4x4 blocks
+            for step_idx, step in enumerate(right_hand_positions):
+                self.get_logger().info(f'right_hand_positions step {step_idx}:')
+                for row in range(4):
+                    block = step[row*4:(row+1)*4]
+                    self.get_logger().info(f'  {block}')
 
             chunk = ActionChunk(
                 timestamps=timestamps,
