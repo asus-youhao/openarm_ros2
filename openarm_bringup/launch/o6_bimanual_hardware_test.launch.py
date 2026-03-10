@@ -93,11 +93,17 @@ def launch_setup(context, *args, **kwargs):
     # Controller configuration - choose based on robot_controller
     if robot_controller == "joint_trajectory_controller":
         controller_config_file = "o6_bimanual_action_controllers.yaml"
+        
     elif robot_controller == "forward_position_controller":
         controller_config_file = "o6_bimanual_forward_controllers.yaml"
     else:
         raise ValueError(f"Unknown robot_controller: {robot_controller}")
-    
+    if robot_controller == "forward_position_controller":
+        left_hand_controller = "left_o6_hand_forward_position_controller"
+        right_hand_controller = "right_o6_hand_forward_position_controller"
+    elif robot_controller == "joint_trajectory_controller":
+        left_hand_controller = "left_o6_hand_controller"
+        right_hand_controller = "right_o6_hand_controller"
     robot_controllers = PathJoinSubstitution(
         [
             FindPackageShare("openarm_bringup"),
@@ -137,14 +143,14 @@ def launch_setup(context, *args, **kwargs):
     right_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["right_hand_controller", "--controller-manager", "/controller_manager"],
+        arguments=[right_hand_controller, "--controller-manager", "/controller_manager"],
     )
     
     # Left Hand Controller
     left_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["left_hand_controller", "--controller-manager", "/controller_manager"],
+        arguments=[left_hand_controller, "--controller-manager", "/controller_manager"],
     )
 
     # Delay controller spawning after joint state broadcaster

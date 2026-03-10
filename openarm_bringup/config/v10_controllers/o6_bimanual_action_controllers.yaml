@@ -10,14 +10,14 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
-    right_hand_controller:
+    right_o6_hand_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    left_hand_controller:
+    left_o6_hand_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
 # Right Hand Controller - JointTrajectoryController with action server
-right_hand_controller:
+right_o6_hand_controller:
   ros__parameters:
     joints:
       - R_thumb_cmc_yaw
@@ -49,7 +49,7 @@ right_hand_controller:
       goal_time: 0.0
 
 # Left Hand Controller - JointTrajectoryController with action server
-left_hand_controller:
+left_o6_hand_controller:
   ros__parameters:
     joints:
       - L_thumb_cmc_yaw

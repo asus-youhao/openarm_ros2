@@ -9,14 +9,14 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
-    right_hand_controller:
+    right_o6_hand_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
-    left_hand_controller:
+    left_o6_hand_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
 # Right Hand Controller - Forward Command Controller
-right_hand_controller:
+right_o6_hand_forward_position_controller:
   ros__parameters:
     joints:
       - R_thumb_cmc_yaw
@@ -28,7 +28,7 @@ right_hand_controller:
     interface_name: position
 
 # Left Hand Controller - Forward Command Controller
-left_hand_controller:
+left_o6_hand_forward_position_controller:
   ros__parameters:
     joints:
       - L_thumb_cmc_yaw

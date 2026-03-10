@@ -3,22 +3,6 @@
 Test script for O6 bimanual hands.
 
 This script sends test trajectories to both left and right O6 hands.
-
-Usage:
-    # Open both hands
-    python3 test_o6_bimanual.py open
-
-    # Close both hands
-    python3 test_o6_bimanual.py close
-
-    # Grasp with both hands (medium grip)
-    python3 test_o6_bimanual.py grasp
-
-    # Point with both index fingers
-    python3 test_o6_bimanual.py point
-
-    # Mirror test - right closes, left opens
-    python3 test_o6_bimanual.py mirror
 """
 
 import sys
@@ -38,13 +22,13 @@ class BimanualHandTester(Node):
         self.right_client = ActionClient(
             self, 
             FollowJointTrajectory, 
-            '/right_hand_controller/follow_joint_trajectory'
+            '/right_o6_hand_controller/follow_joint_trajectory'
         )
         
         self.left_client = ActionClient(
             self, 
             FollowJointTrajectory, 
-            '/left_hand_controller/follow_joint_trajectory'
+            '/left_o6_hand_controller/follow_joint_trajectory'
         )
         
         self.get_logger().info('Waiting for action servers...')
@@ -99,59 +83,57 @@ class BimanualHandTester(Node):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
+    menu = [
+        ('open', 'Open both hands'),
+        ('close', 'Close both hands'),
+        ('grasp', 'Medium grip'),
+        ('point', 'Point with index fingers'),
+        ('mirror', 'Right closes, left opens'),
+    ]
+    print('O6 Bimanual Hands Test Menu:')
+    for idx, (cmd, desc) in enumerate(menu, 1):
+        print(f'  {idx}. {cmd:<8} - {desc}')
+    try:
+        sel = input('Enter option number (1-5): ').strip()
+        if not sel.isdigit() or not (1 <= int(sel) <= len(menu)):
+            print('Invalid option, please rerun.')
+            sys.exit(1)
+        command = menu[int(sel)-1][0]
+    except Exception:
+        print('Input error, please rerun.')
         sys.exit(1)
-    
-    command = sys.argv[1].lower()
-    
+
     rclpy.init()
     tester = BimanualHandTester()
-    
     try:
         if command == 'open':
-            # Open both hands (all zeros)
             tester.send_trajectory(
                 [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             )
-        
         elif command == 'close':
-            # Close both hands (max grip)
             tester.send_trajectory(
                 [0.5, 1.2, 1.5, 1.5, 1.5, 1.5],
                 [0.5, 1.2, 1.5, 1.5, 1.5, 1.5]
             )
-        
         elif command == 'grasp':
-            # Medium grip for grasping
             tester.send_trajectory(
                 [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
                 [0.3, 0.7, 0.8, 0.8, 0.8, 0.8]
             )
-        
         elif command == 'point':
-            # Point with index fingers
             tester.send_trajectory(
-                [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],  # Right: index open, others closed
-                [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]   # Left: index open, others closed
+                [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
             )
-        
         elif command == 'mirror':
-            # Right closes, left opens
             tester.send_trajectory(
-                [0.5, 1.2, 1.5, 1.5, 1.5, 1.5],  # Right: closed
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]   # Left: open
+                [0.5, 1.2, 1.5, 1.5, 1.5, 1.5],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             )
-        
-        else:
-            tester.get_logger().error(f'Unknown command: {command}')
-            print(__doc__)
-    
     finally:
         tester.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
