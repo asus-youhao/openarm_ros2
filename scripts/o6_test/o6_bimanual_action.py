@@ -89,12 +89,13 @@ def main():
         ('grasp', 'Medium grip'),
         ('point', 'Point with index fingers'),
         ('mirror', 'Right closes, left opens'),
+        ('cycle', 'Open and grasp cycle (2s interval)'),
     ]
     print('O6 Bimanual Hands Test Menu:')
     for idx, (cmd, desc) in enumerate(menu, 1):
         print(f'  {idx}. {cmd:<8} - {desc}')
     try:
-        sel = input('Enter option number (1-5): ').strip()
+        sel = input('Enter option number (1-6): ').strip()
         if not sel.isdigit() or not (1 <= int(sel) <= len(menu)):
             print('Invalid option, please rerun.')
             sys.exit(1)
@@ -131,6 +132,33 @@ def main():
                 [0.5, 1.2, 1.5, 1.5, 1.5, 1.5],
                 [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
             )
+        elif command == 'cycle':
+            import time
+            print('Starting open-grasp cycle (Press Ctrl+C to stop)...')
+            try:
+                cycle_count = 0
+                while True:
+                    cycle_count += 1
+                    print(f'\n--- Cycle {cycle_count} ---')
+                    # Open
+                    print('Opening hands...')
+                    tester.send_trajectory(
+                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        duration_sec=0.1
+                    )
+                    time.sleep(2.0)
+                    
+                    # Grasp
+                    print('Grasping...')
+                    tester.send_trajectory(
+                        [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
+                        [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
+                        duration_sec=0.1
+                    )
+                    time.sleep(2.0)
+            except KeyboardInterrupt:
+                print(f'\nStopped after {cycle_count} cycles.')
     finally:
         tester.destroy_node()
         rclpy.shutdown()
