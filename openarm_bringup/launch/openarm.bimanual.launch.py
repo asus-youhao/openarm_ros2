@@ -179,6 +179,12 @@ def generate_launch_description():
             description="Robot controller to start.",
         ),
         DeclareLaunchArgument(
+            "gripper_controller",
+            default_value="gripper_controller",
+            choices=["gripper_controller", "gripper_forward_controller", "gripper_trajectory_controller"],
+            description="Gripper controller type: gripper_controller (GripperActionController), gripper_forward_controller (ForwardCommandController), or gripper_trajectory_controller (JointTrajectoryController).",
+        ),
+        DeclareLaunchArgument(
             "runtime_config_package",
             default_value="openarm_bringup",
             description="Package with the controller's configuration in config folder.",
@@ -222,6 +228,7 @@ def generate_launch_description():
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
     ee_type = LaunchConfiguration("ee_type")
     robot_controller = LaunchConfiguration("robot_controller")
+    gripper_controller = LaunchConfiguration("gripper_controller")
     runtime_config_package = LaunchConfiguration("runtime_config_package")
     controllers_file = LaunchConfiguration("controllers_file")
     rightcan_interface = LaunchConfiguration("right_can_interface")
@@ -292,16 +299,16 @@ def generate_launch_description():
         args=[robot_controller, arm_prefix]
     )
 
-    # gripper_controller_spawner = OpaqueFunction(
-    #     function=lambda context: [Node(
-    #         package="controller_manager",
-    #         executable="spawner",
-    #         namespace=namespace_from_context(context, arm_prefix),
-    #         arguments=["left_gripper_controller",
-    #                    "right_gripper_controller", "-c",
-    #                    f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
-    #     )]ss
-    # )
+    gripper_controller_spawner = OpaqueFunction(
+        function=lambda context: [Node(
+            package="controller_manager",
+            executable="spawner",
+            namespace=namespace_from_context(context, arm_prefix),
+            arguments=[f"left_{context.perform_substitution(gripper_controller)}",
+                       f"right_{context.perform_substitution(gripper_controller)}", "-c",
+                       f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
+        )]
+    )
 
     # Spawn right_hand_controller for leap_hand finger joints
     # This controller is needed for both fake and real hardware when ee_type=leap_hand_right
@@ -344,11 +351,11 @@ def generate_launch_description():
         actions=[controller_spawner_func],
         condition=UnlessCondition(use_joint_state_publisher),
     )
-    # delayed_gripper_controller = TimerAction(
-    #     period=LAUNCH_DELAY_SECONDS,
-    #     actions=[gripper_controller_spawner],
-    #     condition=UnlessCondition(use_joint_state_publisher),
-    # )
+    delayed_gripper_controller = TimerAction(
+        period=LAUNCH_DELAY_SECONDS,
+        actions=[gripper_controller_spawner],
+        condition=UnlessCondition(use_joint_state_publisher),
+    )
     
     delayed_hand_controller = TimerAction(
         period=LAUNCH_DELAY_SECONDS,
@@ -364,7 +371,7 @@ def generate_launch_description():
         [
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
-            # delayed_gripper_controller,
+            delayed_gripper_controller,
             delayed_hand_controller,
         ]
     )
