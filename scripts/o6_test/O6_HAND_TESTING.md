@@ -40,10 +40,10 @@ ros2 launch openarm_bringup o6_hand_hardware_test.launch.py \
 
 # 查看可用的 action servers
 ros2 action list
-# 輸出: /o6_hand_controller/follow_joint_trajectory
+# 輸出: /hand_controller/follow_joint_trajectory
 
 # 發送握拳指令
-ros2 action send_goal /o6_hand_controller/follow_joint_trajectory \
+ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
     joint_names: [R_thumb_cmc_yaw, R_thumb_cmc_pitch, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
@@ -52,7 +52,7 @@ ros2 action send_goal /o6_hand_controller/follow_joint_trajectory \
 }" --feedback
 
 # 張開手指令
-ros2 action send_goal /o6_hand_controller/follow_joint_trajectory \
+ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
     joint_names: [R_thumb_cmc_yaw, R_thumb_cmc_pitch, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
@@ -72,18 +72,18 @@ ros2 launch openarm_bringup o6_hand_hardware_test.launch.py \
 
 # 查看可用的 topics
 ros2 topic list | grep commands
-# 輸出: /o6_hand_controller/commands
+# 輸出: /hand_controller/commands
 
 # 發送握拳指令 (使用 topic)
-ros2 topic pub /o6_hand_controller/commands std_msgs/msg/Float64MultiArray \
+ros2 topic pub /hand_controller/commands std_msgs/msg/Float64MultiArray \
     "{data: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8]}" --once
 
 # 張開手指令
-ros2 topic pub /o6_hand_controller/commands std_msgs/msg/Float64MultiArray \
+ros2 topic pub /hand_controller/commands std_msgs/msg/Float64MultiArray \
     "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}" --once
 
 # 自定義手勢
-ros2 topic pub /o6_hand_controller/commands std_msgs/msg/Float64MultiArray \
+ros2 topic pub /hand_controller/commands std_msgs/msg/Float64MultiArray \
     "{data: [0.2, 0.3, 0.3, 0.3, 0.3, 0.1]}" --once
 ```
 
@@ -100,7 +100,7 @@ ros2 launch openarm_bringup o6_hand_hardware_test.launch.py \
     robot_controller:=joint_trajectory_controller
 
 # 發送指令（注意關節名稱改為 L_ 前綴）
-ros2 action send_goal /o6_hand_controller/follow_joint_trajectory \
+ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
     joint_names: [L_thumb_cmc_yaw, L_thumb_cmc_pitch, L_index_mcp_pitch, L_middle_mcp_pitch, L_ring_mcp_pitch, L_pinky_mcp_pitch],
@@ -120,7 +120,7 @@ ros2 launch openarm_bringup o6_hand_hardware_test.launch.py \
     robot_controller:=forward_position_controller
 
 # 發送指令
-ros2 topic pub /o6_hand_controller/commands std_msgs/msg/Float64MultiArray \
+ros2 topic pub /hand_controller/commands std_msgs/msg/Float64MultiArray \
     "{data: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8]}" --once
 ```
 

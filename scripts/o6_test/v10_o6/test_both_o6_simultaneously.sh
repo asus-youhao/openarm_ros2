@@ -10,7 +10,7 @@ source /home/asus/ros2_ws_yh/install/setup.bash
 echo "Sending trajectory to both hands simultaneously..."
 
 # Send to left hand in background
-ros2 action send_goal /left_o6_hand_controller/follow_joint_trajectory \
+ros2 action send_goal /left_hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:
@@ -32,7 +32,7 @@ trajectory:
 # Wait a moment then send to right hand
 sleep 0.5
 
-ros2 action send_goal /right_o6_hand_controller/follow_joint_trajectory \
+ros2 action send_goal /right_hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:

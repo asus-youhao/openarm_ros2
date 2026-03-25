@@ -3,7 +3,7 @@
 # Usage: ./o6_left_hand_control.sh [launch|open|grasp|close]
 
 HAND_PREFIX="L_"
-ACTION_SERVER="/o6_hand_controller/follow_joint_trajectory"
+ACTION_SERVER="/hand_controller/follow_joint_trajectory"
 
 case "$1" in
     launch)

@@ -10,11 +10,11 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
-    o6_hand_controller:
+    hand_controller:
       type: forward_command_controller/ForwardCommandController
 
 # O6 Hand Controller - Forward Command Controller (topic mode)
-o6_hand_controller:
+hand_controller:
   ros__parameters:
     joints:
       - R_thumb_cmc_yaw

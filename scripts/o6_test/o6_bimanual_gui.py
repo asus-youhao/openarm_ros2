@@ -75,11 +75,11 @@ class BimanualHandNode(Node):
         if mode == 'action':
             self.right_client = ActionClient(
                 self, FollowJointTrajectory,
-                '/right_o6_hand_controller/follow_joint_trajectory'
+                '/right_hand_controller/follow_joint_trajectory'
             )
             self.left_client = ActionClient(
                 self, FollowJointTrajectory,
-                '/left_o6_hand_controller/follow_joint_trajectory'
+                '/left_hand_controller/follow_joint_trajectory'
             )
             self.get_logger().info('Waiting for action servers...')
             ok1 = self.right_client.wait_for_server(timeout_sec=0.5)
@@ -91,11 +91,11 @@ class BimanualHandNode(Node):
         else:
             self.right_pub = self.create_publisher(
                 Float64MultiArray,
-                '/right_o6_hand_forward_position_controller/commands', 10
+                '/right_hand_forward_position_controller/commands', 10
             )
             self.left_pub = self.create_publisher(
                 Float64MultiArray,
-                '/left_o6_hand_forward_position_controller/commands', 10
+                '/left_hand_forward_position_controller/commands', 10
             )
             self.get_logger().info('Topic publishers ready!')
 

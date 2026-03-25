@@ -99,11 +99,11 @@ def launch_setup(context, *args, **kwargs):
     else:
         raise ValueError(f"Unknown robot_controller: {robot_controller}")
     if robot_controller == "forward_position_controller":
-        left_hand_controller = "left_o6_hand_forward_position_controller"
-        right_hand_controller = "right_o6_hand_forward_position_controller"
     elif robot_controller == "joint_trajectory_controller":
-        left_hand_controller = "left_o6_hand_controller"
-        right_hand_controller = "right_o6_hand_controller"
+        left_hand_controller = "left_hand_forward_position_controller"
+        right_hand_controller = "right_hand_forward_position_controller"
+        left_hand_controller = "left_hand_controller"
+        right_hand_controller = "right_hand_controller"
     robot_controllers = PathJoinSubstitution(
         [
             FindPackageShare("openarm_bringup"),

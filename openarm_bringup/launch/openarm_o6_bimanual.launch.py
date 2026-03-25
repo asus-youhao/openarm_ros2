@@ -179,11 +179,11 @@ def o6_hand_controller_spawner(context: LaunchContext, robot_controller, arm_pre
 
     # Select O6 hand controller names based on mode
     if robot_controller_str == "forward_position_controller":
-        left_hand_controller = "left_o6_hand_forward_position_controller"
-        right_hand_controller = "right_o6_hand_forward_position_controller"
+        left_hand_controller = "left_hand_forward_position_controller"
+        right_hand_controller = "right_hand_forward_position_controller"
     elif robot_controller_str == "joint_trajectory_controller":
-        left_hand_controller = "left_o6_hand_controller"
-        right_hand_controller = "right_o6_hand_controller"
+        left_hand_controller = "left_hand_controller"
+        right_hand_controller = "right_hand_controller"
     else:
         raise ValueError(f"Unknown robot_controller: {robot_controller_str}")
 

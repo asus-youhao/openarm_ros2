@@ -38,18 +38,18 @@ controller_manager:
     right_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
-    # O6 Hand controllers - trajectory mode
-    left_o6_hand_controller:
+    # Hand controllers - trajectory mode
+    left_hand_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    right_o6_hand_controller:
+    right_hand_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    # O6 Hand controllers - forward position mode
-    left_o6_hand_forward_position_controller:
+    # Hand controllers - forward position mode
+    left_hand_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
-    right_o6_hand_forward_position_controller:
+    right_hand_forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
 
@@ -149,7 +149,7 @@ right_forward_position_controller:
 # LEFT O6 HAND CONTROLLERS
 # ============================================================================
 
-left_o6_hand_controller:
+left_hand_controller:
   ros__parameters:
     joints:
       - L_thumb_cmc_yaw
@@ -180,7 +180,7 @@ left_o6_hand_controller:
       stopped_velocity_tolerance: 0.01
       goal_time: 0.0
 
-left_o6_hand_forward_position_controller:
+left_hand_forward_position_controller:
   ros__parameters:
     joints:
       - L_thumb_cmc_yaw
@@ -200,7 +200,7 @@ left_o6_hand_forward_position_controller:
 # RIGHT O6 HAND CONTROLLERS
 # ============================================================================
 
-right_o6_hand_controller:
+right_hand_controller:
   ros__parameters:
     joints:
       - R_thumb_cmc_yaw
@@ -231,7 +231,7 @@ right_o6_hand_controller:
       stopped_velocity_tolerance: 0.01
       goal_time: 0.0
 
-right_o6_hand_forward_position_controller:
+right_hand_forward_position_controller:
   ros__parameters:
     joints:
       - R_thumb_cmc_yaw

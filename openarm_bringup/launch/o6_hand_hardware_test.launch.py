@@ -244,7 +244,7 @@ def launch_setup(context, *args, **kwargs):
             hand_controller_spawner = Node(
                 package="controller_manager",
                 executable="spawner",
-                arguments=["o6_hand_controller", "--controller-manager", "/controller_manager"],
+                arguments=["hand_controller", "--controller-manager", "/controller_manager"],
             )
             delay_hand_controller = RegisterEventHandler(
                 event_handler=OnProcessExit(
@@ -285,7 +285,7 @@ def launch_setup(context, *args, **kwargs):
             o6_hand_controller_spawner = Node(
                 package="controller_manager",
                 executable="spawner",
-                arguments=["o6_hand_controller", "--controller-manager", "/controller_manager"],
+                arguments=["hand_controller", "--controller-manager", "/controller_manager"],
             )
             delay_o6_hand_controller_spawner = RegisterEventHandler(
                 event_handler=OnProcessExit(
@@ -346,7 +346,7 @@ def launch_setup(context, *args, **kwargs):
             send_home_command = ExecuteProcess(
                 cmd=[
                     'ros2', 'topic', 'pub', '--once',
-                    '/o6_hand_controller/commands',
+                    '/hand_controller/commands',
                     'std_msgs/msg/Float64MultiArray',
                     '{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}'
                 ],

@@ -22,13 +22,13 @@ class BimanualHandTester(Node):
         self.right_client = ActionClient(
             self, 
             FollowJointTrajectory, 
-            '/right_o6_hand_controller/follow_joint_trajectory'
+            '/right_hand_controller/follow_joint_trajectory'
         )
         
         self.left_client = ActionClient(
             self, 
             FollowJointTrajectory, 
-            '/left_o6_hand_controller/follow_joint_trajectory'
+            '/left_hand_controller/follow_joint_trajectory'
         )
         
         self.get_logger().info('Waiting for action servers...')

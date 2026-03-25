@@ -130,7 +130,7 @@ test_hands() {
     echo "Sending trajectory to left O6 hand..."
     
     # Create test trajectory for left O6 hand (6 ACTIVE joints)
-    ros2 action send_goal /left_o6_hand_controller/follow_joint_trajectory \
+    ros2 action send_goal /left_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory \
         "{
             trajectory: {
@@ -162,7 +162,7 @@ test_hands() {
     echo "Sending trajectory to right O6 hand..."
     
     # Create test trajectory for right O6 hand (6 ACTIVE joints)
-    ros2 action send_goal /right_o6_hand_controller/follow_joint_trajectory \
+    ros2 action send_goal /right_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory \
         "{
             trajectory: {

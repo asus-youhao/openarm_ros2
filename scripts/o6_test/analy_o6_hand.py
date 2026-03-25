@@ -58,21 +58,21 @@ class O6HandAnalyzer(Node):
         if hand == 'both':
             self.joint_names = LEFT_JOINTS + RIGHT_JOINTS
             self.command_topics = [
-                '/left_o6_hand_forward_position_controller/commands',
-                '/right_o6_hand_forward_position_controller/commands'
+                '/left_hand_forward_position_controller/commands',
+                '/right_hand_forward_position_controller/commands'
             ]
             self.state_topics = [
-                '/left_o6_hand_controller/controller_state',
-                '/right_o6_hand_controller/controller_state'
+                '/left_hand_controller/controller_state',
+                '/right_hand_controller/controller_state'
             ]
         elif hand == 'left':
             self.joint_names = LEFT_JOINTS
-            self.command_topics = ['/left_o6_hand_controller/commands']
-            self.state_topics = ['/left_o6_hand_controller/controller_state']
+            self.command_topics = ['/left_hand_controller/commands']
+            self.state_topics = ['/left_hand_controller/controller_state']
         else:
             self.joint_names = RIGHT_JOINTS
-            self.command_topics = ['/right_o6_hand_controller/commands']
-            self.state_topics = ['/right_o6_hand_controller/controller_state']
+            self.command_topics = ['/right_hand_controller/commands']
+            self.state_topics = ['/right_hand_controller/controller_state']
 
         self.history = {name: {'t': [], 'cmd': [], 'state': [], 'err': [], 'vel': []} for name in self.joint_names}
         self.latest_cmd = {name: math.nan for name in self.joint_names}  # record last valid cmd
@@ -105,20 +105,20 @@ class O6HandAnalyzer(Node):
         self.topic_joint_map = {}
         if hand == 'both':
             self.topic_joint_map = {
-                '/left_o6_hand_controller/commands': LEFT_JOINTS,
-                '/right_o6_hand_controller/commands': RIGHT_JOINTS,
-                '/left_o6_hand_controller/follow_joint_trajectory': LEFT_JOINTS,
-                '/right_o6_hand_controller/follow_joint_trajectory': RIGHT_JOINTS
+                '/left_hand_controller/commands': LEFT_JOINTS,
+                '/right_hand_controller/commands': RIGHT_JOINTS,
+                '/left_hand_controller/follow_joint_trajectory': LEFT_JOINTS,
+                '/right_hand_controller/follow_joint_trajectory': RIGHT_JOINTS
             }
         elif hand == 'left':
             self.topic_joint_map = {
-                '/left_o6_hand_controller/commands': LEFT_JOINTS,
-                '/left_o6_hand_controller/follow_joint_trajectory': LEFT_JOINTS
+                '/left_hand_controller/commands': LEFT_JOINTS,
+                '/left_hand_controller/follow_joint_trajectory': LEFT_JOINTS
             }
         else:
             self.topic_joint_map = {
-                '/right_o6_hand_controller/commands': RIGHT_JOINTS,
-                '/right_o6_hand_controller/follow_joint_trajectory': RIGHT_JOINTS
+                '/right_hand_controller/commands': RIGHT_JOINTS,
+                '/right_hand_controller/follow_joint_trajectory': RIGHT_JOINTS
             }
 
     def controller_state_cb(self, msg, topic):

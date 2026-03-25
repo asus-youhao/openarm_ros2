@@ -168,7 +168,7 @@ test_hands() {
     
     # Test left O6 hand
     echo -e "${BLUE}>>> Moving left O6 hand...${NC}"
-    ros2 action send_goal /left_o6_hand_controller/follow_joint_trajectory \
+    ros2 action send_goal /left_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:
@@ -192,7 +192,7 @@ trajectory:
     
     # Test right O6 hand
     echo -e "${BLUE}>>> Moving right O6 hand...${NC}"
-    ros2 action send_goal /right_o6_hand_controller/follow_joint_trajectory \
+    ros2 action send_goal /right_hand_controller/follow_joint_trajectory \
         control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:
@@ -226,17 +226,17 @@ test_hands_active() {
     echo -e "${BLUE}>>> Testing left O6 hand (open -> close -> open)...${NC}"
     
     echo "  Position 1: Open (all 0.0)"
-    ros2 topic pub --once /left_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /left_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
     sleep 2
     
     echo "  Position 2: Close/Grasp"
-    ros2 topic pub --once /left_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /left_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8]}"
     sleep 2
     
     echo "  Position 3: Open again"
-    ros2 topic pub --once /left_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /left_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
     
     echo ""
@@ -246,17 +246,17 @@ test_hands_active() {
     echo -e "${BLUE}>>> Testing right O6 hand (open -> close -> open)...${NC}"
     
     echo "  Position 1: Open (all 0.0)"
-    ros2 topic pub --once /right_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /right_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
     sleep 2
     
     echo "  Position 2: Close/Grasp"
-    ros2 topic pub --once /right_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /right_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.3, 0.5, 0.8, 0.8, 0.8, 0.8]}"
     sleep 2
     
     echo "  Position 3: Open again"
-    ros2 topic pub --once /right_o6_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
+    ros2 topic pub --once /right_hand_forward_position_controller/commands std_msgs/msg/Float64MultiArray \
         "{data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}"
     
     echo -e "${GREEN}Done!${NC}"

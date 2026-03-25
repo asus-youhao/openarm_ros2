@@ -15,12 +15,12 @@ class BimanualHandTopicTester(Node):
         super().__init__('bimanual_hand_topic_tester')
         self.right_pub = self.create_publisher(
             Float64MultiArray,
-            '/right_o6_hand_forward_position_controller/commands',
+            '/right_hand_forward_position_controller/commands',
             10
         )
         self.left_pub = self.create_publisher(
             Float64MultiArray,
-            '/left_o6_hand_forward_position_controller/commands',
+            '/left_hand_forward_position_controller/commands',
             10
         )
         self.get_logger().info('Publishers ready!')
