@@ -3,11 +3,11 @@
 .vscode/
 __pycache__/
 scripts/record_data/*.json
-scripts/analye_joint/*
-scripts/analy_arm/*
-scripts/analy_right_arm/*
-scripts/analy_leaphand_controller/*
-
+scripts/hardware_layer/analye_joint/*
+scripts/controller_layer/analy_arm/*
+scripts/controller_layer/analy_right_arm/*
+scripts/controller_layer/analy_leaphand_controller/*
+scripts/o6_test/analy_o6_hand/*
 # Ignore build artifacts
 build/
 install/

@@ -604,34 +604,34 @@ def main(argv=None):
                            joint_names=args.joint_names, csv_dir=args.csv_dir, 
                            plot=args.plot, error_scale=args.error_scale)
 
-    saved = {'done': False}  # Track if we've already saved
+    saved = {'done': False, 'requested': False}  # Track save state and shutdown request
 
     def sigint_handler(signum, frame):
-        if saved['done']:
-            sys.exit(0)  # Force exit on repeated Ctrl-C
-        saved['done'] = True
-        node.get_logger().info('SIGINT received, stopping...')
+        # First Ctrl-C: request shutdown and let main thread save/cleanup.
+        # Second Ctrl-C: force exit immediately.
+        if saved['requested']:
+            try:
+                sys.exit(0)
+            except Exception:
+                os._exit(0)
+
+        saved['requested'] = True
+        node.get_logger().info('SIGINT received, shutting down...')
         try:
-            node.save_csv_and_plots(prefix=args.out_prefix)
-        except Exception as e:
-            node.get_logger().error(f'Error saving in signal handler: {e}')
-        finally:
-            # Ensure cleanup happens
-            try:
-                node.destroy_node()
-            except Exception:
-                pass
-            try:
-                if not rclpy.is_shutdown():
-                    rclpy.shutdown()
-            except Exception:
-                pass
-            sys.exit(0)
+            if not rclpy.is_shutdown():
+                rclpy.shutdown()
+        except Exception:
+            pass
 
     signal.signal(signal.SIGINT, sigint_handler)
 
     try:
-        rclpy.spin(node)
+        node.get_logger().info('Entering spin loop (use Ctrl-C to exit)')
+        # Use spin_once in a short loop so SIGINT is handled promptly even
+        # if underlying spin would block. This avoids hanging when subscribed
+        # topics are not present.
+        while rclpy.ok() and not saved['requested']:
+            rclpy.spin_once(node, timeout_sec=0.1)
     except KeyboardInterrupt:
         pass
     finally:
@@ -641,6 +641,8 @@ def main(argv=None):
                 node.save_csv_and_plots(prefix=args.out_prefix)
             except Exception as e:
                 node.get_logger().error(f'Error saving on exit: {e}')
+            finally:
+                saved['done'] = True
         try:
             node.destroy_node()
         except Exception:
