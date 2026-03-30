@@ -129,12 +129,17 @@ void OpenArm_v10HW::generate_joint_names() {
     joint_names_.push_back(joint_name);
   }
 
-  // Generate gripper joint name if enabled
-  if (hand_) {
+  // Generate gripper joint name if enabled (only for simple gripper, not O6/LEAP)
+  // O6 and LEAP hands have their own joint definitions below
+  if (hand_ && !has_o6_hand_ && !has_leap_hand_) {
     std::string gripper_joint_name = "openarm_" + arm_prefix_ + "finger_joint1";
     joint_names_.push_back(gripper_joint_name);
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added gripper joint: %s",
                 gripper_joint_name.c_str());
+  } else if (hand_ && (has_o6_hand_ || has_leap_hand_)) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Gripper joint NOT added (using %s hand instead)",
+                has_o6_hand_ ? "O6" : "LEAP");
   } else {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                 "Gripper joint NOT added because hand_=false");
@@ -223,12 +228,17 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Generate joint names based on arm prefix
   generate_joint_names();
 
-  // Validate joint count (7 arm joints + optional gripper + optional leap_hand + optional o6_hand)
-  size_t expected_joints = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0) + (has_o6_hand_ ? O6_HAND_DOF : 0);
+  // Validate joint count
+  // gripper_joint: only added if hand_=true AND no O6/LEAP hand
+  size_t gripper_joints = (hand_ && !has_o6_hand_ && !has_leap_hand_) ? 1 : 0;
+  size_t expected_joints = ARM_DOF + gripper_joints + 
+                          (has_leap_hand_ ? LEAP_HAND_DOF : 0) + 
+                          (has_o6_hand_ ? O6_HAND_DOF : 0);
   if (joint_names_.size() != expected_joints) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "Generated %zu joint names, expected %zu", joint_names_.size(),
-                 expected_joints);
+                 "Generated %zu joint names, expected %zu (arm=%zu, gripper=%zu, leap=%zu, o6=%zu)", 
+                 joint_names_.size(), expected_joints, ARM_DOF, gripper_joints,
+                 has_leap_hand_ ? LEAP_HAND_DOF : 0, has_o6_hand_ ? O6_HAND_DOF : 0);
     return CallbackReturn::ERROR;
   }
 
@@ -266,7 +276,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   state_read_thread_running_ = false;
   
   // Initialize low-pass filters for state smoothing
-  size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+  // arm_size includes gripper only if no O6/LEAP hand
+  size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
   arm_state_filter_.init(arm_size, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
   if (has_leap_hand_) {
     leap_state_filter_.init(LEAP_HAND_DOF, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
@@ -455,6 +466,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
         if (init_kdl_dynamics(urdf_string)) {
           RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                       "Gravity compensation enabled successfully");
+          // Print diagnostics to verify tree structure
+          print_kdl_tree_diagnostics();
         } else {
           RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
                       "Failed to initialize KDL dynamics, gravity compensation disabled");
@@ -695,7 +708,7 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // Copy arm states from high-frequency thread buffer (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_state_mutex_);
-    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       pos_states_[i] = arm_pos_state_buffer_[i];
       vel_states_[i] = arm_vel_state_buffer_[i];
@@ -733,7 +746,7 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // Update arm command buffers (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_command_mutex_);
-    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       arm_pos_cmd_buffer_[i] = pos_commands_[i];
       arm_vel_cmd_buffer_[i] = vel_commands_[i];
@@ -932,161 +945,307 @@ bool OpenArm_v10HW::read_leap_hand_states(std::vector<double>& positions, size_t
   return true;
 }
 
-// Helper: Scan URDF for links matching keywords (palm, hand, finger, tip)
-std::vector<std::string> OpenArm_v10HW::scan_urdf_for_tip_links(
-    const std::string& urdf_content, 
-    const std::vector<std::string>& keywords) {
-  std::vector<std::string> candidates;
-  std::string urdf_lower = urdf_content;
-  std::transform(urdf_lower.begin(), urdf_lower.end(), urdf_lower.begin(), ::tolower);
+// ============================================================================
+// KDL Tree-based Dynamics Functions
+// ============================================================================
 
-  size_t pos = 0;
-  while (true) {
-    size_t link_pos = urdf_lower.find("<link", pos);
-    if (link_pos == std::string::npos) break;
-    size_t name_pos = urdf_lower.find("name=", link_pos);
-    if (name_pos == std::string::npos) { pos = link_pos + 5; continue; }
-    size_t fq = urdf_lower.find_first_of("\"'", name_pos + 5);
-    if (fq == std::string::npos) { pos = link_pos + 5; continue; }
-    char q = urdf_lower[fq];
-    size_t sq = urdf_lower.find(q, fq + 1);
-    if (sq == std::string::npos) { pos = link_pos + 5; continue; }
-    std::string link_name = urdf_content.substr(fq + 1, sq - fq - 1);
-    std::string link_name_lower = urdf_lower.substr(fq + 1, sq - fq - 1);
-
-    for (const auto &kw : keywords) {
-      if (link_name_lower.find(kw) != std::string::npos) {
-        candidates.push_back(link_name);
-        break;
-      }
+// Build joint name to KDL tree index mapping
+// KDL Tree stores joints in tree traversal order, we need to map our joint names to their indices
+void OpenArm_v10HW::build_joint_index_map() {
+  joint_name_to_kdl_idx_.clear();
+  kdl_joint_names_.clear();
+  
+  // Traverse the KDL tree to extract joint names in tree order
+  // KDL tree segments contain joints, we extract them in order
+  KDL::SegmentMap::const_iterator root_seg = kdl_tree_.getRootSegment();
+  
+  // Recursive lambda to traverse tree and collect joint names
+  std::function<void(const KDL::SegmentMap::const_iterator&)> traverse_tree;
+  traverse_tree = [&](const KDL::SegmentMap::const_iterator& seg_it) {
+    // Process current segment's joint
+    const KDL::Joint& joint = seg_it->second.segment.getJoint();
+    if (joint.getType() != KDL::Joint::None) {  // Skip fixed joints
+      std::string joint_name = joint.getName();
+      int kdl_idx = kdl_joint_names_.size();
+      kdl_joint_names_.push_back(joint_name);
+      joint_name_to_kdl_idx_[joint_name] = kdl_idx;
     }
-    pos = sq + 1;
+    
+    // Recursively process children segments
+    // children is a vector of SegmentMap::const_iterator
+    for (const auto& child_seg_it : seg_it->second.children) {
+      traverse_tree(child_seg_it);  // child_seg_it is already a SegmentMap::const_iterator
+    }
+  };
+  
+  // Traverse from root
+  traverse_tree(root_seg);
+  
+  // Count joints belonging to this arm
+  size_t arm_joints = 0;
+  for (const auto& jname : kdl_joint_names_) {
+    bool is_mine = (jname.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                   (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && jname[0] == 'L') ||
+                   (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && jname[0] == 'R') ||
+                   (has_leap_hand_ && jname.find("right_") != std::string::npos);
+    if (is_mine) arm_joints++;
   }
-  return candidates;
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Built KDL joint index map: %zu total joints in tree, %zu belong to '%s' arm",
+              kdl_joint_names_.size(), arm_joints, arm_prefix_.c_str());
+  
+  // Debug: Print mapping (only show joints belonging to this arm)
+  std::string mapping_info = "";
+  size_t shown = 0;
+  for (size_t i = 0; i < kdl_joint_names_.size() && shown < 10; ++i) {
+    const auto& jname = kdl_joint_names_[i];
+    bool is_mine = (jname.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                   (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && jname[0] == 'L') ||
+                   (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && jname[0] == 'R') ||
+                   (has_leap_hand_ && jname.find("right_") != std::string::npos);
+    if (is_mine) {
+      mapping_info += jname + ":" + std::to_string(i) + " ";
+      shown++;
+    }
+  }
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "This arm's joints: %s", mapping_info.c_str());
 }
 
-// Initialize KDL dynamics for gravity compensation
+// Initialize KDL dynamics for gravity compensation using Tree-based solver
 bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
-  // Build KDL tree directly from URDF string
-  KDL::Tree kdl_tree;
-  if (!kdl_parser::treeFromString(urdf_content, kdl_tree)) {
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Initializing KDL Tree-based dynamics (supports branching structures)...");
+  
+  // Build full KDL tree from URDF string
+  KDL::Tree full_tree;
+  if (!kdl_parser::treeFromString(urdf_content, full_tree)) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                  "Failed to construct KDL tree from URDF");
     return false;
   }
-
-  std::string root_link = "openarm_body_link0";
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Full KDL tree built: %u segments, %u joints (bimanual system)",
+              full_tree.getNrOfSegments(), full_tree.getNrOfJoints());
+  
+  // Extract subtree for current arm only (left or right)
+  // This ensures each hardware interface only computes gravity for its own arm
+  std::string root_link = "openarm_body_link0";  // Common base for both arms
+  std::string arm_base_link = "openarm_" + arm_prefix_ + "link0";  // Arm-specific starting point
+  
+  // Find the deepest link in this arm's branch to define the subtree boundary
   std::vector<std::string> tip_candidates;
-
-  // Build tip candidates list (prioritize fingertips over palm)
-  if (has_leap_hand_) {
-    std::string pref_no_openarm = arm_prefix_;
-    if (!pref_no_openarm.empty() && pref_no_openarm.back() == '_') {
-      pref_no_openarm.pop_back();
-    }
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Scanning URDF for LEAP hand tip candidates (arm_prefix: '%s')",
-                pref_no_openarm.c_str());
-
-    // Priority 1: Scan URDF for fingertip/tip_head links (most distal)
-    std::vector<std::string> tip_keywords = {"tip_head", "fingertip"};
-    std::vector<std::string> fingertip_candidates = scan_urdf_for_tip_links(urdf_content, tip_keywords);
-    
-    for (const auto &cand : fingertip_candidates) {
-      tip_candidates.push_back(cand);
-      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-      //             "Found fingertip candidate: '%s' (priority 1)", cand.c_str());
-    }
-
-    // Priority 2: Common LEAP/O6 fingertip patterns
-    tip_candidates.push_back(pref_no_openarm + "_index_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_middle_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_ring_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_thumb_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_fingertip");
-
-    // Priority 3: Scan for palm/hand links (fallback)
-    std::vector<std::string> palm_keywords = {"palm", "hand"};
-    std::vector<std::string> palm_candidates = scan_urdf_for_tip_links(urdf_content, palm_keywords);
-    
-    for (const auto &cand : palm_candidates) {
-      tip_candidates.push_back(cand);
-      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-      //             "Found palm/hand candidate: '%s' (priority 3, fallback)", cand.c_str());
-    }
+  
+  // Priority 1: Try to find the most distal link (fingertip or hand end)
+  if (has_o6_hand_) {
+    // O6 hand has multiple fingertips, choose one as representative
+    std::string hand_prefix = (arm_prefix_.find("left") != std::string::npos) ? "L_" : "R_";
+    tip_candidates.push_back(hand_prefix + "index_distal");
+    tip_candidates.push_back(hand_prefix + "middle_distal");
+    tip_candidates.push_back(hand_prefix + "thumb_distal");
+  } else if (has_leap_hand_) {
+    tip_candidates.push_back("right_index_tip_head");
+    tip_candidates.push_back("right_fingertip");
   }
   
-  // Priority 4: Always try standard link7 as final fallback
+  // Priority 2: Standard arm link7
   tip_candidates.push_back("openarm_" + arm_prefix_ + "link7");
-
-  // Try all candidates to build KDL chain (first successful one wins)
-  bool chain_ok = false;
+  
+  // Try to extract subtree using getChain (single branch) or manual filtering
+  bool subtree_ok = false;
   std::string tip_link;
-  for (const auto &cand : tip_candidates) {
-    if (kdl_tree.getChain(root_link, cand, kdl_chain_)) {
-      tip_link = cand;
-      chain_ok = true;
+  
+  // Attempt 1: Try to extract a chain from root to tip
+  KDL::Chain temp_chain;
+  for (const auto& candidate : tip_candidates) {
+    if (full_tree.getChain(root_link, candidate, temp_chain)) {
+      tip_link = candidate;
+      subtree_ok = true;
       RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                  "KDL chain built successfully using tip link: '%s'", cand.c_str());
+                  "Using chain extraction: %s -> %s", root_link.c_str(), candidate.c_str());
       break;
     }
   }
-
-  if (!chain_ok) {
+  
+  if (!subtree_ok) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "Failed to build KDL chain from %s using any tip candidate, "
-                "gravity compensation will be disabled", root_link.c_str());
-    return false;
+                "Could not extract subtree, using full tree (may include other arm)");
+    kdl_tree_ = full_tree;
+  } else {
+    // For now, still use full tree but we'll filter joints during computation
+    // TODO: Implement proper subtree extraction or manual tree construction
+    kdl_tree_ = full_tree;
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Note: Using full tree, will filter to arm '%s' joints during computation",
+                arm_prefix_.c_str());
   }
-
-  // Ensure chain has at least ARM_DOF joints
-  const auto kdl_n = kdl_chain_.getNrOfJoints();
-  if (kdl_n < ARM_DOF) {
-    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "KDL chain has %u joints, expected at least %zu",
-                 kdl_n, ARM_DOF);
-    return false;
+  
+  // Build joint name to index mapping (only for this arm's joints)
+  build_joint_index_map();
+  
+  // Count joints that belong to this arm
+  size_t arm_joints_count = 0;
+  for (const auto& jname : kdl_joint_names_) {
+    // Check if joint belongs to current arm
+    bool is_arm_joint = (jname.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                        (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && jname[0] == 'L') ||
+                        (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && jname[0] == 'R') ||
+                        (has_leap_hand_ && jname.find("right_") != std::string::npos);
+    if (is_arm_joint) arm_joints_count++;
   }
-
-  // Create dynamics solver with gravity vector (0, 0, -9.81)
-  kdl_solver_ = std::make_unique<KDL::ChainDynParam>(kdl_chain_, KDL::Vector(0.0, 0.0, -9.81));
-  gravity_torques_.resize(kdl_n);
-
+  
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "KDL dynamics initialized: chain from %s to %s with %u joints",
-              root_link.c_str(), tip_link.c_str(), kdl_n);
-
+              "KDL tree for '%s' arm: %u total segments, %u total joints, %zu belong to this arm",
+              arm_prefix_.c_str(), kdl_tree_.getNrOfSegments(), 
+              kdl_tree_.getNrOfJoints(), arm_joints_count);
+  
+  // Validate that we have at least the arm joints
+  if (arm_joints_count < ARM_DOF) {
+    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
+                 "KDL tree has %zu joints for this arm, expected at least %zu",
+                 arm_joints_count, ARM_DOF);
+    return false;
+  }
+  
+  // Create Tree-based recursive Newton-Euler inverse dynamics solver
+  KDL::Vector gravity_vector(0.0, 0.0, -9.81);  // Earth gravity in base frame
+  kdl_tree_solver_ = std::make_unique<KDL::TreeIdSolver_RNE>(kdl_tree_, gravity_vector);
+  
+  // Allocate gravity torques array for all tree joints
+  gravity_torques_.resize(kdl_tree_.getNrOfJoints());
+  
+  // Diagnostic: Print mass information from segments to verify URDF parsing
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "=== Verifying URDF mass data in KDL tree ===");
+  
+  // Traverse segments and show mass info for this arm's links
+  KDL::SegmentMap::const_iterator root_seg = kdl_tree_.getRootSegment();
+  std::function<void(const KDL::SegmentMap::const_iterator&, int)> check_mass;
+  size_t segments_with_mass = 0;
+  double total_mass = 0.0;
+  
+  check_mass = [&](const KDL::SegmentMap::const_iterator& seg_it, int depth) {
+    const KDL::Segment& seg = seg_it->second.segment;
+    std::string seg_name = seg.getName();
+    
+    // Check if this segment belongs to current arm
+    bool is_mine = (seg_name.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                   (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && seg_name[0] == 'L') ||
+                   (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && seg_name[0] == 'R') ||
+                   (has_leap_hand_ && seg_name.find("right_") != std::string::npos);
+    
+    if (is_mine) {
+      const KDL::RigidBodyInertia& inertia = seg.getInertia();
+      double mass = inertia.getMass();
+      if (mass > 1e-6) {  // Non-zero mass
+        segments_with_mass++;
+        total_mass += mass;
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                    "  Segment '%s': mass=%.4f kg", seg_name.c_str(), mass);
+      }
+    }
+    
+    // Recurse to children
+    for (const auto& child_seg_it : seg_it->second.children) {
+      check_mass(child_seg_it, depth + 1);
+    }
+  };
+  
+  check_mass(root_seg, 0);
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Found %zu segments with mass for '%s' arm, total mass: %.4f kg",
+              segments_with_mass, arm_prefix_.c_str(), total_mass);
+  
+  if (segments_with_mass == 0 || total_mass < 0.01) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "WARNING: No significant mass data found in URDF! Gravity compensation may not work!");
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "KDL Tree dynamics initialized successfully for '%s' arm",
+              arm_prefix_.c_str());
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "This arm: arm (7) + hand (%s) joints",
+              has_leap_hand_ ? "16 leap" : (has_o6_hand_ ? "11 o6" : (hand_ ? "1 gripper" : "0")));
+  
   return true;
 }
 
-// Compute gravity compensation torques
+// Compute gravity compensation torques using KDL Tree-based solver
+// Tree solver computes gravity for ALL joints in the tree, including hand joints
 void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_torques) {
-  if (!kdl_solver_ || gravity_torques.size() != ARM_DOF) {
+  if (!kdl_tree_solver_ || gravity_torques.size() != ARM_DOF) {
     return;
   }
 
-  // Use full KDL chain length for gravity computation; copy first ARM_DOF outputs
-  const size_t kdl_n = kdl_chain_.getNrOfJoints();
-  KDL::JntArray q(kdl_n);
-  for (size_t i = 0; i < kdl_n; ++i) {
-    if (i < pos_states_.size()) {
-      q(i) = pos_states_[i];
-    } else {
-      q(i) = 0.0;
+  const size_t tree_njoints = kdl_tree_.getNrOfJoints();
+  
+  // Prepare input joint states for the entire tree
+  // TreeIdSolver_RNE requires: q (positions), q_dot (velocities), q_dotdot (accelerations)
+  KDL::JntArray q(tree_njoints);           // Joint positions
+  KDL::JntArray q_dot(tree_njoints);       // Joint velocities (zero for static gravity)
+  KDL::JntArray q_dotdot(tree_njoints);    // Joint accelerations (zero for static gravity)
+  KDL::WrenchMap f_ext;                    // External forces (empty map for gravity-only)
+  KDL::JntArray tau(tree_njoints);         // Output torques
+  
+  // Fill joint positions from current state using the name mapping
+  // We need to map our joint_names_ to KDL tree joint indices
+  for (size_t i = 0; i < tree_njoints; ++i) {
+    q(i) = 0.0;  // Default to zero
+    q_dot(i) = 0.0;
+    q_dotdot(i) = 0.0;
+  }
+  
+  // Map our controlled joints to KDL tree indices
+  for (size_t i = 0; i < joint_names_.size() && i < pos_states_.size(); ++i) {
+    const std::string& joint_name = joint_names_[i];
+    auto it = joint_name_to_kdl_idx_.find(joint_name);
+    if (it != joint_name_to_kdl_idx_.end()) {
+      int kdl_idx = it->second;
+      if (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints)) {
+        q(kdl_idx) = pos_states_[i];
+        // Optionally include velocity for more accurate dynamics:
+        // q_dot(kdl_idx) = vel_states_[i];
+      }
     }
   }
-
-  KDL::JntArray grav(kdl_n);
-  kdl_solver_->JntToGravity(q, grav);
-
-  // Copy first ARM_DOF entries back to caller buffer
-  for (size_t i = 0; i < ARM_DOF && i < kdl_n; ++i) {
-    gravity_torques[i] = grav(i);
+  
+  // Compute inverse dynamics: tau = M(q)*q_dotdot + C(q,q_dot)*q_dot + G(q) + f_ext
+  // For gravity-only compensation with q_dot=0 and q_dotdot=0: tau = G(q)
+  int result = kdl_tree_solver_->CartToJnt(q, q_dot, q_dotdot, f_ext, tau);
+  
+  if (result != 0) {
+    RCLCPP_WARN_THROTTLE(rclcpp::get_logger("OpenArm_v10HW"),
+                         *rclcpp::Clock::make_shared(), 5000,
+                         "KDL TreeIdSolver failed with code %d", result);
+    return;
   }
-
-  // Store full vector for diagnostics if needed
-  gravity_torques_.resize(kdl_n);
-  for (size_t i = 0; i < kdl_n; ++i) gravity_torques_(i) = grav(i);
+  
+  // Extract gravity torques for the ARM_DOF joints from the full tree result
+  // We need to map back from KDL tree indices to our arm joint order
+  for (size_t i = 0; i < ARM_DOF && i < joint_names_.size(); ++i) {
+    const std::string& joint_name = joint_names_[i];
+    auto it = joint_name_to_kdl_idx_.find(joint_name);
+    if (it != joint_name_to_kdl_idx_.end()) {
+      int kdl_idx = it->second;
+      if (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints)) {
+        gravity_torques[i] = tau(kdl_idx);
+      } else {
+        gravity_torques[i] = 0.0;
+      }
+    } else {
+      gravity_torques[i] = 0.0;
+    }
+  }
+  
+  // Store full tree torques for diagnostics
+  gravity_torques_.resize(tree_njoints);
+  for (size_t i = 0; i < tree_njoints; ++i) {
+    gravity_torques_(i) = tau(i);
+  }
 }
 
 // Compute friction compensation torques using LuGre model
@@ -1106,6 +1265,169 @@ void OpenArm_v10HW::compute_friction_compensation(std::vector<double>& friction_
     friction_torques[i] = Fc_[i] * std::tanh(k_[i] * dq) + Fv_[i] * dq + Fo_[i];
   }
 }
+
+// Print KDL Tree diagnostics for debugging and verification
+void OpenArm_v10HW::print_kdl_tree_diagnostics() {
+  if (!kdl_tree_solver_) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                "KDL Tree solver not initialized");
+    return;
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "========== KDL Tree Diagnostics (%s arm) ==========",
+              arm_prefix_.c_str());
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "Tree structure: %u segments, %u joints (NOTE: may include other arm in bimanual)",
+              kdl_tree_.getNrOfSegments(), kdl_tree_.getNrOfJoints());
+  
+  // Print tree structure showing segments and their joint connections
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "=== Segment Tree Structure for this arm ===");
+  
+  std::function<void(const KDL::SegmentMap::const_iterator&, int)> print_tree;
+  print_tree = [&](const KDL::SegmentMap::const_iterator& seg_it, int depth) {
+    const KDL::Segment& seg = seg_it->second.segment;
+    const KDL::Joint& joint = seg.getJoint();
+    std::string seg_name = seg.getName();
+    
+    // Check if this segment belongs to current arm
+    bool is_mine = (seg_name.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                   (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && seg_name[0] == 'L') ||
+                   (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && seg_name[0] == 'R') ||
+                   (has_leap_hand_ && seg_name.find("right_") != std::string::npos);
+    
+    if (is_mine) {
+      std::string indent(depth * 2, ' ');
+      std::string joint_type_str;
+      switch (joint.getType()) {
+        case KDL::Joint::None: 
+          joint_type_str = "Fixed"; 
+          break;
+        case KDL::Joint::RotAxis: 
+          joint_type_str = "Revolute"; 
+          break;
+        case KDL::Joint::RotX: 
+          joint_type_str = "RotX"; 
+          break;
+        case KDL::Joint::RotY: 
+          joint_type_str = "RotY"; 
+          break;
+        case KDL::Joint::RotZ: 
+          joint_type_str = "RotZ"; 
+          break;
+        case KDL::Joint::TransAxis: 
+          joint_type_str = "Prismatic"; 
+          break;
+        default: 
+          joint_type_str = "Unknown"; 
+          break;
+      }
+      
+      double mass = seg.getInertia().getMass();
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                  "%s└─ Segment: '%s' | Joint: '%s' (%s) | Mass: %.4f kg",
+                  indent.c_str(), seg_name.c_str(), joint.getName().c_str(), 
+                  joint_type_str.c_str(), mass);
+    }
+    
+    // Recurse to children
+    for (const auto& child_seg_it : seg_it->second.children) {
+      print_tree(child_seg_it, depth + 1);
+    }
+  };
+  
+  KDL::SegmentMap::const_iterator root_seg = kdl_tree_.getRootSegment();
+  print_tree(root_seg, 0);
+  
+  // Count and print only this arm's joints
+  std::vector<std::pair<size_t, std::string>> arm_joints;
+  for (size_t i = 0; i < kdl_joint_names_.size(); ++i) {
+    const std::string& jname = kdl_joint_names_[i];
+    bool is_mine = (jname.find("openarm_" + arm_prefix_) != std::string::npos) ||
+                   (has_o6_hand_ && arm_prefix_.find("left") != std::string::npos && jname[0] == 'L') ||
+                   (has_o6_hand_ && arm_prefix_.find("right") != std::string::npos && jname[0] == 'R') ||
+                   (has_leap_hand_ && jname.find("right_") != std::string::npos);
+    if (is_mine) {
+      arm_joints.push_back({i, jname});
+    }
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "This arm's joint mapping (%zu joints):", arm_joints.size());
+  for (const auto& [idx, name] : arm_joints) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                "  [%02zu] %s", idx, name.c_str());
+  }
+  
+  // Print current gravity torques if available
+  if (gravity_torques_.rows() > 0) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                "Current gravity torques (Nm) - at ZERO position:");
+    for (size_t i = 0; i < static_cast<size_t>(gravity_torques_.rows()); ++i) {
+      if (i < kdl_joint_names_.size()) {
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                    "  %s: %.4f Nm", kdl_joint_names_[i].c_str(), gravity_torques_(i));
+      }
+    }
+    
+    // Test gravity calculation with non-zero position to verify it's working
+    if (kdl_tree_solver_) {
+      const size_t tree_njoints = kdl_tree_.getNrOfJoints();
+      KDL::JntArray q_test(tree_njoints);
+      KDL::JntArray q_dot_test(tree_njoints);
+      KDL::JntArray q_dotdot_test(tree_njoints);
+      KDL::WrenchMap f_ext_test;
+      KDL::JntArray tau_test(tree_njoints);
+      
+      // Initialize all to zero
+      for (size_t i = 0; i < tree_njoints; ++i) {
+        q_test(i) = 0.0;
+        q_dot_test(i) = 0.0;
+        q_dotdot_test(i) = 0.0;
+      }
+      
+      // Set joint2 to 45 degrees (0.785 rad) to test gravity calculation
+      // Find joint2 index for this arm
+      std::string test_joint = "openarm_" + arm_prefix_ + "joint2";
+      auto it = joint_name_to_kdl_idx_.find(test_joint);
+      if (it != joint_name_to_kdl_idx_.end()) {
+        q_test(it->second) = 0.785;  // 45 degrees
+        
+        int result = kdl_tree_solver_->CartToJnt(q_test, q_dot_test, q_dotdot_test, f_ext_test, tau_test);
+        if (result == 0) {
+          double test_torque = tau_test(it->second);
+          RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                      "Test: %s at 45deg -> gravity torque = %.4f Nm (should be non-zero if mass data exists)",
+                      test_joint.c_str(), test_torque);
+          
+          if (std::abs(test_torque) < 0.001) {
+            RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                        "WARNING: Gravity torque is near zero even at 45deg! Check URDF mass/inertia data!");
+          }
+        }
+      }
+    }
+  }
+  
+  // Print controlled joints mapping
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "Controlled joints (hardware interface):");
+  for (size_t i = 0; i < joint_names_.size(); ++i) {
+    auto it = joint_name_to_kdl_idx_.find(joint_names_[i]);
+    if (it != joint_name_to_kdl_idx_.end()) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                  "  HW[%02zu] %s -> KDL[%d]", i, joint_names_[i].c_str(), it->second);
+    } else {
+      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+                  "  HW[%02zu] %s -> NOT FOUND in KDL", i, joint_names_[i].c_str());
+    }
+  }
+  
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
+              "==========================================");
+}
+
 
 // High-frequency arm control loop (WRITE ONLY @ 500Hz)
 // This loop handles ONLY command sending, NOT reading (reading is done in state_read_loop)
@@ -1160,41 +1482,16 @@ void OpenArm_v10HW::arm_control_loop() {
       tau_state = arm_tau_state_buffer_;
     }
     
-    // Compute gravity compensation
+    // Compute gravity compensation using Tree-based solver
     std::vector<double> gravity_comp(ARM_DOF, 0.0);
-    if (use_gravity_compensation_) {
-      if (kdl_solver_) {
-        const size_t kdl_n = kdl_chain_.getNrOfJoints();
-        KDL::JntArray q(kdl_n);
-        // Fill q with arm+hand states when available (pos_state holds arm + optional gripper)
-        for (size_t i = 0; i < kdl_n; ++i) {
-          if (i < pos_state.size()) {
-            q(i) = pos_state[i];
-          } else if (i < pos_states_.size()) {
-            q(i) = pos_states_[i];
-          } else {
-            q(i) = 0.0;
-          }
-        }
-        KDL::JntArray grav(kdl_n);
-        kdl_solver_->JntToGravity(q, grav);
-        // Copy the first ARM_DOF entries back to gravity_comp
-        for (size_t i = 0; i < ARM_DOF && i < kdl_n; ++i) {
-          gravity_comp[i] = grav(i);
-        }
-        // Optionally store full gravity vector if needed elsewhere
-        gravity_torques_.resize(kdl_n);
-        for (size_t i = 0; i < kdl_n; ++i) gravity_torques_(i) = grav(i);
-      }
+    if (use_gravity_compensation_ && kdl_tree_solver_) {
+      compute_gravity_compensation(gravity_comp);
     }
     
     // Compute friction compensation
     std::vector<double> friction_comp(ARM_DOF, 0.0);
     if (use_friction_compensation_) {
-      for (size_t i = 0; i < ARM_DOF; ++i) {
-        double dq = vel_state[i];
-        friction_comp[i] = Fc_[i] * std::tanh(k_[i] * dq) + Fv_[i] * dq + Fo_[i];
-      }
+      compute_friction_compensation(friction_comp);
     }
     
     // Debug logging: save data to CSV for analysis (one CSV per arm)

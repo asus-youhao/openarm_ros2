@@ -41,6 +41,7 @@
 #include <kdl/chaindynparam.hpp>
 #include <kdl/jntarray.hpp>
 #include <kdl/tree.hpp>
+#include <kdl/treeidsolver_recursive_newton_euler.hpp>
 #include <kdl_parser/kdl_parser.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -348,22 +349,22 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void o6_control_loop();  // Control loop @ 60Hz (matching LinkerHand SDK default)
   
  
-  // Gravity compensation using KDL
-  std::unique_ptr<KDL::ChainDynParam> kdl_solver_;
-  KDL::Chain kdl_chain_;
-  KDL::JntArray gravity_torques_;
+  // Gravity compensation using KDL Tree (supports branching structures like leap hand)
+  std::unique_ptr<KDL::TreeIdSolver_RNE> kdl_tree_solver_;  // Tree-based inverse dynamics solver
+  KDL::Tree kdl_tree_;                                       // Full kinematic tree from URDF
+  std::map<std::string, int> joint_name_to_kdl_idx_;        // Maps joint names to KDL tree indices
+  std::vector<std::string> kdl_joint_names_;                // Joint names in KDL tree order
+  KDL::JntArray gravity_torques_;                           // Gravity torques for all tree joints
   bool use_gravity_compensation_;
   bool use_friction_compensation_;
   std::string urdf_string_;
   
-  // Helper function to scan URDF for tip link candidates
-  std::vector<std::string> scan_urdf_for_tip_links(
-      const std::string& urdf_content, 
-      const std::vector<std::string>& keywords);
-  
+  // Helper functions for KDL Tree-based dynamics
   bool init_kdl_dynamics(const std::string& urdf_content);
+  void build_joint_index_map();  // Build mapping from joint names to KDL tree indices
   void compute_gravity_compensation(std::vector<double>& gravity_torques);
   void compute_friction_compensation(std::vector<double>& friction_torques);
+  void print_kdl_tree_diagnostics();  // Print tree structure and gravity torques for debugging
 
   // Function to load parameters from YAML file
   void loadParametersFromYAML(const std::string& yaml_file) {
