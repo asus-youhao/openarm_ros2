@@ -172,8 +172,8 @@ test_hands() {
         control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:
-    - L_thumb_cmc_yaw
     - L_thumb_cmc_pitch
+    - L_thumb_cmc_yaw
     - L_index_mcp_pitch
     - L_middle_mcp_pitch
     - L_ring_mcp_pitch
@@ -196,8 +196,8 @@ trajectory:
         control_msgs/action/FollowJointTrajectory "
 trajectory:
   joint_names:
-    - R_thumb_cmc_yaw
     - R_thumb_cmc_pitch
+    - R_thumb_cmc_yaw
     - R_index_mcp_pitch
     - R_middle_mcp_pitch
     - R_ring_mcp_pitch

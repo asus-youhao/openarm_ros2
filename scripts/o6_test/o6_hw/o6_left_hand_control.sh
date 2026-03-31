@@ -18,7 +18,7 @@ case "$1" in
         echo "Opening left hand..."
         ros2 action send_goal ${ACTION_SERVER} control_msgs/action/FollowJointTrajectory "{
           trajectory: {
-            joint_names: [${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
+            joint_names: [${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
             points: [
               {
                 positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -32,7 +32,7 @@ case "$1" in
         echo "Grasping with left hand (medium grip)..."
         ros2 action send_goal ${ACTION_SERVER} control_msgs/action/FollowJointTrajectory "{
           trajectory: {
-            joint_names: [${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
+            joint_names: [${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
             points: [
               {
                 positions: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
@@ -46,7 +46,7 @@ case "$1" in
         echo "Closing left hand (full grip)..."
         ros2 action send_goal ${ACTION_SERVER} control_msgs/action/FollowJointTrajectory "{
           trajectory: {
-            joint_names: [${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
+            joint_names: [${HAND_PREFIX}thumb_cmc_pitch, ${HAND_PREFIX}thumb_cmc_yaw, ${HAND_PREFIX}index_mcp_pitch, ${HAND_PREFIX}middle_mcp_pitch, ${HAND_PREFIX}ring_mcp_pitch, ${HAND_PREFIX}pinky_mcp_pitch],
             points: [
               {
                 positions: [0.5, 1.2, 1.5, 1.5, 1.5, 1.5],

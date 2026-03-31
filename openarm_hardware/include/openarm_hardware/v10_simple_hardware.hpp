@@ -336,10 +336,11 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   LowPassFilter o6_state_filter_;
   
   // O6 Hand joint limits (radians)
-  // 0-5: Active joints (thumb_cmc_yaw, thumb_cmc_pitch, index_mcp, middle_mcp, ring_mcp, pinky_mcp)
+  // SDK Motor Order (standard): 0=pitch, 1=yaw, 2=index, 3=middle, 4=ring, 5=pinky
+  // 0-5: Active joints (thumb_cmc_pitch, thumb_cmc_yaw, index_mcp, middle_mcp, ring_mcp, pinky_mcp)
   // 6-10: Passive/coupled DIP joints (thumb_dip, index_dip, middle_dip, ring_dip, pinky_dip)
   static constexpr std::array<double, O6_HAND_DOF> O6_JOINT_MIN = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-  static constexpr std::array<double, O6_HAND_DOF> O6_JOINT_MAX = {0.58, 1.36, 1.6, 1.6, 1.6, 1.6, 1.09, 1.28, 1.28, 1.28, 1.28};
+  static constexpr std::array<double, O6_HAND_DOF> O6_JOINT_MAX = {0.58, 1.36, 1.6, 1.6, 1.6, 1.6, 1.08, 1.43, 1.43, 1.43, 1.43};
   
   bool connect_o6_hand();
   void disconnect_o6_hand();

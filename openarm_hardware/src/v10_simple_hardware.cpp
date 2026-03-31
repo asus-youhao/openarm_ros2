@@ -179,9 +179,9 @@ void OpenArm_v10HW::generate_joint_names() {
       hand_prefix = (o6_hand_type_ == "left") ? "L_" : "R_";
     }
     
-    // Active joints (6)
-    joint_names_.push_back(hand_prefix + "thumb_cmc_yaw");
+    // Active joints (6) - SDK motor order
     joint_names_.push_back(hand_prefix + "thumb_cmc_pitch");
+    joint_names_.push_back(hand_prefix + "thumb_cmc_yaw");
     joint_names_.push_back(hand_prefix + "index_mcp_pitch");
     joint_names_.push_back(hand_prefix + "middle_mcp_pitch");
     joint_names_.push_back(hand_prefix + "ring_mcp_pitch");
@@ -1748,14 +1748,17 @@ bool OpenArm_v10HW::send_o6_hand_command(const std::vector<double>& positions, s
 
   try {
     // Convert radians to O6 motor units (0-255)
-    // Correct mapping for O6: 
+    // SDK motor order: [pitch, yaw, index, middle, ring, pinky]
+    // Joint order matches SDK order (no mapping needed)
     //   0 rad (min, open hand) -> 255 motor (open)
     //   max rad (closed hand) -> 0 motor (closed)
+    
     std::vector<uint8_t> motor_cmds(6);
 
-    // Only send commands for the 6 active joints
+    // Direct command without mapping (using SDK order)
     for (size_t i = 0; i < 6; ++i) {
       double pos_rad = positions[start_idx + i];
+      
       // Clamp to joint limits
       pos_rad = std::max(O6_JOINT_MIN[i], std::min(pos_rad, O6_JOINT_MAX[i]));
 
@@ -1802,7 +1805,9 @@ bool OpenArm_v10HW::read_o6_hand_states(std::vector<double>& positions, size_t s
     }
 
     // Convert motor units to radians for 6 active joints
-    // Reversed mapping (matching send command): motor 255 -> 0 rad (open), motor 0 -> max rad (closed)
+    // SDK motor order: [pitch, yaw, index, middle, ring, pinky]
+    // Joint order matches SDK order (no mapping needed)
+    // Reversed mapping: motor 255 -> 0 rad (open), motor 0 -> max rad (closed)
     for (size_t i = 0; i < 6; ++i) {
       // Reverse the motor value: actual motor value is inverted
       double reversed_motor = 255.0 - motor_positions[i];

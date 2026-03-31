@@ -34,6 +34,7 @@ namespace openarm_hardware
 // O6 hand constants and joint limits (from LinkerHand SDK)
 static constexpr size_t NUM_JOINTS = 6;
 static constexpr std::array<double, NUM_JOINTS> JOINT_MIN = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+// SDK motor order: [pitch, yaw, index, middle, ring, pinky]
 static constexpr std::array<double, NUM_JOINTS> JOINT_MAX = {0.58, 1.36, 1.6, 1.6, 1.6, 1.6};
 
 hardware_interface::CallbackReturn O6HandHardware::on_init(
@@ -754,7 +755,8 @@ std::vector<double> O6HandHardware::range_to_radians(const std::vector<uint8_t> 
   // SDK mapping (CORRECTED): 
   //   range 0   -> max_angle (closed/握拳)
   //   range 255 -> min_angle (0.0 rad, open/張開)
-  // (Using namespace-level constants defined above)
+  // SDK motor order: [pitch, yaw, index, middle, ring, pinky]
+  // Joint order matches SDK order (no mapping needed)
   
   std::vector<double> radians;
   radians.reserve(range_values.size());
@@ -774,7 +776,9 @@ std::vector<double> O6HandHardware::range_to_radians(const std::vector<uint8_t> 
 
 std::vector<uint8_t> O6HandHardware::radians_to_range(const std::vector<double> & radians)
 {
-  // O6 hand joint limits (using namespace-level constants)
+  // O6 hand joint limits
+  // SDK motor order: [pitch, yaw, index, middle, ring, pinky]
+  // Joint order matches SDK order (no mapping needed)
   
   std::vector<uint8_t> range_values;
   range_values.reserve(radians.size());

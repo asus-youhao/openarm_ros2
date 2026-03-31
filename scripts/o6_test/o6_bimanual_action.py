@@ -41,13 +41,13 @@ class BimanualHandTester(Node):
         
         # Joint names
         right_joints = [
-            'R_thumb_cmc_yaw', 'R_thumb_cmc_pitch', 
+            'R_thumb_cmc_pitch', 'R_thumb_cmc_yaw', 
             'R_index_mcp_pitch', 'R_middle_mcp_pitch', 
             'R_ring_mcp_pitch', 'R_pinky_mcp_pitch'
         ]
         
         left_joints = [
-            'L_thumb_cmc_yaw', 'L_thumb_cmc_pitch', 
+            'L_thumb_cmc_pitch', 'L_thumb_cmc_yaw', 
             'L_index_mcp_pitch', 'L_middle_mcp_pitch', 
             'L_ring_mcp_pitch', 'L_pinky_mcp_pitch'
         ]
@@ -143,8 +143,8 @@ def main():
                     # Open
                     print('Opening hands...')
                     tester.send_trajectory(
-                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.05, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.05, 0.0, 0.0, 0.0, 0.0],
                         duration_sec=0.1
                     )
                     time.sleep(2.0)
@@ -152,8 +152,8 @@ def main():
                     # Grasp
                     print('Grasping...')
                     tester.send_trajectory(
-                        [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
-                        [0.3, 0.7, 0.8, 0.8, 0.8, 0.8],
+                        [0.26, 1.05, 0.96, 0.96, 0.87, 0.87],
+                        [0.26, 1.05, 0.96, 0.96, 0.87, 0.87],
                         duration_sec=0.1
                     )
                     time.sleep(2.0)

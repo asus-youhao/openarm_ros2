@@ -46,7 +46,7 @@ ros2 action list
 ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
-    joint_names: [R_thumb_cmc_yaw, R_thumb_cmc_pitch, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
+    joint_names: [R_thumb_cmc_pitch, R_thumb_cmc_yaw, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
     points: [{positions: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8], time_from_start: {sec: 2}}]
   }
 }" --feedback
@@ -55,7 +55,7 @@ ros2 action send_goal /hand_controller/follow_joint_trajectory \
 ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
-    joint_names: [R_thumb_cmc_yaw, R_thumb_cmc_pitch, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
+    joint_names: [R_thumb_cmc_pitch, R_thumb_cmc_yaw, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
     points: [{positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], time_from_start: {sec: 2}}]
   }
 }"
@@ -103,7 +103,7 @@ ros2 launch openarm_bringup o6_hand_hardware_test.launch.py \
 ros2 action send_goal /hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
-    joint_names: [L_thumb_cmc_yaw, L_thumb_cmc_pitch, L_index_mcp_pitch, L_middle_mcp_pitch, L_ring_mcp_pitch, L_pinky_mcp_pitch],
+    joint_names: [L_thumb_cmc_pitch, L_thumb_cmc_yaw, L_index_mcp_pitch, L_middle_mcp_pitch, L_ring_mcp_pitch, L_pinky_mcp_pitch],
     points: [{positions: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8], time_from_start: {sec: 2}}]
   }
 }" --feedback
@@ -201,7 +201,7 @@ python3 scripts/test_o6_bimanual.py mirror
 ros2 action send_goal /right_hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
-    joint_names: [R_thumb_cmc_yaw, R_thumb_cmc_pitch, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
+    joint_names: [R_thumb_cmc_pitch, R_thumb_cmc_yaw, R_index_mcp_pitch, R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch],
     points: [{positions: [0.3, 0.7, 0.8, 0.8, 0.8, 0.8], time_from_start: {sec: 2}}]
   }
 }"
@@ -210,7 +210,7 @@ ros2 action send_goal /right_hand_controller/follow_joint_trajectory \
 ros2 action send_goal /left_hand_controller/follow_joint_trajectory \
     control_msgs/action/FollowJointTrajectory "{
   trajectory: {
-    joint_names: [L_thumb_cmc_yaw, L_thumb_cmc_pitch, L_index_mcp_pitch, L_middle_mcp_pitch, L_ring_mcp_pitch, L_pinky_mcp_pitch],
+    joint_names: [L_thumb_cmc_pitch, L_thumb_cmc_yaw, L_index_mcp_pitch, L_middle_mcp_pitch, L_ring_mcp_pitch, L_pinky_mcp_pitch],
     points: [{positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], time_from_start: {sec: 2}}]
   }
 }"
@@ -242,13 +242,21 @@ ros2 topic pub /left_hand_controller/commands std_msgs/msg/Float64MultiArray \
 
 ## 關節資訊
 
-### 關節順序（URDF order）
-1. `thumb_cmc_yaw` - 大拇指 CMC 偏轉 (0.0 - 0.58 rad)
-2. `thumb_cmc_pitch` - 大拇指 CMC 俯仰 (0.0 - 1.36 rad)
+### 關節順序（SDK 標準順序）
+根據 LinkerHand SDK 官方文檔，統一使用以下順序：
+```
+["大拇指彎曲", "大拇指橫擺", "食指彎曲", "中指彎曲", "無名指彎曲", "小拇指彎曲"]
+```
+
+對應 ROS2 關節名稱：
+1. `thumb_cmc_pitch` - 大拇指 CMC 俯仰/彎曲 (0.0 - 0.58 rad)
+2. `thumb_cmc_yaw` - 大拇指 CMC 偏轉/橫擺 (0.0 - 1.36 rad)
 3. `index_mcp_pitch` - 食指 MCP 俯仰 (0.0 - 1.6 rad)
 4. `middle_mcp_pitch` - 中指 MCP 俯仰 (0.0 - 1.6 rad)
 5. `ring_mcp_pitch` - 無名指 MCP 俯仰 (0.0 - 1.6 rad)
 6. `pinky_mcp_pitch` - 小指 MCP 俯仰 (0.0 - 1.6 rad)
+
+**注意**：系統已統一使用 SDK 順序，Topic/Action 命令順序與硬件電機順序一致。
 
 ### 映射關係
 - **Range 值**: 0-255 (LinkerHandApi SDK)

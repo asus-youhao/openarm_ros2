@@ -19,16 +19,17 @@ import time
 from sensor_msgs.msg import JointState
 
 RIGHT_JOINTS = [
-    'R_thumb_cmc_yaw', 'R_thumb_cmc_pitch', 'R_index_mcp_pitch',
+    'R_thumb_cmc_pitch', 'R_thumb_cmc_yaw', 'R_index_mcp_pitch',
     'R_middle_mcp_pitch', 'R_ring_mcp_pitch', 'R_pinky_mcp_pitch'
 ]
 LEFT_JOINTS = [
-    'L_thumb_cmc_yaw', 'L_thumb_cmc_pitch', 'L_index_mcp_pitch',
+    'L_thumb_cmc_pitch', 'L_thumb_cmc_yaw', 'L_index_mcp_pitch',
     'L_middle_mcp_pitch', 'L_ring_mcp_pitch', 'L_pinky_mcp_pitch'
 ]
 
+# SDK motor order: [pitch, yaw, index, middle, ring, pinky, ...]
 O6_JOINT_MIN = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-O6_JOINT_MAX = [0.58, 1.36, 1.6, 1.6, 1.6, 1.6, 1.09, 1.28, 1.28, 1.28, 1.28, 1.28]
+O6_JOINT_MAX = [0.58, 1.36, 1.6, 1.6, 1.6, 1.6, 1.08, 1.43, 1.43, 1.43, 1.43, 1.43]
 
 class JointStateInitNode(Node):
     def __init__(self):
