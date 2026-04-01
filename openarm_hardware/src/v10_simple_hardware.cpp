@@ -1710,10 +1710,14 @@ bool OpenArm_v10HW::connect_o6_hand() {
                 "Set O6 Hand speed to 200 [arm_prefix=%s]", arm_prefix_.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    std::vector<uint8_t> torque(6, 200);   // Default torque: 200/255 (~78%)
+    std::vector<uint8_t> torque(6, 150);   // Default torque: 150/255 (~59%)
     o6_hand_api_->setTorque(torque);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    auto torque_readback = o6_hand_api_->getTorque();
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Set O6 Hand torque to 200 [arm_prefix=%s]", arm_prefix_.c_str());
+                "O6 Hand torque readback: [%u, %u, %u, %u, %u, %u] [arm_prefix=%s]",
+                torque_readback[0], torque_readback[1], torque_readback[2], torque_readback[3], torque_readback[4], torque_readback[5],
+                arm_prefix_.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Get version info
