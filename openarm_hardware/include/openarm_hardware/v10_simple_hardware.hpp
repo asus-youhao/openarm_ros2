@@ -143,6 +143,10 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> Fv_ = {0.063, 0.063, 0.604, 0.813, 0.029, 0.072, 0.084};  // Viscous friction
   std::vector<double> Fo_ = {0.088, 0.088, 0.008, -0.058, 0.005, 0.009, -0.059};  // Offset
 
+  // Joint direction configuration (1.0 = normal, -1.0 = reversed)
+  // Used to correct joints that are physically mounted in reverse direction
+  std::vector<double> joint_direction_ = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+
   const double GRIPPER_JOINT_0_POSITION = 0.044;
   const double GRIPPER_JOINT_1_POSITION = 0.0;
   const double GRIPPER_MOTOR_0_RADIANS = 0.0;
@@ -387,6 +391,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
     }
     if (config["Fo"]) {
         Fo_ = config["Fo"].as<std::vector<double>>();
+    }
+    if (config["joint_direction"]) {
+        joint_direction_ = config["joint_direction"].as<std::vector<double>>();
     }
 }
 

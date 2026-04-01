@@ -91,6 +91,11 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
                 "kp=[%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
                 kp_[0], kp_[1], kp_[2], kp_[3], kp_[4], kp_[5], kp_[6]);
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "joint_direction=[%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+                joint_direction_[0], joint_direction_[1], joint_direction_[2],
+                joint_direction_[3], joint_direction_[4], joint_direction_[5],
+                joint_direction_[6]);
   } catch (const std::exception& e) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
                 "Failed to load parameters.yaml: %s, using defaults", e.what());
@@ -700,6 +705,13 @@ hardware_interface::return_type OpenArm_v10HW::read(
       pos_states_[i] = arm_pos_state_buffer_[i];
       vel_states_[i] = arm_vel_state_buffer_[i];
       tau_states_[i] = arm_tau_state_buffer_[i];
+      
+      // Apply joint direction correction for arm joints (not gripper)
+      if (i < ARM_DOF && joint_direction_[i] < 0) {
+        pos_states_[i] = -pos_states_[i];
+        vel_states_[i] = -vel_states_[i];
+        tau_states_[i] = -tau_states_[i];
+      }
     }
   }
 
@@ -735,9 +747,16 @@ hardware_interface::return_type OpenArm_v10HW::write(
     std::lock_guard<std::mutex> lock(arm_command_mutex_);
     size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
-      arm_pos_cmd_buffer_[i] = pos_commands_[i];
-      arm_vel_cmd_buffer_[i] = vel_commands_[i];
-      arm_tau_cmd_buffer_[i] = tau_commands_[i];
+      // Apply inverse joint direction correction before sending to hardware
+      if (i < ARM_DOF && joint_direction_[i] < 0) {
+        arm_pos_cmd_buffer_[i] = -pos_commands_[i];
+        arm_vel_cmd_buffer_[i] = -vel_commands_[i];
+        arm_tau_cmd_buffer_[i] = -tau_commands_[i];
+      } else {
+        arm_pos_cmd_buffer_[i] = pos_commands_[i];
+        arm_vel_cmd_buffer_[i] = vel_commands_[i];
+        arm_tau_cmd_buffer_[i] = tau_commands_[i];
+      }
     }
   }
 
