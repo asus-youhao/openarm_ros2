@@ -33,6 +33,20 @@ namespace openarm_hardware {
 OpenArm_v10HW::OpenArm_v10HW() = default;
 
 bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
+  // Parse simulation_mode FIRST — must happen before any CAN socket construction
+  {
+    auto sim_it = info.hardware_parameters.find("simulation_mode");
+    if (sim_it != info.hardware_parameters.end()) {
+      std::string value = sim_it->second;
+      std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+      simulation_mode_ = (value == "true");
+    }
+  }
+  if (simulation_mode_) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "[SIMULATION MODE] CAN hardware disabled — KDL runs on sine-wave joint positions");
+  }
+
   // Parse CAN interface (default: can0)
   auto it = info.hardware_parameters.find("can_interface");
   can_interface_ = (it != info.hardware_parameters.end()) ? it->second : "can0";
@@ -80,6 +94,8 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
     std::transform(value.begin(), value.end(), value.begin(), ::tolower);
     enable_frequency_diagnostics_ = (value == "true");
   }
+
+  // simulation_mode_ already parsed at the top of parse_config
 
   // Load parameters from YAML file using ROS2 package resource lookup
   try {
@@ -242,23 +258,29 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
     return CallbackReturn::ERROR;
   }
 
-  // Initialize OpenArm with configurable CAN-FD setting
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Initializing OpenArm on %s with CAN-FD %s...",
-              can_interface_.c_str(), can_fd_ ? "enabled" : "disabled");
-  openarm_ =
-      std::make_unique<openarm::can::socket::OpenArm>(can_interface_, can_fd_);
+  // Initialize OpenArm (skip in simulation mode — no CAN socket)
+  if (simulation_mode_) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[SIMULATION MODE] Skipping CAN socket init (can_interface=%s)",
+                can_interface_.c_str());
+  } else {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "Initializing OpenArm on %s with CAN-FD %s...",
+                can_interface_.c_str(), can_fd_ ? "enabled" : "disabled");
+    openarm_ =
+        std::make_unique<openarm::can::socket::OpenArm>(can_interface_, can_fd_);
 
-  // Initialize arm motors with V10 defaults
-  openarm_->init_arm_motors(DEFAULT_MOTOR_TYPES, DEFAULT_SEND_CAN_IDS,
-                            DEFAULT_RECV_CAN_IDS);
+    // Initialize arm motors with V10 defaults
+    openarm_->init_arm_motors(DEFAULT_MOTOR_TYPES, DEFAULT_SEND_CAN_IDS,
+                              DEFAULT_RECV_CAN_IDS);
 
-  // Initialize gripper if enabled
-  if (hand_) {
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Initializing gripper...");
-    openarm_->init_gripper_motor(DEFAULT_GRIPPER_MOTOR_TYPE,
-                                 DEFAULT_GRIPPER_SEND_CAN_ID,
-                                 DEFAULT_GRIPPER_RECV_CAN_ID);
+    // Initialize gripper if enabled
+    if (hand_) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Initializing gripper...");
+      openarm_->init_gripper_motor(DEFAULT_GRIPPER_MOTOR_TYPE,
+                                   DEFAULT_GRIPPER_SEND_CAN_ID,
+                                   DEFAULT_GRIPPER_RECV_CAN_ID);
+    }
   }
 
   // Initialize state and command vectors based on generated joint count
@@ -430,9 +452,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
 hardware_interface::CallbackReturn OpenArm_v10HW::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   // Set callback mode to ignore during configuration
-  openarm_->refresh_all();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  openarm_->recv_all();
+  if (!simulation_mode_) {
+    openarm_->refresh_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    openarm_->recv_all();
+  }
 
   // Initialize KDL dynamics if gravity compensation is enabled
   if (use_gravity_compensation_) {
@@ -532,10 +556,12 @@ OpenArm_v10HW::export_command_interfaces() {
 hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Activating OpenArm V10...");
-  openarm_->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
-  openarm_->enable_all();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  openarm_->recv_all();
+  if (!simulation_mode_) {
+    openarm_->set_callback_mode_all(openarm::damiao_motor::CallbackMode::STATE);
+    openarm_->enable_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    openarm_->recv_all();
+  }
 
   // Connect to LEAP Hand if enabled
   if (has_leap_hand_) {
@@ -683,9 +709,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   }
 
   // Disable all motors (like full_arm.cpp exit)
-  openarm_->disable_all();
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  openarm_->recv_all();
+  if (!simulation_mode_) {
+    openarm_->disable_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    openarm_->recv_all();
+  }
   
   // Close debug CSVs if open
   if (debug_csv_.is_open()) {
@@ -781,6 +809,11 @@ hardware_interface::return_type OpenArm_v10HW::write(
 void OpenArm_v10HW::return_to_zero() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Returning to zero position...");
+  if (simulation_mode_) {
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[SIMULATION MODE] return_to_zero skipped (no hardware)");
+    return;
+  }
 
   // Return arm to zero with MIT control
   std::vector<openarm::damiao_motor::MITParam> arm_params;
@@ -1112,9 +1145,61 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
   // Create Tree-based recursive Newton-Euler inverse dynamics solver
   KDL::Vector gravity_vector(0.0, 0.0, -9.81);  // Earth gravity in base frame
   kdl_tree_solver_ = std::make_unique<KDL::TreeIdSolver_RNE>(kdl_tree_, gravity_vector);
-  
-  // Allocate gravity torques array for all tree joints
-  gravity_torques_.resize(kdl_tree_.getNrOfJoints());
+
+  // Pre-allocate ALL hot-loop buffers ONCE here — never allocate inside the 500Hz control loop
+  const unsigned int tree_n = kdl_tree_.getNrOfJoints();
+  gravity_torques_.resize(tree_n);
+  kdl_q_buf_.resize(tree_n);    KDL::SetToZero(kdl_q_buf_);
+  kdl_qdot_buf_.resize(tree_n); KDL::SetToZero(kdl_qdot_buf_);
+  kdl_qddot_buf_.resize(tree_n); KDL::SetToZero(kdl_qddot_buf_);
+  kdl_tau_buf_.resize(tree_n);  KDL::SetToZero(kdl_tau_buf_);
+  // kdl_f_ext_buf_ is a std::map — default-constructed empty, no further init needed
+
+  // ── Benchmark: also build a Chain solver (arm + palm, no finger branches) ───────────────
+  // Priority: palm_base (includes palm mass) → link7 (arm-only, no palm)
+  std::vector<std::string> bench_tip_candidates;
+  if (has_o6_hand_) {
+    std::string hp = (arm_prefix_.find("left") != std::string::npos) ? "L_" : "R_";
+    bench_tip_candidates.push_back(hp + "hand_base_link");
+    bench_tip_candidates.push_back(hp + "palm");
+  } else if (has_leap_hand_) {
+    bench_tip_candidates.push_back("right_palm_lower");
+    bench_tip_candidates.push_back("right_hand_base_link");
+  }
+  bench_tip_candidates.push_back("openarm_" + arm_prefix_ + "link7");  // final fallback
+
+  // Use the actual tree root (not hardcoded "openarm_body_link0" which only exists
+  // in bimanual URDF — standalone URDFs use "palm_mount" etc. as root)
+  const std::string bench_root = full_tree.getRootSegment()->first;
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "[Benchmark] Using tree root '%s' for chain extraction", bench_root.c_str());
+
+  for (const auto& cand : bench_tip_candidates) {
+    KDL::Chain trial;
+    if (!full_tree.getChain(bench_root, cand, trial)) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                  "[Benchmark] getChain(%s → %s) failed, trying next",
+                  bench_root.c_str(), cand.c_str());
+      continue;
+    }
+    // Success — build solver and pre-allocate buffers
+    kdl_bench_chain_     = trial;
+    kdl_bench_chain_tip_ = cand;
+    const unsigned int cn = kdl_bench_chain_.getNrOfJoints();
+    kdl_bench_chain_solver_ =
+        std::make_unique<KDL::ChainDynParam>(kdl_bench_chain_, KDL::Vector(0.0, 0.0, -9.81));
+    kdl_bench_q_buf_.resize(cn);    KDL::SetToZero(kdl_bench_q_buf_);
+    kdl_bench_grav_buf_.resize(cn); KDL::SetToZero(kdl_bench_grav_buf_);
+    kdl_bench_chain_ok_ = true;
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[Benchmark] Chain built: %s → %s  (%u joints) — timing-only, not used for output",
+                bench_root.c_str(), cand.c_str(), cn);
+    break;
+  }
+  if (!kdl_bench_chain_ok_) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "[Benchmark] Could not build arm chain — chain timing comparison unavailable");
+  }
   
   // Diagnostic: Print mass information from segments to verify URDF parsing
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -1176,75 +1261,197 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
 
 // Compute gravity compensation torques using KDL Tree-based solver
 // Tree solver computes gravity for ALL joints in the tree, including hand joints
-void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_torques) {
+void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_torques,
+                                                  const std::vector<double>& q_current) {
   if (!kdl_tree_solver_ || gravity_torques.size() != ARM_DOF) {
     return;
   }
 
-  const size_t tree_njoints = kdl_tree_.getNrOfJoints();
-  
-  // Prepare input joint states for the entire tree
-  // TreeIdSolver_RNE requires: q (positions), q_dot (velocities), q_dotdot (accelerations)
-  KDL::JntArray q(tree_njoints);           // Joint positions
-  KDL::JntArray q_dot(tree_njoints);       // Joint velocities (zero for static gravity)
-  KDL::JntArray q_dotdot(tree_njoints);    // Joint accelerations (zero for static gravity)
-  KDL::WrenchMap f_ext;                    // External forces (empty map for gravity-only)
-  KDL::JntArray tau(tree_njoints);         // Output torques
-  
-  // Fill joint positions from current state using the name mapping
-  // We need to map our joint_names_ to KDL tree joint indices
-  for (size_t i = 0; i < tree_njoints; ++i) {
-    q(i) = 0.0;  // Default to zero
-    q_dot(i) = 0.0;
-    q_dotdot(i) = 0.0;
-  }
-  
-  // Map our controlled joints to KDL tree indices
-  for (size_t i = 0; i < joint_names_.size() && i < pos_states_.size(); ++i) {
-    const std::string& joint_name = joint_names_[i];
-    auto it = joint_name_to_kdl_idx_.find(joint_name);
+  // Use pre-allocated member buffers — zero heap allocation in the 500Hz hot loop
+  const size_t tree_njoints = static_cast<size_t>(kdl_q_buf_.rows());
+
+  // Reset positions to zero, then fill with the current-cycle joint states
+  // q_current is the pos_state already locked from arm_state_mutex this cycle
+  // (avoids using stale global pos_states_ which is written by read() on a different path)
+  KDL::SetToZero(kdl_q_buf_);
+  for (size_t i = 0; i < joint_names_.size() && i < q_current.size(); ++i) {
+    auto it = joint_name_to_kdl_idx_.find(joint_names_[i]);
     if (it != joint_name_to_kdl_idx_.end()) {
       int kdl_idx = it->second;
       if (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints)) {
-        q(kdl_idx) = pos_states_[i];
-        // Optionally include velocity for more accurate dynamics:
-        // q_dot(kdl_idx) = vel_states_[i];
+        kdl_q_buf_(kdl_idx) = q_current[i];
       }
     }
   }
-  
-  // Compute inverse dynamics: tau = M(q)*q_dotdot + C(q,q_dot)*q_dot + G(q) + f_ext
-  // For gravity-only compensation with q_dot=0 and q_dotdot=0: tau = G(q)
-  int result = kdl_tree_solver_->CartToJnt(q, q_dot, q_dotdot, f_ext, tau);
-  
+  // kdl_qdot_buf_ and kdl_qddot_buf_ remain zero (gravity-only: no vel/accel terms)
+  // kdl_f_ext_buf_ remains empty (no external wrenches)
+
+  // Compute: tau = G(q)  (gravity torques only, since q_dot=0, q_dotdot=0)
+  // --- KDL timing: measure CartToJnt wall time ---
+  const auto kdl_t0 = std::chrono::steady_clock::now();
+  int result = kdl_tree_solver_->CartToJnt(
+      kdl_q_buf_, kdl_qdot_buf_, kdl_qddot_buf_, kdl_f_ext_buf_, kdl_tau_buf_);
+  const auto kdl_t1 = std::chrono::steady_clock::now();
+  const double kdl_us =
+      std::chrono::duration<double, std::micro>(kdl_t1 - kdl_t0).count();
+
+  // Accumulate running stats (reset every 500 calls)
+  kdl_timing_count_++;
+  kdl_timing_sum_us_ += kdl_us;
+  if (kdl_us < kdl_timing_min_us_) kdl_timing_min_us_ = kdl_us;
+  if (kdl_us > kdl_timing_max_us_) kdl_timing_max_us_ = kdl_us;
+
+  if (enable_frequency_diagnostics_ && kdl_timing_count_ >= 500) {
+    if (!kdl_bench_chain_ok_) {
+      // No benchmark chain → print Tree-only log and reset here
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s] CartToJnt timing over %u calls | "
+                  "avg=%.2f µs  min=%.2f µs  max=%.2f µs  (budget=2000 µs @ 500Hz)",
+                  arm_prefix_.c_str(), kdl_timing_count_,
+                  kdl_timing_sum_us_ / kdl_timing_count_,
+                  kdl_timing_min_us_, kdl_timing_max_us_);
+      kdl_timing_count_ = 0;
+      kdl_timing_sum_us_ = 0.0;
+      kdl_timing_min_us_ = 1e9;
+      kdl_timing_max_us_ = 0.0;
+    }
+    // else: bench block below will read these Tree stats and reset both counters together
+  }
+
+  // ── Benchmark: run Chain solver side-by-side (diagnostics mode only) ─────────────────────
+  if (enable_frequency_diagnostics_ && kdl_bench_chain_ok_) {
+    // Fill chain q buffer with arm joints (link0-indexed order = first ARM_DOF joints)
+    const size_t chain_n = static_cast<size_t>(kdl_bench_q_buf_.rows());
+    KDL::SetToZero(kdl_bench_q_buf_);
+    for (size_t i = 0; i < chain_n && i < q_current.size(); ++i) {
+      kdl_bench_q_buf_(i) = q_current[i];
+    }
+
+    const auto bench_t0 = std::chrono::steady_clock::now();
+    kdl_bench_chain_solver_->JntToGravity(kdl_bench_q_buf_, kdl_bench_grav_buf_);
+    const auto bench_t1 = std::chrono::steady_clock::now();
+    const double bench_us =
+        std::chrono::duration<double, std::micro>(bench_t1 - bench_t0).count();
+
+    kdl_bench_count_++;
+    kdl_bench_sum_us_ += bench_us;
+    if (bench_us < kdl_bench_min_us_) kdl_bench_min_us_ = bench_us;
+    if (bench_us > kdl_bench_max_us_) kdl_bench_max_us_ = bench_us;
+
+    // Track per-joint torque difference (Tree vs Chain)
+    for (size_t i = 0; i < ARM_DOF && i < joint_names_.size(); ++i) {
+      double tree_tau = 0.0;
+      auto kt = joint_name_to_kdl_idx_.find(joint_names_[i]);
+      if (kt != joint_name_to_kdl_idx_.end() && kt->second >= 0 &&
+          kt->second < static_cast<int>(kdl_tau_buf_.rows())) {
+        tree_tau = kdl_tau_buf_(kt->second);
+      }
+      double chain_tau = (i < static_cast<size_t>(kdl_bench_grav_buf_.rows()))
+                             ? kdl_bench_grav_buf_(i)
+                             : 0.0;
+      kdl_bench_last_tree_tau_[i]  = tree_tau;
+      kdl_bench_last_chain_tau_[i] = chain_tau;
+      double diff = std::abs(tree_tau - chain_tau);
+      if (diff > kdl_bench_max_torque_diff_[i]) kdl_bench_max_torque_diff_[i] = diff;
+    }
+
+    if (kdl_bench_count_ >= 500) {
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s] ── TIMING COMPARISON (500 calls each) ──────────────────────────────",
+                  arm_prefix_.c_str());
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  Tree  TreeIdSolver_RNE  (%2u joints, full bimanual) │"
+                  " avg=%6.2f µs  min=%6.2f µs  max=%6.2f µs",
+                  arm_prefix_.c_str(),
+                  kdl_tree_.getNrOfJoints(),
+                  kdl_timing_sum_us_ / std::max(kdl_timing_count_, 1u),
+                  kdl_timing_min_us_, kdl_timing_max_us_);
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  Chain ChainDynParam     (%2zu joints, arm+palm '%s') │"
+                  " avg=%6.2f µs  min=%6.2f µs  max=%6.2f µs",
+                  arm_prefix_.c_str(),
+                  chain_n, kdl_bench_chain_tip_.c_str(),
+                  kdl_bench_sum_us_ / kdl_bench_count_,
+                  kdl_bench_min_us_, kdl_bench_max_us_);
+      const double speedup =
+          (kdl_bench_count_ > 0 && kdl_bench_sum_us_ > 0.0)
+              ? (kdl_timing_sum_us_ / std::max(kdl_timing_count_, 1u)) /
+                    (kdl_bench_sum_us_ / kdl_bench_count_)
+              : 1.0;
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  → Chain is %.1fx %s than Tree (avg)",
+                  arm_prefix_.c_str(), speedup,
+                  speedup >= 1.0 ? "FASTER" : "slower");
+      // ── Torque accuracy comparison ───────────────────────────────────────────
+      // Print q (input) alongside Tree vs Chain torques so comparison is self-contained
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  q [rad] (last call):  "
+                  "j1=%+.3f  j2=%+.3f  j3=%+.3f  j4=%+.3f  j5=%+.3f  j6=%+.3f  j7=%+.3f",
+                  arm_prefix_.c_str(),
+                  (ARM_DOF > 0 ? q_current[0] : 0.0),
+                  (ARM_DOF > 1 ? q_current[1] : 0.0),
+                  (ARM_DOF > 2 ? q_current[2] : 0.0),
+                  (ARM_DOF > 3 ? q_current[3] : 0.0),
+                  (ARM_DOF > 4 ? q_current[4] : 0.0),
+                  (ARM_DOF > 5 ? q_current[5] : 0.0),
+                  (ARM_DOF > 6 ? q_current[6] : 0.0));
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  Torque [Nm]            Tree       Chain      diff   maxDiff(500)",
+                  arm_prefix_.c_str());
+      double overall_max_diff = 0.0;
+      for (size_t i = 0; i < ARM_DOF; ++i) {
+        double diff_now = std::abs(kdl_bench_last_tree_tau_[i] - kdl_bench_last_chain_tau_[i]);
+        if (kdl_bench_max_torque_diff_[i] > overall_max_diff)
+          overall_max_diff = kdl_bench_max_torque_diff_[i];
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                    "[%s]   j%zu: %+9.4f  %+9.4f  %+7.4f  %7.4f",
+                    arm_prefix_.c_str(), i + 1,
+                    kdl_bench_last_tree_tau_[i], kdl_bench_last_chain_tau_[i],
+                    diff_now, kdl_bench_max_torque_diff_[i]);
+      }
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s]  Overall max torque diff over 500 calls: %.4f Nm",
+                  arm_prefix_.c_str(), overall_max_diff);
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                  "[%s] ───────────────────────────────────────────────────────────────────",
+                  arm_prefix_.c_str());
+      // Reset bench counters
+      kdl_bench_count_ = 0;
+      kdl_bench_sum_us_ = 0.0;
+      kdl_bench_min_us_ = 1e9;
+      kdl_bench_max_us_ = 0.0;
+      kdl_bench_max_torque_diff_.fill(0.0);
+      // Reset Tree counters here (not reset above when bench is ok)
+      kdl_timing_count_ = 0;
+      kdl_timing_sum_us_ = 0.0;
+      kdl_timing_min_us_ = 1e9;
+      kdl_timing_max_us_ = 0.0;
+    }
+  }
+
   if (result != 0) {
     RCLCPP_WARN_THROTTLE(rclcpp::get_logger("OpenArm_v10HW"),
                          *rclcpp::Clock::make_shared(), 5000,
                          "KDL TreeIdSolver failed with code %d", result);
     return;
   }
-  
-  // Extract gravity torques for the ARM_DOF joints from the full tree result
-  // We need to map back from KDL tree indices to our arm joint order
+
+  // Map results back to ARM_DOF output vector
   for (size_t i = 0; i < ARM_DOF && i < joint_names_.size(); ++i) {
-    const std::string& joint_name = joint_names_[i];
-    auto it = joint_name_to_kdl_idx_.find(joint_name);
+    auto it = joint_name_to_kdl_idx_.find(joint_names_[i]);
     if (it != joint_name_to_kdl_idx_.end()) {
       int kdl_idx = it->second;
-      if (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints)) {
-        gravity_torques[i] = tau(kdl_idx);
-      } else {
-        gravity_torques[i] = 0.0;
-      }
+      gravity_torques[i] = (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints))
+                               ? kdl_tau_buf_(kdl_idx)
+                               : 0.0;
     } else {
       gravity_torques[i] = 0.0;
     }
   }
-  
-  // Store full tree torques for diagnostics
-  gravity_torques_.resize(tree_njoints);
+
+  // Copy to diagnostics buffer (gravity_torques_ already sized at init, no resize)
   for (size_t i = 0; i < tree_njoints; ++i) {
-    gravity_torques_(i) = tau(i);
+    gravity_torques_(i) = kdl_tau_buf_(i);
   }
 }
 
@@ -1371,41 +1578,28 @@ void OpenArm_v10HW::print_kdl_tree_diagnostics() {
       }
     }
     
-    // Test gravity calculation with non-zero position to verify it's working
+    // Test gravity calculation with non-zero position (one-time diagnostic, reuse member buffers)
     if (kdl_tree_solver_) {
-      const size_t tree_njoints = kdl_tree_.getNrOfJoints();
-      KDL::JntArray q_test(tree_njoints);
-      KDL::JntArray q_dot_test(tree_njoints);
-      KDL::JntArray q_dotdot_test(tree_njoints);
-      KDL::WrenchMap f_ext_test;
-      KDL::JntArray tau_test(tree_njoints);
-      
-      // Initialize all to zero
-      for (size_t i = 0; i < tree_njoints; ++i) {
-        q_test(i) = 0.0;
-        q_dot_test(i) = 0.0;
-        q_dotdot_test(i) = 0.0;
-      }
-      
-      // Set joint2 to 45 degrees (0.785 rad) to test gravity calculation
-      // Find joint2 index for this arm
+      // Save current content and temporarily set joint2 to 45 deg
       std::string test_joint = "openarm_" + arm_prefix_ + "joint2";
       auto it = joint_name_to_kdl_idx_.find(test_joint);
       if (it != joint_name_to_kdl_idx_.end()) {
-        q_test(it->second) = 0.785;  // 45 degrees
-        
-        int result = kdl_tree_solver_->CartToJnt(q_test, q_dot_test, q_dotdot_test, f_ext_test, tau_test);
+        KDL::SetToZero(kdl_q_buf_);
+        kdl_q_buf_(it->second) = 0.785;  // 45 degrees
+        // kdl_qdot/qddot/f_ext buffers are already zero/empty
+        int result = kdl_tree_solver_->CartToJnt(
+            kdl_q_buf_, kdl_qdot_buf_, kdl_qddot_buf_, kdl_f_ext_buf_, kdl_tau_buf_);
         if (result == 0) {
-          double test_torque = tau_test(it->second);
+          double test_torque = kdl_tau_buf_(it->second);
           RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
                       "Test: %s at 45deg -> gravity torque = %.4f Nm (should be non-zero if mass data exists)",
                       test_joint.c_str(), test_torque);
-          
           if (std::abs(test_torque) < 0.001) {
             RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Diagnostics"),
                         "WARNING: Gravity torque is near zero even at 45deg! Check URDF mass/inertia data!");
           }
         }
+        KDL::SetToZero(kdl_q_buf_);  // restore to zero after test
       }
     }
   }
@@ -1483,9 +1677,10 @@ void OpenArm_v10HW::arm_control_loop() {
     }
     
     // Compute gravity compensation using Tree-based solver
+    // Pass pos_state (this cycle's mutex-locked snapshot) so KDL uses fresh, consistent data
     std::vector<double> gravity_comp(ARM_DOF, 0.0);
     if (use_gravity_compensation_ && kdl_tree_solver_) {
-      compute_gravity_compensation(gravity_comp);
+      compute_gravity_compensation(gravity_comp, pos_state);
     }
     
     // Compute friction compensation
@@ -1576,10 +1771,12 @@ void OpenArm_v10HW::arm_control_loop() {
       arm_params.push_back({kp_[i], kd_[i], pos_cmd[i], vel_cmd[i], feedforward_tau});
     }
     csv_sample_count_++;
-    openarm_->get_arm().mit_control_all(arm_params);
+    if (!simulation_mode_) {
+      openarm_->get_arm().mit_control_all(arm_params);
+    }
     
     // Send gripper command if enabled
-    if (hand_) {
+    if (hand_ && !simulation_mode_) {
       double motor_command = joint_to_motor_radians(pos_cmd[ARM_DOF]);
       openarm_->get_gripper().mit_control_all(
           {{GRIPPER_KP, GRIPPER_KD, motor_command, 0, 0}});
@@ -1736,33 +1933,61 @@ void OpenArm_v10HW::state_read_loop() {
   auto next_cycle = steady_clock::now() + loop_period;
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
-              "State read loop started (target: %.0f Hz)", CONTROL_READ_RATE_HZ);
+              "State read loop started (target: %.0f Hz)%s", CONTROL_READ_RATE_HZ,
+              simulation_mode_ ? " [SIMULATION MODE — sine-wave joints]" : "");
 
-  const size_t arm_buf_size = ARM_DOF + (hand_ ? 1 : 0);
+  const size_t arm_buf_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
   std::vector<double> pos_state(arm_buf_size, 0.0);
   std::vector<double> vel_state(arm_buf_size, 0.0);
   std::vector<double> tau_state(arm_buf_size, 0.0);
   std::vector<double> leap_pos_state(LEAP_HAND_DOF, 0.0);
 
+  // For simulation mode: log joint positions every 5 seconds
+  auto sim_log_time = steady_clock::now();
+
   while (state_read_thread_running_) {
     // ---- ARM STATE READ (CAN-FD) ----
-    openarm_->refresh_all();
-    openarm_->recv_all();
+    if (simulation_mode_) {
+      // Generate sine-wave joint positions to exercise KDL with non-trivial inputs
+      // Each joint gets a different frequency and amplitude for realistic coverage
+      sim_time_ += 1.0 / CONTROL_READ_RATE_HZ;
+      const double amp[7] = {0.3, 0.5, 0.4, 0.6, 0.3, 0.4, 0.2};  // [rad]
+      const double freq[7] = {0.2, 0.15, 0.25, 0.1, 0.3, 0.2, 0.35}; // [Hz]
+      for (size_t i = 0; i < ARM_DOF; ++i) {
+        pos_state[i] = amp[i] * std::sin(2.0 * M_PI * freq[i] * sim_time_);
+        vel_state[i] = amp[i] * 2.0 * M_PI * freq[i] *
+                       std::cos(2.0 * M_PI * freq[i] * sim_time_);
+        tau_state[i] = 0.0;
+      }
+      // Log simulated joint positions every 5 seconds
+      if (duration_cast<seconds>(steady_clock::now() - sim_log_time).count() >= 5) {
+        sim_log_time = steady_clock::now();
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
+                    "[%s][SIM t=%.1fs] q[rad]: j1=%+.3f j2=%+.3f j3=%+.3f "
+                    "j4=%+.3f j5=%+.3f j6=%+.3f j7=%+.3f",
+                    arm_prefix_.c_str(), sim_time_,
+                    pos_state[0], pos_state[1], pos_state[2], pos_state[3],
+                    pos_state[4], pos_state[5], pos_state[6]);
+      }
+    } else {
+      openarm_->refresh_all();
+      openarm_->recv_all();
 
-    const auto& arm_motors = openarm_->get_arm().get_motors();
-    for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
-      pos_state[i] = arm_motors[i].get_position();
-      vel_state[i] = arm_motors[i].get_velocity();
-      tau_state[i] = arm_motors[i].get_torque();
-    }
+      const auto& arm_motors = openarm_->get_arm().get_motors();
+      for (size_t i = 0; i < ARM_DOF && i < arm_motors.size(); ++i) {
+        pos_state[i] = arm_motors[i].get_position();
+        vel_state[i] = arm_motors[i].get_velocity();
+        tau_state[i] = arm_motors[i].get_torque();
+      }
 
-    // Read gripper state if enabled
-    if (hand_ && arm_buf_size > ARM_DOF) {
-      const auto& gripper_motors = openarm_->get_gripper().get_motors();
-      if (!gripper_motors.empty()) {
-        pos_state[ARM_DOF] = motor_radians_to_joint(gripper_motors[0].get_position());
-        vel_state[ARM_DOF] = 0.0;
-        tau_state[ARM_DOF] = 0.0;
+      // Read gripper state if enabled
+      if (hand_ && arm_buf_size > ARM_DOF) {
+        const auto& gripper_motors = openarm_->get_gripper().get_motors();
+        if (!gripper_motors.empty()) {
+          pos_state[ARM_DOF] = motor_radians_to_joint(gripper_motors[0].get_position());
+          vel_state[ARM_DOF] = 0.0;
+          tau_state[ARM_DOF] = 0.0;
+        }
       }
     }
 

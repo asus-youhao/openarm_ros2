@@ -160,6 +160,8 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool has_leap_hand_;
   bool has_o6_hand_;
   bool enable_frequency_diagnostics_;  // Enable performance monitoring
+  bool simulation_mode_{false};        // Skip CAN hardware, run KDL with sine-wave positions
+  double sim_time_{0.0};               // Accumulated simulation time (seconds)
 
   // OpenArm instance
   std::unique_ptr<openarm::can::socket::OpenArm> openarm_;
@@ -358,11 +360,45 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool use_gravity_compensation_;
   bool use_friction_compensation_;
   std::string urdf_string_;
+
+  // Pre-allocated KDL buffers for the 500Hz hot loop (never allocate in the control loop)
+  // Sized to tree joint count in init_kdl_dynamics(); reused every cycle.
+  KDL::JntArray kdl_q_buf_;       // Joint positions input
+  KDL::JntArray kdl_qdot_buf_;    // Joint velocities  (stays zero for gravity-only)
+  KDL::JntArray kdl_qddot_buf_;   // Joint accelerations (stays zero for gravity-only)
+  KDL::JntArray kdl_tau_buf_;     // Solver output torques
+  KDL::WrenchMap kdl_f_ext_buf_;  // External wrench map (stays empty, allocated once)
+
+  // KDL Tree CartToJnt timing accumulators (reset every 500 calls when diagnostics enabled)
+  uint32_t kdl_timing_count_{0};
+  double   kdl_timing_sum_us_{0.0};
+  double   kdl_timing_min_us_{1e9};
+  double   kdl_timing_max_us_{0.0};
+
+  // ── Benchmark: Chain solver (arm link0→palm_base, no finger branches) ──────────────────
+  // Runs in parallel with Tree solver ONLY when enable_frequency_diagnostics_=true.
+  // Result is NOT used for motor output — purely for timing comparison.
+  KDL::Chain                              kdl_bench_chain_;        // arm + palm, no fingers
+  std::unique_ptr<KDL::ChainDynParam>     kdl_bench_chain_solver_; // ChainDynParam solver
+  KDL::JntArray                           kdl_bench_q_buf_;        // pre-alloc input  (chain DOF)
+  KDL::JntArray                           kdl_bench_grav_buf_;     // pre-alloc output (chain DOF)
+  bool                                    kdl_bench_chain_ok_{false}; // true if chain was extracted
+  std::string                             kdl_bench_chain_tip_;    // actual tip link used
+  // Chain benchmark timing accumulators
+  uint32_t kdl_bench_count_{0};
+  double   kdl_bench_sum_us_{0.0};
+  double   kdl_bench_min_us_{1e9};
+  double   kdl_bench_max_us_{0.0};
+  // Torque accuracy comparison: max |Tree - Chain| per joint over 500 calls
+  std::array<double, 7> kdl_bench_max_torque_diff_{};
+  std::array<double, 7> kdl_bench_last_tree_tau_{};
+  std::array<double, 7> kdl_bench_last_chain_tau_{};
   
   // Helper functions for KDL Tree-based dynamics
   bool init_kdl_dynamics(const std::string& urdf_content);
   void build_joint_index_map();  // Build mapping from joint names to KDL tree indices
-  void compute_gravity_compensation(std::vector<double>& gravity_torques);
+  void compute_gravity_compensation(std::vector<double>& gravity_torques,
+                                    const std::vector<double>& q_current);
   void compute_friction_compensation(std::vector<double>& friction_torques);
   void print_kdl_tree_diagnostics();  // Print tree structure and gravity torques for debugging
 

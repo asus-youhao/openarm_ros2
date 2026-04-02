@@ -16,3 +16,5 @@ Fo: [0.088, 0.088, 0.008, -0.058, 0.005, 0.009, -0.059]
 # Alternative parameter sets (commented out):
 # kp: [20.0, 20.0, 20.0, 20.0, 5.0, 5.0, 5.0, 0.5]
 # kd: [2.75, 2.5, 0.7, 0.4, 0.7, 0.6, 0.5, 0.1]
+enable_frequency_diagnostics: true
+simulation_mode: true
