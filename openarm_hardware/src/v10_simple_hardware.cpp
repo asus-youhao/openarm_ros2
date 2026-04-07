@@ -42,6 +42,20 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
       simulation_mode_ = (value == "true");
     }
   }
+  // Parse hand mass for chain solver (default: 0.0 = no hand mass)
+  {
+    auto it_hand_mass = info.hardware_parameters.find("hand_mass_kg");
+    if (it_hand_mass != info.hardware_parameters.end()) {
+      try {
+        hand_mass_kg_ = std::stod(it_hand_mass->second);
+        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                    "[Chain Solver] Hand mass parameter: %.3f kg", hand_mass_kg_);
+      } catch (const std::exception& e) {
+        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                    "Failed to parse hand_mass_kg parameter: %s", e.what());
+      }
+    }
+  }
   if (simulation_mode_) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
                 "[SIMULATION MODE] CAN hardware disabled — KDL runs on sine-wave joint positions");
@@ -1187,9 +1201,23 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
                   bench_root.c_str(), cand.c_str());
       continue;
     }
-    // Success — build solver and pre-allocate buffers
+    // Success — optionally append virtual hand mass segment
     kdl_bench_chain_     = trial;
     kdl_bench_chain_tip_ = cand;
+    
+    // If hand_mass_kg > 0, add a virtual fixed segment at the chain tip with hand mass
+    if (hand_mass_kg_ > 1e-6) {
+      // Create a fixed joint (Joint::None) with hand mass as point mass at origin
+      KDL::Joint fixed_joint(KDL::Joint::None);
+      KDL::Frame tip_frame = KDL::Frame::Identity(); // No translation/rotation
+      KDL::RigidBodyInertia hand_inertia(hand_mass_kg_); // Point mass at origin
+      KDL::Segment hand_segment("virtual_hand_mass", fixed_joint, tip_frame, hand_inertia);
+      kdl_bench_chain_.addSegment(hand_segment);
+      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                  "[Benchmark] Added virtual hand mass: %.3f kg at chain tip '%s'",
+                  hand_mass_kg_, cand.c_str());
+    }
+    
     const unsigned int cn = kdl_bench_chain_.getNrOfJoints();
     kdl_bench_chain_solver_ =
         std::make_unique<KDL::ChainDynParam>(kdl_bench_chain_, KDL::Vector(0.0, 0.0, -9.81));

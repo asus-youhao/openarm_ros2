@@ -384,6 +384,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   KDL::JntArray                           kdl_bench_grav_buf_;     // pre-alloc output (chain DOF)
   bool                                    kdl_bench_chain_ok_{false}; // true if chain was extracted
   std::string                             kdl_bench_chain_tip_;    // actual tip link used
+  double                                  hand_mass_kg_{0.0};      // hand mass to append at chain tip (kg)
   // Chain benchmark timing accumulators
   uint32_t kdl_bench_count_{0};
   double   kdl_bench_sum_us_{0.0};
