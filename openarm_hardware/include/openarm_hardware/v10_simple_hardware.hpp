@@ -160,7 +160,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   bool has_leap_hand_;
   bool has_o6_hand_;
   bool enable_frequency_diagnostics_;  // Enable performance monitoring
-  bool simulation_mode_{false};        // Skip CAN hardware, run KDL with sine-wave positions
+  bool simulation_mode_{false};        // Skip CAN hardware, run KDL without real motors
+  bool sim_use_cmd_feedback_{false};   // true = reflect cmd positions as state (controller-driven)
+                                       // false = sine-wave positions (default)
   double sim_time_{0.0};               // Accumulated simulation time (seconds)
 
   // OpenArm instance

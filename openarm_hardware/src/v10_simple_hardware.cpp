@@ -20,6 +20,7 @@
 #include <cmath>
 #include <fstream>
 #include <filesystem>
+#include <iomanip>
 #include <thread>
 #include <vector>
 
@@ -42,6 +43,14 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
       simulation_mode_ = (value == "true");
     }
   }
+  {
+    auto it2 = info.hardware_parameters.find("sim_use_cmd_feedback");
+    if (it2 != info.hardware_parameters.end()) {
+      std::string value = it2->second;
+      std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+      sim_use_cmd_feedback_ = (value == "true");
+    }
+  }
   // Parse hand mass for chain solver (default: 0.0 = no hand mass)
   {
     auto it_hand_mass = info.hardware_parameters.find("hand_mass_kg");
@@ -58,7 +67,10 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
   if (simulation_mode_) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "[SIMULATION MODE] CAN hardware disabled — KDL runs on sine-wave joint positions");
+                "[SIMULATION MODE] CAN hardware disabled — %s",
+                sim_use_cmd_feedback_
+                    ? "state = commanded positions (controller-driven)"
+                    : "KDL runs on sine-wave joint positions");
   }
 
   // Parse CAN interface (default: can0)
@@ -2037,7 +2049,9 @@ void OpenArm_v10HW::state_read_loop() {
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
               "State read loop started (target: %.0f Hz)%s", CONTROL_READ_RATE_HZ,
-              simulation_mode_ ? " [SIMULATION MODE — sine-wave joints]" : "");
+              simulation_mode_
+                  ? (sim_use_cmd_feedback_ ? " [SIMULATION MODE — cmd feedback]" : " [SIMULATION MODE — sine-wave joints]")
+                  : "");
 
   const size_t arm_buf_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
   std::vector<double> pos_state(arm_buf_size, 0.0);
@@ -2051,24 +2065,39 @@ void OpenArm_v10HW::state_read_loop() {
   while (state_read_thread_running_) {
     // ---- ARM STATE READ (CAN-FD) ----
     if (simulation_mode_) {
-      // Generate sine-wave joint positions to exercise KDL with non-trivial inputs
-      // Each joint gets a different frequency and amplitude for realistic coverage
-      sim_time_ += 1.0 / CONTROL_READ_RATE_HZ;
-      const double amp[7] = {0.3, 0.5, 0.4, 0.6, 0.3, 0.4, 0.2};  // [rad]
-      const double freq[7] = {0.2, 0.15, 0.25, 0.1, 0.3, 0.2, 0.35}; // [Hz]
-      for (size_t i = 0; i < ARM_DOF; ++i) {
-        pos_state[i] = amp[i] * std::sin(2.0 * M_PI * freq[i] * sim_time_);
-        vel_state[i] = amp[i] * 2.0 * M_PI * freq[i] *
-                       std::cos(2.0 * M_PI * freq[i] * sim_time_);
-        tau_state[i] = 0.0;
+      if (sim_use_cmd_feedback_) {
+        // Reflect commanded positions directly as state — perfect tracking
+        // This allows any ros2_controller (joint_trajectory, etc.) to drive the sim
+        {
+          std::lock_guard<std::mutex> lk(arm_state_mutex_);
+          for (size_t i = 0; i < ARM_DOF && i < arm_pos_cmd_buffer_.size(); ++i) {
+            pos_state[i] = arm_pos_cmd_buffer_[i];
+            vel_state[i] = 0.0;
+            tau_state[i] = 0.0;
+          }
+        }
+      } else {
+        // Generate sine-wave joint positions to exercise KDL with non-trivial inputs
+        // Each joint gets a different frequency and amplitude for realistic coverage
+        sim_time_ += 1.0 / CONTROL_READ_RATE_HZ;
+        const double amp[7] = {0.3, 0.5, 0.4, 0.6, 0.3, 0.4, 0.2};  // [rad]
+        const double freq[7] = {0.2, 0.15, 0.25, 0.1, 0.3, 0.2, 0.35}; // [Hz]
+        for (size_t i = 0; i < ARM_DOF; ++i) {
+          pos_state[i] = amp[i] * std::sin(2.0 * M_PI * freq[i] * sim_time_);
+          vel_state[i] = amp[i] * 2.0 * M_PI * freq[i] *
+                         std::cos(2.0 * M_PI * freq[i] * sim_time_);
+          tau_state[i] = 0.0;
+        }
       }
       // Log simulated joint positions every 5 seconds
       if (duration_cast<seconds>(steady_clock::now() - sim_log_time).count() >= 5) {
         sim_log_time = steady_clock::now();
         RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"),
-                    "[%s][SIM t=%.1fs] q[rad]: j1=%+.3f j2=%+.3f j3=%+.3f "
+                    "[%s][SIM%s t=%.1fs] q[rad]: j1=%+.3f j2=%+.3f j3=%+.3f "
                     "j4=%+.3f j5=%+.3f j6=%+.3f j7=%+.3f",
-                    arm_prefix_.c_str(), sim_time_,
+                    arm_prefix_.c_str(),
+                    sim_use_cmd_feedback_ ? "(cmd)" : "(sin)",
+                    sim_time_,
                     pos_state[0], pos_state[1], pos_state[2], pos_state[3],
                     pos_state[4], pos_state[5], pos_state[6]);
       }
