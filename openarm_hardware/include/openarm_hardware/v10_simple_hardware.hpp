@@ -393,6 +393,10 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::array<double, 7> kdl_bench_max_torque_diff_{};
   std::array<double, 7> kdl_bench_last_tree_tau_{};
   std::array<double, 7> kdl_bench_last_chain_tau_{};
+  // CSV for KDL benchmark data (one file per arm, opened lazily on first 500-call batch)
+  std::ofstream kdl_bench_csv_;
+  bool          kdl_bench_csv_initialized_{false};
+  uint32_t      kdl_bench_batch_count_{0};
   
   // Helper functions for KDL Tree-based dynamics
   bool init_kdl_dynamics(const std::string& urdf_content);

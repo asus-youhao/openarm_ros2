@@ -726,6 +726,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     leap_debug_csv_.close();
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed LEAP Hand debug CSV file on deactivate");
   }
+  if (kdl_bench_csv_.is_open()) {
+    kdl_bench_csv_.flush();
+    kdl_bench_csv_.close();
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "[%s] Closed KDL benchmark CSV", arm_prefix_.c_str());
+  }
   
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 deactivated");
   return CallbackReturn::SUCCESS;
@@ -1415,6 +1420,76 @@ void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_to
       RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
                   "[%s] ───────────────────────────────────────────────────────────────────",
                   arm_prefix_.c_str());
+
+      // ── Write CSV row ───────────────────────────────────────────────────────
+      {
+        // Lazy open: create file on first batch, name encodes arm + wall-clock time
+        if (!kdl_bench_csv_initialized_) {
+          const auto now_sys = std::chrono::system_clock::now();
+          const auto now_t   = std::chrono::system_clock::to_time_t(now_sys);
+          char ts_buf[32];
+          std::strftime(ts_buf, sizeof(ts_buf), "%Y%m%d_%H%M%S", std::localtime(&now_t));
+          const std::string csv_path =
+              std::string("/tmp/kdl_bench_") + arm_prefix_ + ts_buf + ".csv";
+          kdl_bench_csv_.open(csv_path, std::ios::out | std::ios::trunc);
+          if (kdl_bench_csv_.is_open()) {
+            // Header row
+            kdl_bench_csv_
+                << "batch,timestamp_s,arm"
+                << ",tree_avg_us,tree_min_us,tree_max_us"
+                << ",chain_avg_us,chain_min_us,chain_max_us,speedup"
+                << ",q1,q2,q3,q4,q5,q6,q7"
+                << ",tree_tau1,tree_tau2,tree_tau3,tree_tau4,tree_tau5,tree_tau6,tree_tau7"
+                << ",chain_tau1,chain_tau2,chain_tau3,chain_tau4,chain_tau5,chain_tau6,chain_tau7"
+                << ",diff1,diff2,diff3,diff4,diff5,diff6,diff7"
+                << ",max_diff1,max_diff2,max_diff3,max_diff4,max_diff5,max_diff6,max_diff7"
+                << ",overall_max_diff_nm\n";
+            kdl_bench_csv_initialized_ = true;
+            RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                        "[%s] KDL benchmark CSV: %s", arm_prefix_.c_str(), csv_path.c_str());
+          } else {
+            RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_KDL"),
+                        "[%s] Failed to open KDL benchmark CSV at %s",
+                        arm_prefix_.c_str(), csv_path.c_str());
+          }
+        }
+        if (kdl_bench_csv_.is_open()) {
+          kdl_bench_batch_count_++;
+          const double now_s = std::chrono::duration<double>(
+              std::chrono::steady_clock::now().time_since_epoch()).count();
+          const double tree_avg = kdl_timing_sum_us_ / std::max(kdl_timing_count_, 1u);
+          const double chain_avg = kdl_bench_sum_us_ / kdl_bench_count_;
+          kdl_bench_csv_ << std::fixed << std::setprecision(6)
+              << kdl_bench_batch_count_ << ","
+              << now_s << ","
+              << arm_prefix_ << ","
+              << tree_avg << "," << kdl_timing_min_us_ << "," << kdl_timing_max_us_ << ","
+              << chain_avg << "," << kdl_bench_min_us_ << "," << kdl_bench_max_us_ << ","
+              << speedup << ",";
+          // q values
+          for (size_t i = 0; i < 7; ++i)
+            kdl_bench_csv_ << (i < q_current.size() ? q_current[i] : 0.0)
+                           << (i < 6 ? "," : ",");
+          // tree_tau
+          for (size_t i = 0; i < 7; ++i)
+            kdl_bench_csv_ << kdl_bench_last_tree_tau_[i]  << (i < 6 ? "," : ",");
+          // chain_tau
+          for (size_t i = 0; i < 7; ++i)
+            kdl_bench_csv_ << kdl_bench_last_chain_tau_[i] << (i < 6 ? "," : ",");
+          // diff
+          for (size_t i = 0; i < 7; ++i) {
+            double d = std::abs(kdl_bench_last_tree_tau_[i] - kdl_bench_last_chain_tau_[i]);
+            kdl_bench_csv_ << d << (i < 6 ? "," : ",");
+          }
+          // max_diff
+          for (size_t i = 0; i < 7; ++i)
+            kdl_bench_csv_ << kdl_bench_max_torque_diff_[i] << (i < 6 ? "," : ",");
+          // overall_max_diff
+          kdl_bench_csv_ << overall_max_diff << "\n";
+          kdl_bench_csv_.flush();
+        }
+      }
+
       // Reset bench counters
       kdl_bench_count_ = 0;
       kdl_bench_sum_us_ = 0.0;
