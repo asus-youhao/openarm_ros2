@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Analyzer for OpenArm (left, right, or bimanual) - supports both action and topic modes.
+Analyzer for OpenArm (left, right, or bimanual) - supports action, topic, and telep modes.
 
 Monitors:
  - Action mode: /right_arm_controller/controller_state (or /left_... or both)
  - Topic mode: /right_forward_position_controller/commands (or /left_... or both)
+ - Telep mode: /joint_actions (commands) and /joint_states (states)
  - /joint_states (for actual positions)
 
 Saves CSV and per-joint plots on exit (Ctrl-C).
@@ -15,6 +16,9 @@ Usage:
   
   # Topic mode
   python3 scripts/analy_arm_controller_layer_topic.py --mode topic
+  
+  # Telep mode
+  python3 scripts/analy_arm_controller_layer_topic.py --mode telep
   
   # Left arm only
   python3 scripts/analy_arm_controller_layer_topic.py --arm left --mode action
@@ -116,6 +120,7 @@ class ArmTopicAnalyzer(Node):
         
         # subscriptions
         self.latest_js = None
+        self.latest_joint_actions = None
         self.lock = threading.Lock()
         self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 20)
 
@@ -125,6 +130,9 @@ class ArmTopicAnalyzer(Node):
             for topic in self.state_topics:
                 self.create_subscription(JointTrajectoryControllerState, topic,
                                        lambda msg, t=topic: self.controller_state_cb(msg, t), 10)
+        elif mode == 'telep':
+            # Telep mode: subscribe to /joint_actions for commands
+            self.create_subscription(JointState, '/joint_actions', self.joint_actions_cb, 20)
         else:
             # Topic mode: subscribe to command topics
             for topic in self.command_topics:
@@ -171,6 +179,44 @@ class ArmTopicAnalyzer(Node):
     def joint_state_cb(self, msg: JointState):
         with self.lock:
             self.latest_js = msg
+
+    def joint_actions_cb(self, msg: JointState):
+        """Callback for /joint_actions topic (telep mode)"""
+        with self.lock:
+            ts = time.time()
+            if self.start_time is None:
+                self.start_time = ts
+            rel = ts - self.start_time
+            
+            # Build command map from joint_actions
+            cmd_map = {n: p for n, p in zip(msg.name, msg.position)}
+            
+            # Get state from joint_states
+            js_map = {}
+            if self.latest_js:
+                js_map = {n: p for n, p in zip(self.latest_js.name, self.latest_js.position)}
+            
+            # Record data for all tracked joints
+            for name in self.joint_names:
+                cmd = cmd_map.get(name, math.nan)
+                state = js_map.get(name, math.nan)
+                
+                # Update latest_cmd
+                if not math.isnan(cmd):
+                    self.latest_cmd[name] = cmd
+                
+                # Compute error
+                err = math.nan
+                if not math.isnan(cmd) and not math.isnan(state):
+                    err = cmd - state
+                
+                self.history[name]['t'].append(rel)
+                self.history[name]['cmd'].append(cmd)
+                self.history[name]['state'].append(state)
+                self.history[name]['err'].append(err)
+            
+            # Print summary
+            self._print_summary(rel)
 
     def controller_state_cb(self, msg: JointTrajectoryControllerState, topic):
         """Handle controller_state messages (action mode)"""
@@ -579,8 +625,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--arm', choices=['right', 'left', 'both'], default='right',
                         help='Which arm(s) to analyze: right, left, or both')
-    parser.add_argument('--mode', choices=['action', 'topic'], default='action',
-                        help='Data source mode: action (controller_state) or topic (external commands)')
+    parser.add_argument('--mode', choices=['action', 'topic', 'telep'], default='action',
+                        help='Data source mode: action (controller_state), topic (external commands), or telep (joint_actions)')
     parser.add_argument('--command-type', choices=['float_array','joint_trajectory'], default='float_array',
                         help='Command message type for topic mode (ignored in action mode)')
     parser.add_argument('--joint-names', nargs='*', default=None,

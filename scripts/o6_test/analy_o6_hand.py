@@ -5,6 +5,11 @@ O6 Hand Analyzer
 Analyze O6 hand (left/right/both) command vs joint_states and compute
 error and velocity metrics.
 
+Modes:
+  - topic: Subscribe to controller/commands (Float64MultiArray)
+  - action: Subscribe to controller_state (JointTrajectoryControllerState)
+  - telep: Subscribe to /joint_actions (JointState) - for teleop analysis
+
 Usage (interactive mode): run the script and follow the prompts.
 """
 
@@ -87,6 +92,7 @@ class O6HandAnalyzer(Node):
         self.get_logger().info(f'Joint names: {self.joint_names}')
 
         self.latest_js = None
+        self.latest_joint_actions = None
         self.lock = threading.Lock()
         self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 20)
 
@@ -99,6 +105,9 @@ class O6HandAnalyzer(Node):
             for topic in self.state_topics:
                 self.create_subscription(JointTrajectoryControllerState, topic,
                                          lambda msg, t=topic: self.controller_state_cb(msg, t), 10)
+        elif mode == 'telep':
+            # Telep mode: subscribe to /joint_actions for commands
+            self.create_subscription(JointState, '/joint_actions', self.joint_actions_cb, 20)
         else:
             raise RuntimeError('Unknown mode')
 
@@ -180,6 +189,53 @@ class O6HandAnalyzer(Node):
     def joint_state_cb(self, msg: JointState):
         with self.lock:
             self.latest_js = msg
+
+    def joint_actions_cb(self, msg: JointState):
+        """Callback for /joint_actions topic (telep mode)"""
+        with self.lock:
+            ts = time.time()
+            if self.start_time is None:
+                self.start_time = ts
+            rel = ts - self.start_time
+            
+            # Build command map from joint_actions
+            cmd_map = {n: p for n, p in zip(msg.name, msg.position)}
+            
+            # Get state from joint_states
+            js_map = {}
+            if self.latest_js:
+                js_map = {n: p for n, p in zip(self.latest_js.name, self.latest_js.position)}
+            
+            # Record data for all joints
+            for name in self.joint_names:
+                cmd = cmd_map.get(name, math.nan)
+                state = js_map.get(name, math.nan)
+                
+                # Update latest_cmd
+                if not math.isnan(cmd):
+                    self.latest_cmd[name] = cmd
+                
+                # Compute error
+                err = math.nan
+                if not math.isnan(cmd) and not math.isnan(state):
+                    err = cmd - state
+                
+                # Compute velocity
+                vel = math.nan
+                hist = self.history[name]
+                if hist['state'] and len(hist['state']) > 0:
+                    prev_state = hist['state'][-1]
+                    prev_t = hist['t'][-1]
+                    if not math.isnan(prev_state) and not math.isnan(state):
+                        dt = rel - prev_t
+                        if dt > 0:
+                            vel = (state - prev_state) / dt
+                
+                hist['t'].append(rel)
+                hist['cmd'].append(cmd)
+                hist['state'].append(state)
+                hist['err'].append(err)
+                hist['vel'].append(vel)
 
     def cmd_array_cb(self, msg: Float64MultiArray, topic):
         positions = list(msg.data)
@@ -636,9 +692,9 @@ def main():
         parser.add_argument('--hand', choices=['left', 'right', 'both'], default='right')
         parser.add_argument('--hand-id', type=int, choices=[0, 1, 2],
                             help='Numeric hand choice: 0=left, 1=right, 2=both (overrides --hand)')
-        parser.add_argument('--mode', choices=['topic', 'action'], default='topic')
-        parser.add_argument('--mode-id', type=int, choices=[0, 1],
-                            help='Numeric mode choice: 0=topic, 1=action (overrides --mode)')
+        parser.add_argument('--mode', choices=['topic', 'action', 'telep'], default='topic')
+        parser.add_argument('--mode-id', type=int, choices=[0, 1, 2],
+                            help='Numeric mode choice: 0=topic, 1=action, 2=telep (overrides --mode)')
         parser.add_argument('--csv-dir', default='analy_o6_hand')
         parser.add_argument('--no-plot', dest='plot', action='store_false')
         args = parser.parse_args()
@@ -651,7 +707,7 @@ def main():
 
         mode = args.mode
         if args.mode_id is not None:
-            mode_map = {0: 'topic', 1: 'action'}
+            mode_map = {0: 'topic', 1: 'action', 2: 'telep'}
             mode = mode_map.get(args.mode_id, mode)
 
         csv_dir = args.csv_dir
@@ -677,15 +733,15 @@ def main():
 
         # choose mode
         while True:
-            mode_input = input("Select mode — enter 0:topic, 1:action (or name topic/action). Default 'topic': ").strip()
+            mode_input = input("Select mode — enter 0:topic, 1:action, 2:telep (or name topic/action/telep). Default 'topic': ").strip()
             if mode_input == '':
                 mode = 'topic'
                 break
-            if mode_input in ('0', '1'):
-                mode_map = {'0': 'topic', '1': 'action'}
+            if mode_input in ('0', '1', '2'):
+                mode_map = {'0': 'topic', '1': 'action', '2': 'telep'}
                 mode = mode_map[mode_input]
                 break
-            if mode_input.lower() in ('topic', 'action'):
+            if mode_input.lower() in ('topic', 'action', 'telep'):
                 mode = mode_input.lower()
                 break
             print('Invalid choice — try again.')
