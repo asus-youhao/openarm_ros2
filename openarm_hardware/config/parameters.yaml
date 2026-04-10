@@ -8,7 +8,7 @@ Fo: [0.088, 0.088, 0.008, -0.058, 0.005, 0.009, -0.059]
 # Joint direction configuration (1.0 = normal, -1.0 = reversed/flipped 180 degrees)
 # Set to -1.0 for any joint that is physically mounted in reverse direction
 # Example: If joint 6 is reversed, set joint_direction: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0]
-joint_direction: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
+joint_direction: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 # Gains (based on teleop follower.yaml for accurate tracking)
 # Original values: {70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0}
 # Alternative high gains: {240.0, 240.0, 240.0, 240.0, 24.0, 31.0, 25.0}
