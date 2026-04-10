@@ -65,6 +65,18 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
       }
     }
   }
+  // Parse gravity solver selection (default: false = Tree, true = Chain)
+  {
+    auto it_use_chain = info.hardware_parameters.find("use_chain_gravity_solver");
+    if (it_use_chain != info.hardware_parameters.end()) {
+      std::string value = it_use_chain->second;
+      std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+      use_chain_gravity_solver_ = (value == "true");
+    }
+    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+                "[Gravity Solver] Using %s solver for gravity compensation",
+                use_chain_gravity_solver_ ? "CHAIN" : "TREE");
+  }
   if (simulation_mode_) {
     RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
                 "[SIMULATION MODE] CAN hardware disabled — %s",
@@ -1552,21 +1564,34 @@ void OpenArm_v10HW::compute_gravity_compensation(std::vector<double>& gravity_to
   }
 
   // Map results back to ARM_DOF output vector
-  for (size_t i = 0; i < ARM_DOF && i < joint_names_.size(); ++i) {
-    auto it = joint_name_to_kdl_idx_.find(joint_names_[i]);
-    if (it != joint_name_to_kdl_idx_.end()) {
-      int kdl_idx = it->second;
-      gravity_torques[i] = (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints))
-                               ? kdl_tau_buf_(kdl_idx)
-                               : 0.0;
-    } else {
-      gravity_torques[i] = 0.0;
+  // Choose solver based on use_chain_gravity_solver_ parameter
+  if (use_chain_gravity_solver_ && kdl_bench_chain_ok_) {
+    // Use Chain solver result for gravity compensation
+    const size_t chain_n = static_cast<size_t>(kdl_bench_grav_buf_.rows());
+    for (size_t i = 0; i < ARM_DOF && i < chain_n; ++i) {
+      gravity_torques[i] = kdl_bench_grav_buf_(i);
     }
-  }
-
-  // Copy to diagnostics buffer (gravity_torques_ already sized at init, no resize)
-  for (size_t i = 0; i < tree_njoints; ++i) {
-    gravity_torques_(i) = kdl_tau_buf_(i);
+    // Copy to diagnostics buffer
+    for (size_t i = 0; i < chain_n && i < static_cast<size_t>(gravity_torques_.rows()); ++i) {
+      gravity_torques_(i) = kdl_bench_grav_buf_(i);
+    }
+  } else {
+    // Use Tree solver result (default)
+    for (size_t i = 0; i < ARM_DOF && i < joint_names_.size(); ++i) {
+      auto it = joint_name_to_kdl_idx_.find(joint_names_[i]);
+      if (it != joint_name_to_kdl_idx_.end()) {
+        int kdl_idx = it->second;
+        gravity_torques[i] = (kdl_idx >= 0 && kdl_idx < static_cast<int>(tree_njoints))
+                                 ? kdl_tau_buf_(kdl_idx)
+                                 : 0.0;
+      } else {
+        gravity_torques[i] = 0.0;
+      }
+    }
+    // Copy to diagnostics buffer
+    for (size_t i = 0; i < tree_njoints; ++i) {
+      gravity_torques_(i) = kdl_tau_buf_(i);
+    }
   }
 }
 

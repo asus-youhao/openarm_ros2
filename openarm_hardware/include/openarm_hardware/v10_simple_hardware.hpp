@@ -39,8 +39,10 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <kdl/chain.hpp>
 #include <kdl/chaindynparam.hpp>
+#include <kdl/chainfksolverpos_recursive.hpp>
 #include <kdl/jntarray.hpp>
 #include <kdl/tree.hpp>
+#include <kdl/treefksolverpos_recursive.hpp>
 #include <kdl/treeidsolver_recursive_newton_euler.hpp>
 #include <kdl_parser/kdl_parser.hpp>
 #include <yaml-cpp/yaml.h>
