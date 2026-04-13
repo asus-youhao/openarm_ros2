@@ -62,22 +62,34 @@ class O6HandAnalyzer(Node):
         # Initialize attributes (before creating subscriptions)
         if hand == 'both':
             self.joint_names = LEFT_JOINTS + RIGHT_JOINTS
-            self.command_topics = [
-                '/left_hand_forward_position_controller/commands',
-                '/right_hand_forward_position_controller/commands'
-            ]
+            if mode == 'topic':
+                self.command_topics = [
+                    '/left_hand_forward_position_controller/commands',
+                    '/right_hand_forward_position_controller/commands'
+                ]
+            else:
+                self.command_topics = [
+                    '/left_hand_forward_position_controller/commands',
+                    '/right_hand_forward_position_controller/commands'
+                ]
             self.state_topics = [
                 '/left_hand_controller/controller_state',
                 '/right_hand_controller/controller_state'
             ]
         elif hand == 'left':
             self.joint_names = LEFT_JOINTS
-            self.command_topics = ['/left_hand_controller/commands']
-            self.state_topics = ['/left_hand_controller/controller_state']
+            if mode == 'topic':
+                self.command_topics = ['/left_hand_forward_position_controller/commands']
+            else:
+                self.command_topics = ['/left_hand_controller/commands']
+                self.state_topics = ['/left_hand_controller/controller_state']
         else:
             self.joint_names = RIGHT_JOINTS
-            self.command_topics = ['/right_hand_controller/commands']
-            self.state_topics = ['/right_hand_controller/controller_state']
+            if mode == 'topic':
+                self.command_topics = ['/right_hand_forward_position_controller/commands']  
+            else:
+                self.command_topics = ['/right_hand_controller/commands']
+                self.state_topics = ['/right_hand_controller/controller_state']
 
         self.history = {name: {'t': [], 'cmd': [], 'state': [], 'err': [], 'vel': []} for name in self.joint_names}
         self.latest_cmd = {name: math.nan for name in self.joint_names}  # record last valid cmd

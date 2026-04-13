@@ -20,8 +20,8 @@ controller_manager:
 right_hand_controller:
   ros__parameters:
     joints:
-      - R_thumb_cmc_yaw
       - R_thumb_cmc_pitch
+      - R_thumb_cmc_yaw
       - R_index_mcp_pitch
       - R_middle_mcp_pitch
       - R_ring_mcp_pitch
@@ -52,8 +52,8 @@ right_hand_controller:
 left_hand_controller:
   ros__parameters:
     joints:
-      - L_thumb_cmc_yaw
       - L_thumb_cmc_pitch
+      - L_thumb_cmc_yaw
       - L_index_mcp_pitch
       - L_middle_mcp_pitch
       - L_ring_mcp_pitch
