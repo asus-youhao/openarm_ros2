@@ -1,8 +1,10 @@
 # This file is used to configure the 3D sensors for the robot.
 # It is a placeholder for now. Configure the sensors to use the correct topics and parameters.
-sensors:
-  - default_sensor
-  - kinect_depthimage
+# DISABLED to avoid OpenGL/mesh_filter crash issues
+sensors: []
+# sensors:
+#   - default_sensor
+#   - kinect_depthimage
 default_sensor:
   far_clipping_plane_distance: 5.0
   filtered_cloud_topic: filtered_cloud

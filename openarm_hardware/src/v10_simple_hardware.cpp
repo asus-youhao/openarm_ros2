@@ -134,15 +134,18 @@ void OpenArm_v10HW::generate_joint_names() {
     joint_names_.push_back(joint_name);
   }
 
-  // Generate gripper joint name if enabled
-  if (hand_) {
+  // Generate gripper joint name if enabled (but not for O6/Leap hands - they have their own joints)
+  if (hand_ && !has_o6_hand_ && !has_leap_hand_) {
     std::string gripper_joint_name = "openarm_" + arm_prefix_ + "finger_joint1";
     joint_names_.push_back(gripper_joint_name);
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added gripper joint: %s",
                 gripper_joint_name.c_str());
   } else {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Gripper joint NOT added because hand_=false");
+                "Gripper joint NOT added (hand_=%s, has_o6=%s, has_leap=%s)",
+                hand_ ? "true" : "false",
+                has_o6_hand_ ? "true" : "false",
+                has_leap_hand_ ? "true" : "false");
   }
 
   // Generate leap_hand finger joint names if enabled (right hand only)
@@ -229,7 +232,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   generate_joint_names();
 
   // Validate joint count (7 arm joints + optional gripper + optional leap_hand + optional o6_hand)
-  size_t expected_joints = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0) + (has_o6_hand_ ? O6_HAND_DOF : 0);
+  // Note: gripper joint only added when hand_=true AND no O6/Leap hand (those have their own joints)
+  size_t expected_joints = ARM_DOF + 
+                          (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + 
+                          (has_leap_hand_ ? LEAP_HAND_DOF : 0) + 
+                          (has_o6_hand_ ? O6_HAND_DOF : 0);
   if (joint_names_.size() != expected_joints) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                  "Generated %zu joint names, expected %zu", joint_names_.size(),
