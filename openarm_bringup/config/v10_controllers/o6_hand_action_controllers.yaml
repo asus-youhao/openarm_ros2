@@ -17,8 +17,8 @@ controller_manager:
 hand_controller:
   ros__parameters:
     joints:
-      - R_thumb_cmc_pitch
       - R_thumb_cmc_yaw
+      - R_thumb_cmc_pitch
       - R_index_mcp_pitch
       - R_middle_mcp_pitch
       - R_ring_mcp_pitch
