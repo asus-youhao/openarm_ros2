@@ -233,10 +233,10 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
 
   // Validate joint count (7 arm joints + optional gripper + optional leap_hand + optional o6_hand)
   // Note: gripper joint only added when hand_=true AND no O6/Leap hand (those have their own joints)
-  size_t expected_joints = ARM_DOF + 
-                          (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + 
-                          (has_leap_hand_ ? LEAP_HAND_DOF : 0) + 
-                          (has_o6_hand_ ? O6_HAND_DOF : 0);
+  size_t expected_joints = ARM_DOF +
+                           (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) +
+                           (has_leap_hand_ ? LEAP_HAND_DOF : 0) +
+                           (has_o6_hand_ ? O6_HAND_DOF : 0);
   if (joint_names_.size() != expected_joints) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
                  "Generated %zu joint names, expected %zu", joint_names_.size(),
@@ -552,7 +552,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     }
     
     // Initialize O6 hand to open position (0.0 rad = open)
-    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    // Gripper slot only exists in joint_names_ when hand_=true AND no O6/LEAP hand
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
     
     // Set command and state buffers to open position
     for (size_t i = 0; i < 6; ++i) {
@@ -707,7 +708,8 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // Copy arm states from high-frequency thread buffer (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_state_mutex_);
-    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    // Only include gripper slot in joint interface when it's a CAN gripper (not O6/LEAP)
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       pos_states_[i] = arm_pos_state_buffer_[i];
       vel_states_[i] = arm_vel_state_buffer_[i];
@@ -725,7 +727,7 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // Copy LEAP Hand states from thread buffer if enabled (thread-safe)
   if (has_leap_hand_ && leap_connected_) {
     std::lock_guard<std::mutex> lock(leap_state_mutex_);
-    size_t leap_start_idx = ARM_DOF + (hand_ ? 1 : 0);
+    size_t leap_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
       pos_states_[leap_start_idx + i] = leap_pos_state_buffer_[i];
       vel_states_[leap_start_idx + i] = 0.0;  // LEAP Hand doesn't provide velocity
@@ -736,7 +738,7 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // Copy O6 Hand states from thread buffer if enabled (thread-safe)
   if (has_o6_hand_ && o6_connected_) {
     std::lock_guard<std::mutex> lock(o6_state_mutex_);
-    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
     for (size_t i = 0; i < O6_HAND_DOF; ++i) {
       pos_states_[o6_start_idx + i] = o6_pos_state_buffer_[i];
       vel_states_[o6_start_idx + i] = 0.0;  // O6 Hand doesn't provide velocity feedback
@@ -752,7 +754,8 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // Update arm command buffers (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_command_mutex_);
-    size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
+    // Only include gripper slot when it's a CAN gripper (not O6/LEAP)
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       // Apply inverse joint direction correction before sending to hardware
       if (i < ARM_DOF && joint_direction_[i] < 0) {
@@ -770,7 +773,7 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // Update LEAP Hand command buffers if enabled (thread-safe)
   if (has_leap_hand_ && leap_connected_) {
     std::lock_guard<std::mutex> lock(leap_command_mutex_);
-    size_t leap_start_idx = ARM_DOF + (hand_ ? 1 : 0);
+    size_t leap_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
     for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
       leap_pos_cmd_buffer_[i] = pos_commands_[leap_start_idx + i];
     }
@@ -780,7 +783,7 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // Only copy 6 active joint commands (passive joints are mechanically coupled)
   if (has_o6_hand_ && o6_connected_) {
     std::lock_guard<std::mutex> lock(o6_command_mutex_);
-    size_t o6_start_idx = ARM_DOF + (hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
     
     // Copy 6 active joint commands (indices 0-5 in O6 joint list)
     for (size_t i = 0; i < 6; ++i) {
