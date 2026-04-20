@@ -10,42 +10,88 @@ Prerequisites (must be running):
     ros2 launch openarm_bimanual_moveit_config move_group_only.launch.py
 
 Usage examples:
-    # Run all reachable points on the right arm
-    python3 csv_waypoint_runner.py --csv right_reachability.csv --arm right
+    # Run all reachable points on the right arm (default OMPL planner)
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right
 
     # Left arm, dwell 0.5s per point, return home after finishing
-    python3 csv_waypoint_runner.py --csv left_reachability.csv --arm left --dwell 0.5 --home
+    python3 csv_waypoint_runner.py --csv left_reachability_.csv --arm left --dwell 0.5 --home
 
     # Run only the first 10 points as a quick test
-    python3 csv_waypoint_runner.py --csv right_reachability.csv --arm right --max-pts 10
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right --max-pts 10
 
     # Override EE orientation (right arm natural approach = -Y)
-    python3 csv_waypoint_runner.py --csv right_reachability.csv --arm right \
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
         --quat 0.0 0.0 -0.707 0.707
+
+    # Try all 6 EE orientations per point — first success wins
+    # CSV output adds: orient_name, qx, qy, qz, qw columns
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --all-orient --home-first
+
+    # Split OMPL planning time vs robot motion time (uses plan()+execute())
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --max-pts 30 --split-timing --home-first
+
+    # Use Pilz PTP planner instead of OMPL (deterministic, ~1-5 ms, point-to-point)
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --planner pilz_ptp --split-timing --home-first
+
+    # Use Pilz LIN planner (straight-line Cartesian motion, ~1-5 ms)
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --planner pilz_lin --split-timing --home-first
+
+    # Compare OMPL vs Pilz side-by-side (runs both, saves two CSV/PNG files)
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --planner ompl --max-pts 20 --split-timing --timing-csv ompl_timing.csv
+    python3 csv_waypoint_runner.py --csv right_reachability_.csv --arm right \
+        --planner pilz_ptp --max-pts 20 --split-timing --timing-csv pilz_timing.csv
 
     # Bimanual alternating execution (left CSV + right CSV)
     python3 csv_waypoint_runner.py \
-        --left  left_reachability.csv  \
-        --right right_reachability.csv \
+        --left  left_reachability_.csv  \
+        --right right_reachability_.csv \
         --dwell 1.0 --home
 
 Options:
-    --csv       CSV path (single-arm mode)
-    --arm       left | right (single-arm mode)
-    --left      Left-arm CSV (bimanual mode)
-    --right     Right-arm CSV (bimanual mode)
-    --quat      EE quaternion qx qy qz qw (default: identity)
-    --dwell     Dwell time after reaching each point (default: 0.3s)
-    --max-pts   Maximum number of points to execute (default: all)
-    --home      Return to home after completing run
-    --home-first Return home before starting
-    --cartesian Use Cartesian planning (default: joint-space)
-    --timeout   Per-point planning timeout in seconds (default: 5.0)
-    --no-sort   Do not sort by Z (default: sort low-to-high)
+    --csv           CSV path (single-arm mode)
+    --arm           left | right (single-arm mode)
+    --left          Left-arm CSV (bimanual mode)
+    --right         Right-arm CSV (bimanual mode)
+    --quat          EE quaternion qx qy qz qw (default: arm natural approach)
+    --dwell         Dwell time after reaching each point (default: 0.3s)
+    --max-pts       Maximum number of points to execute (default: all)
+    --home          Return to home after completing run
+    --home-first    Return home before starting
+    --cartesian     Use Cartesian planning (default: joint-space)
+    --timeout       Per-point planning timeout in seconds (default: 5.0)
+    --no-sort       Do not sort by Z (default: sort low-to-high)
+    --split-timing  Separate OMPL planning time from robot motion time.
+                    Uses plan()+execute() instead of move_to_pose()+wait.
+                    Adds ompl_ms / motion_ms / joint_path_len to CSV.
+    --all-orient    Try all 6 named EE orientations per point.
+                    First success wins. Adds orient_name + qx/qy/qz/qw to CSV.
+                    Orientations: side_neg_y · side_pos_y · top_down ·
+                                  front_pos_x · front_neg_x · bottom_up
+    --planner       Planner to use: ompl (default) | pilz_ptp | pilz_lin
+                      ompl      → RRTConnect (OMPL, ~100-600 ms, collision-aware)
+                      pilz_ptp  → Pilz PTP   (deterministic, ~1-5 ms,
+                                              point-to-point in joint space)
+                      pilz_lin  → Pilz LIN   (deterministic, ~1-5 ms,
+                                              straight-line Cartesian path)
 
 Timing output (auto-generated unless --no-timing):
-    <arm>_waypoint_timing.csv   per-point planning_ms / execution_ms / total_ms
+    <arm>_waypoint_timing.csv   per-point timing columns (mode-dependent)
     <arm>_waypoint_timing.png   4-panel plot: histogram · timeline · 3-D heatmap · CDF
+
+Planner comparison guide:
+    OMPL (RRTConnect)           Collision-aware random search, 100-600 ms typical.
+                                Best for complex environments with obstacles.
+    Pilz PTP (point-to-point)   Deterministic joint-space motion, ~1-5 ms planning.
+                                No collision avoidance — only use in clear workspace.
+    Pilz LIN (linear)           Straight-line Cartesian path, ~1-5 ms planning.
+                                Keeps EE orientation fixed during motion.
+    MoveIt Servo                Real-time Cartesian velocity control, no planning.
+                                See realtime_ik_controller.py for Servo-based control.
 """
 
 import argparse
@@ -143,14 +189,28 @@ def load_reachable_pts(csv_path: str, sort_by_z: bool = True):
 # ---------------------------------------------------------------------------
 # MoveIt2 runner
 # ---------------------------------------------------------------------------
+# Planner configs: (pipeline_id, planner_id)
+# pipeline_id=""          → MoveGroup picks default (OMPL)
+# pipeline_id="pilz_industrial_motion_planner"  → Pilz
+_PLANNER_CONFIG = {
+    "ompl":      ("",                                  "RRTConnect"),
+    "pilz_ptp":  ("pilz_industrial_motion_planner",    "PTP"),
+    "pilz_lin":  ("pilz_industrial_motion_planner",    "LIN"),
+}
+
+
+# ---------------------------------------------------------------------------
+# MoveIt2 runner
+# ---------------------------------------------------------------------------
 class WaypointRunner:
     def __init__(self, arm: str, quat_override=None, timeout: float = 5.0,
-                 cartesian: bool = False):
+                 cartesian: bool = False, planner: str = "ompl"):
         self.arm = arm
         cfg = _ARM_CONFIG[arm]
         self.home_joints = cfg["home_joints"]
         self.cartesian = cartesian
         self.timeout = timeout
+        self.planner = planner
 
         qx, qy, qz, qw = quat_override if quat_override else cfg["default_quat"]
         self.quat_xyzw = [qx, qy, qz, qw]
@@ -166,11 +226,15 @@ class WaypointRunner:
             group_name=cfg["group_name"],
             callback_group=cb_group,
             use_move_group_action=True,  # single MoveGroup action: plan+exec atomic
-            # use_move_group_action=False  # separate plan()+execute() via service
         )
         self.moveit2.max_velocity = 0.3       # safety speed limit
         self.moveit2.max_acceleration = 0.3
         self.moveit2.planning_time = timeout
+
+        # Set planner pipeline / planner_id
+        pipeline_id, planner_id = _PLANNER_CONFIG.get(planner, ("", "RRTConnect"))
+        self.moveit2.pipeline_id = pipeline_id
+        self.moveit2.planner_id  = planner_id
 
         self.executor = rclpy.executors.MultiThreadedExecutor()
         self.executor.add_node(self.node)
@@ -186,7 +250,8 @@ class WaypointRunner:
 
         self.node.get_logger().info(
             f"[{arm}] WaypointRunner ready. EE={cfg['ee_link']}  "
-            f"quat={self.quat_xyzw}  cartesian={cartesian}"
+            f"quat={self.quat_xyzw}  cartesian={cartesian}  "
+            f"planner={planner} (pipeline='{pipeline_id}' id='{planner_id}')"
         )
 
     def go_home(self):
@@ -555,10 +620,16 @@ def save_timing_csv(records: list[dict], path: str):
     print(f"[timing] Saved → {path}")
 
 
-def print_timing_stats(arm: str, records: list[dict]):
+def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
     """Print timing summary.  Detects mode from record keys:
     has_orient (orient_name key) > has_split (ompl_ms key) > normal.
+    planner: the MoveIt planner used (shown in output labels).
     """
+    planner_label = {
+        "ompl":     "OMPL",
+        "pilz_ptp": "Pilz-PTP",
+        "pilz_lin": "Pilz-LIN",
+    }.get(planner, planner.upper())
     has_orient = bool(records) and "orient_name" in records[0]
     has_split  = bool(records) and "ompl_ms"     in records[0] and not has_orient
     ok_recs    = [r for r in records if r["success"]]
@@ -578,11 +649,12 @@ def print_timing_stats(arm: str, records: list[dict]):
 
         print(f"\n{'='*65}")
         print(f" All-Orientation Timing — {arm} arm  ({n} ok / {fails} fail / {len(records)} total)")
+        print(f" Planner: {planner_label}")
         print(f"{'='*65}")
         for label, arr in [
-            ("OMPL planning  (first success orientation)  ", ompl_t),
+            (f"{planner_label} planning (first success orientation)  ", ompl_t),
             ("Robot motion   (actual execution wall-clock)", motion_t),
-            ("Total          (OMPL + motion)              ", tot_t),
+            (f"Total          ({planner_label} + motion)              ", tot_t),
         ]:
             print(f"  {label}")
             print(f"    mean={arr.mean():.0f}ms  "
@@ -595,7 +667,7 @@ def print_timing_stats(arm: str, records: list[dict]):
         print()
         for label, budget_ms in _RT_BUDGETS_MS.items():
             pct = np.mean(ompl_t <= budget_ms) * 100.0
-            print(f"  OMPL within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
+            print(f"  {planner_label} within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
         print(f"{'='*65}\n")
 
     elif has_split:
@@ -608,9 +680,10 @@ def print_timing_stats(arm: str, records: list[dict]):
 
         print(f"\n{'='*65}")
         print(f" Split Timing — {arm} arm  ({n} ok / {fails} fail / {len(records)} total)")
+        print(f" Planner: {planner_label}")
         print(f"{'='*65}")
         for label, arr in [
-            ("OMPL planning  (IK + path search + time-param)", ompl_t),
+            (f"{planner_label} planning (IK + path + time-param)          ", ompl_t),
             ("Planned traj duration (TOTG/IPTP output)      ", plandur_t),
             ("Robot motion   (actual execution wall-clock)  ", motion_t),
             ("Total          (OMPL + motion)                ", tot_t),
@@ -631,7 +704,7 @@ def print_timing_stats(arm: str, records: list[dict]):
         print()
         for label, budget_ms in _RT_BUDGETS_MS.items():
             pct = np.mean(ompl_t <= budget_ms) * 100.0
-            print(f"  OMPL within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
+            print(f"  {planner_label} within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
         print(f"{'='*65}\n")
     else:
         plan_t = np.array([r["planning_ms"]  for r in ok_recs])
@@ -659,7 +732,8 @@ def print_timing_stats(arm: str, records: list[dict]):
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
-def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
+def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
+                planner: str = "ompl"):
     """
     arm_records: {"right": [...], "left": [...]}  (one or both arms)
 
@@ -667,17 +741,22 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
     different panels:
 
     Normal mode  → 4 panels: histogram · timeline (plan+exec) · 3D heatmap · CDF
-    Split mode   → 4 panels: OMPL histogram · OMPL+motion timeline · 3D OMPL heatmap
-                              · CDF comparing OMPL vs planned_duration
+    Split mode   → 4 panels: planning histogram · planning+motion timeline · 3D heatmap
+                              · CDF comparing planning vs planned_duration
     """
+    planner_label = {
+        "ompl":     "OMPL",
+        "pilz_ptp": "Pilz-PTP",
+        "pilz_lin": "Pilz-LIN",
+    }.get(planner, planner.upper())
     first_recs = next(iter(arm_records.values()))
     has_orient = bool(first_recs) and "orient_name" in first_recs[0]
     has_split  = bool(first_recs) and "ompl_ms" in first_recs[0] and not has_orient
 
     if has_orient:
-        title_mode = "All-Orientation OMPL + Motion Timing"
+        title_mode = f"All-Orientation {planner_label} + Motion Timing"
     elif has_split:
-        title_mode = "Split OMPL + Motion Timing"
+        title_mode = f"Split {planner_label} + Motion Timing"
     else:
         title_mode = "Planning & Execution Timing"
 
@@ -712,15 +791,16 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
 
             ax_hist.hist(ompl_arr, bins=40, color=color, alpha=0.55,
                          edgecolor="white",
-                         label=f"{arm} OMPL (n={len(ompl_arr)})")
+                         label=f"{arm} {planner_label} (n={len(ompl_arr)})")
             ax_time.bar(ok_idx, ompl_arr, color=color, alpha=0.75, width=1.0,
-                        label=f"{arm} OMPL planning")
+                        label=f"{arm} {planner_label} planning")
             ax_time.bar(ok_idx, motion_arr, bottom=ompl_arr,
                         color=color, alpha=0.25, width=1.0,
                         label=f"{arm} robot motion")
             st  = np.sort(ompl_arr)
             cdf = np.arange(1, len(st) + 1) / len(st)
-            ax_cdf.plot(st, cdf * 100.0, color=color, linewidth=1.8, label=f"{arm} OMPL")
+            ax_cdf.plot(st, cdf * 100.0, color=color, linewidth=1.8,
+                        label=f"{arm} {planner_label}")
 
         elif has_split:
             ompl_arr    = np.array([r["ompl_ms"]            for r in ok_recs])
@@ -729,18 +809,18 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
 
             ax_hist.hist(ompl_arr, bins=40, color=color, alpha=0.55,
                          edgecolor="white",
-                         label=f"{arm} OMPL (n={len(ompl_arr)})")
+                         label=f"{arm} {planner_label} (n={len(ompl_arr)})")
             ax_time.bar(ok_idx, ompl_arr, color=color, alpha=0.75, width=1.0,
-                        label=f"{arm} OMPL planning")
+                        label=f"{arm} {planner_label} planning")
             ax_time.bar(ok_idx, motion_arr, bottom=ompl_arr,
                         color=color, alpha=0.25, width=1.0,
                         label=f"{arm} robot motion")
             ax_time.plot(ok_idx, plandur_arr + ompl_arr,
                          color=color, linestyle=":", linewidth=1.5,
                          marker=".", markersize=2, alpha=0.80,
-                         label=f"{arm} plan_dur + OMPL")
+                         label=f"{arm} plan_dur + {planner_label}")
             for arr_cdf, style, lbl in [
-                (ompl_arr,    "-",  f"{arm} OMPL"),
+                (ompl_arr,    "-",  f"{arm} {planner_label}"),
                 (plandur_arr, "--", f"{arm} plan_dur"),
             ]:
                 st  = np.sort(arr_cdf)
@@ -781,7 +861,7 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
         zs = [r["z"] for r in ok_recs]
         if has_orient or has_split:
             ts = [r["ompl_ms"] for r in ok_recs]
-            cbar_lbl = "OMPL planning time (ms)"
+            cbar_lbl = f"{planner_label} planning time (ms)"
         else:
             ts = [r["planning_ms"] for r in ok_recs]
             cbar_lbl = "planning time (ms)"
@@ -791,7 +871,7 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
         ax_3d.set_xlabel("X (m)", labelpad=6, fontsize=9)
         ax_3d.set_ylabel("Y (m)", labelpad=6, fontsize=9)
         ax_3d.set_zlabel("Z (m)", labelpad=6, fontsize=9)
-        hmap_mode = "OMPL planning" if (has_orient or has_split) else "planning"
+        hmap_mode = f"{planner_label} planning" if (has_orient or has_split) else "planning"
         ax_3d.set_title(f"3-D Workspace — {hmap_mode} time heatmap ({first_arm})",
                         fontsize=10)
 
@@ -810,12 +890,12 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
             continue
         if has_orient:
             ompl_a = np.array([r["ompl_ms"] for r in ok_recs])
-            txt = (f"{arm} OMPL: mean={ompl_a.mean():.0f}ms "
+            txt = (f"{arm} {planner_label}: mean={ompl_a.mean():.0f}ms "
                    f"P95={np.percentile(ompl_a,95):.0f}ms")
         elif has_split:
             ompl_a = np.array([r["ompl_ms"]            for r in ok_recs])
             pdur_a = np.array([r["planned_duration_ms"] for r in ok_recs])
-            txt = (f"{arm} OMPL: mean={ompl_a.mean():.0f}ms "
+            txt = (f"{arm} {planner_label}: mean={ompl_a.mean():.0f}ms "
                    f"P95={np.percentile(ompl_a,95):.0f}ms\n"
                    f"{arm} plan_dur: mean={pdur_a.mean():.0f}ms "
                    f"P95={np.percentile(pdur_a,95):.0f}ms")
@@ -830,17 +910,21 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str):
                      bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.75))
 
     # ── Decorate axes ─────────────────────────────────────────────────────────
-    hist_xlabel = "OMPL planning time (ms)" if (has_orient or has_split) else "Planning time (ms)"
-    hist_title  = "OMPL Planning Time Distribution" if (has_orient or has_split) else "Planning Time Distribution"
+    hist_xlabel = (f"{planner_label} planning time (ms)"
+                   if (has_orient or has_split) else "Planning time (ms)")
+    hist_title  = (f"{planner_label} Planning Time Distribution"
+                   if (has_orient or has_split) else "Planning Time Distribution")
     ax_hist.set_xlabel(hist_xlabel, fontsize=10)
     ax_hist.set_ylabel("Count", fontsize=10)
     ax_hist.set_title(hist_title, fontsize=11)
     ax_hist.legend(fontsize=8)
 
     if has_orient:
-        time_title = "Per-Waypoint: OMPL (dark) + Motion (light)  [all-orient mode]"
+        time_title = (f"Per-Waypoint: {planner_label} (dark) + Motion (light)"
+                      f"  [all-orient mode]")
     elif has_split:
-        time_title = "Per-Waypoint: OMPL (dark) + Motion (light)  \u00b7\u00b7\u00b7 OMPL+plan_dur"
+        time_title = (f"Per-Waypoint: {planner_label} (dark) + Motion (light)"
+                      f"  \u00b7\u00b7\u00b7 {planner_label}+plan_dur")
     else:
         time_title = "Per-Waypoint Timing  (planning + execution)"
     ax_time.set_xlabel("Waypoint index", fontsize=10)
@@ -914,6 +998,10 @@ def main():
     parser.add_argument("--all-orient", action="store_true",
                         help="Try all 6 GRASP_ORIENTATIONS per point; first success wins. "
                              "CSV adds orient_name + qx/qy/qz/qw columns.")
+    parser.add_argument("--planner", default="ompl",
+                        choices=list(_PLANNER_CONFIG.keys()),
+                        help="Motion planner: ompl (default) | pilz_ptp | pilz_lin. "
+                             "ompl=RRTConnect ~100-600ms, pilz=deterministic ~1-5ms.")
     parser.add_argument("--timing-csv", default=None,
                         help="Override timing CSV filename (default: <arm>_waypoint_timing.csv)")
     parser.add_argument("--save-png",   default=None,
@@ -943,9 +1031,11 @@ def main():
             print(f"Bimanual mode: left={len(left_pts)} pts, right={len(right_pts)} pts")
 
             left_runner  = WaypointRunner("left",  quat_override=args.quat,
-                                          timeout=args.timeout, cartesian=args.cartesian)
+                                          timeout=args.timeout, cartesian=args.cartesian,
+                                          planner=args.planner)
             right_runner = WaypointRunner("right", quat_override=args.quat,
-                                          timeout=args.timeout, cartesian=args.cartesian)
+                                          timeout=args.timeout, cartesian=args.cartesian,
+                                          planner=args.planner)
 
             if args.home_first:
                 left_runner.go_home()
@@ -1033,17 +1123,17 @@ def main():
                 arm_records = {}
                 if left_timing:
                     arm_records["left"] = left_timing
-                    print_timing_stats("left", left_timing)
+                    print_timing_stats("left", left_timing, args.planner)
                     csv_path = args.timing_csv or "left_waypoint_timing.csv"
                     save_timing_csv(left_timing, csv_path)
                 if right_timing:
                     arm_records["right"] = right_timing
-                    print_timing_stats("right", right_timing)
+                    print_timing_stats("right", right_timing, args.planner)
                     csv_path = args.timing_csv or "right_waypoint_timing.csv"
                     save_timing_csv(right_timing, csv_path)
                 if arm_records:
                     png = args.save_png or "bimanual_waypoint_timing.png"
-                    plot_timing(arm_records, png)
+                    plot_timing(arm_records, png, args.planner)
 
         else:
             # ---- Single-arm mode ----
@@ -1060,7 +1150,8 @@ def main():
             print(f"[{args.arm}] Loaded {len(pts)} reachable waypoints from {csv_path}")
 
             runner = WaypointRunner(args.arm, quat_override=args.quat,
-                                    timeout=args.timeout, cartesian=args.cartesian)
+                                    timeout=args.timeout, cartesian=args.cartesian,
+                                    planner=args.planner)
             _, _, timing_records = run_arm(
                 runner, pts, args.max_pts, args.dwell,
                 go_home_after=args.home, home_first=args.home_first,
@@ -1071,11 +1162,11 @@ def main():
 
             if not args.no_timing and timing_records:
                 arm = args.arm
-                print_timing_stats(arm, timing_records)
+                print_timing_stats(arm, timing_records, args.planner)
                 csv_out = args.timing_csv or f"{arm}_waypoint_timing.csv"
                 save_timing_csv(timing_records, csv_out)
                 png_out = args.save_png or f"{arm}_waypoint_timing.png"
-                plot_timing({arm: timing_records}, png_out)
+                plot_timing({arm: timing_records}, png_out, args.planner)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.")

@@ -133,7 +133,7 @@ def generate_launch_description():
     
     print("=" * 60)
     print("MoveIt Move Group Launch (NO-GRIPPER for O6 Hands)")
-    print("Planning Pipeline: OMPL (RRTConnect)")
+    print("Planning Pipelines: OMPL (RRTConnect) + Pilz (PTP/LIN)")
     print("=" * 60)
     
     # Get robot_description from robot_state_publisher parameter
@@ -168,6 +168,13 @@ def generate_launch_description():
         # 'config/joint_limits_no_gripper.yaml'
         'config/joint_limits.yaml'
     )
+
+    # Load Pilz Cartesian limits (max translation/rotation velocity & acceleration)
+    # Required by pilz_industrial_motion_planner for PTP and LIN motion types.
+    pilz_cartesian_limits = load_yaml(
+        'openarm_bimanual_moveit_config',
+        'config/pilz_cartesian_limits.yaml'
+    ) or {}
     
     # Load MoveIt controllers (NO GRIPPER version)
     moveit_controllers = load_yaml(
@@ -186,6 +193,19 @@ def generate_launch_description():
     
     print("=" * 60)
     
+    # ---------------------------------------------------------------------------
+    # Pilz Industrial Motion Planner
+    # PTP: deterministic joint-space point-to-point,  ~1-5 ms planning
+    # LIN: straight-line Cartesian path,              ~1-5 ms planning
+    # WARNING: No random-sampling obstacle avoidance — only use in clear workspace.
+    # Use --planner pilz_ptp or pilz_lin in csv_waypoint_runner.py.
+    # ---------------------------------------------------------------------------
+    pilz_planning_yaml = {
+        'planning_plugin': 'pilz_industrial_motion_planner/CommandPlanner',
+        'request_adapters': '',
+        'default_planner_config': 'PTP',
+    }
+
     # OMPL Planning configuration
     # NOTE: request_adapters MUST be inside ompl_planning_yaml (i.e., under the 'ompl' namespace).
     # Putting them under 'move_group' (as a separate dict) is WRONG — MoveIt2 reads adapters from
@@ -233,9 +253,12 @@ def generate_launch_description():
         'robot_description': robot_description,
         'robot_description_semantic': robot_description_semantic,
         'robot_description_kinematics': kinematics_yaml,
-        'robot_description_planning': joint_limits_yaml,
-        'planning_pipelines': ['ompl'],
+        # Merge Pilz cartesian limits into robot_description_planning so Pilz
+        # PTP/LIN can read max_trans_vel / max_rot_vel from the same param namespace.
+        'robot_description_planning': {**(joint_limits_yaml or {}), **pilz_cartesian_limits},
+        'planning_pipelines': ['ompl', 'pilz_industrial_motion_planner'],
         'ompl': ompl_planning_yaml,
+        'pilz_industrial_motion_planner': pilz_planning_yaml,
         'moveit_controller_manager': moveit_controllers.get('moveit_controller_manager', ''),
         'moveit_simple_controller_manager': moveit_controllers.get('moveit_simple_controller_manager', {}),
         'use_sim_time': False,
