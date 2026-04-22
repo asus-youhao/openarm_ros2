@@ -1,0 +1,24 @@
+=================================================================
+ Split Timing — right arm  (2720 ok / 280 fail / 3000 total)
+ Planner: Pilz-LIN
+=================================================================
+  Pilz-LIN planning (IK + path + time-param)          
+    mean=4ms  median=4ms  P95=6ms  max=69ms  → ~236 Hz
+  Planned traj duration (TOTG/IPTP output)      
+    mean=0ms  median=0ms  P95=0ms  max=0ms  → ~10000 Hz
+  Robot motion   (actual execution wall-clock)  
+    mean=375ms  median=123ms  P95=1157ms  max=1522ms  → ~3 Hz
+  Total          (OMPL + motion)                
+    mean=379ms  median=127ms  P95=1162ms  max=1529ms  → ~3 Hz
+
+  Trajectory waypoints  : mean=0  min=0  max=0
+  Joint-space path len  : mean=0.542 rad  P95=2.714 rad
+  OMPL / motion ratio   : mean=0.03×  (OMPL is 3% of total time)
+
+  Pilz-LIN within 500 Hz (2.0 ms): 0.3%
+  Pilz-LIN within 200 Hz (5.0 ms): 77.5%
+  Pilz-LIN within 100 Hz (10.0 ms): 100.0%
+  Pilz-LIN within 50 Hz (20.0 ms): 100.0%
+=================================================================
+
+

@@ -96,6 +96,8 @@ Planner comparison guide:
 
 import argparse
 import csv
+import datetime
+import os as _os
 import shutil
 import subprocess
 import sys
@@ -104,7 +106,12 @@ import time
 from pathlib import Path
 
 import matplotlib
-matplotlib.use("Agg")  # non-interactive backend; works without display
+# Use interactive backend when a display is available; Agg for headless/CI.
+matplotlib.use(
+    "TkAgg"
+    if (_os.environ.get("DISPLAY") or _os.environ.get("WAYLAND_DISPLAY"))
+    else "Agg"
+)
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -129,8 +136,33 @@ _RT_BUDGETS_MS = {
     "1 Hz":   1000.0 /  1.0,   # 1000 ms ← slow / complex path
 }
 _RT_COLORS = {"10 Hz": "#7B1FA2", "5 Hz": "#E53935", "2 Hz": "#FB8C00", "1 Hz": "#43A047"}
-# _RT_COLORS = {"60 Hz": "#E53935", "30 Hz": "#FB8C00", "10 Hz": "#43A047"}  # old
+
+# Pilz-specific budgets (planning is <20 ms → need finer Hz reference lines)
+_RT_BUDGETS_PILZ_MS = {
+    "500 Hz": 1000.0 / 500.0,   # 2 ms
+    "200 Hz": 1000.0 / 200.0,   # 5 ms
+    "100 Hz": 1000.0 / 100.0,   # 10 ms
+    "50 Hz":  1000.0 /  50.0,   # 20 ms
+}
+_RT_COLORS_PILZ = {
+    "500 Hz": "#7B1FA2",
+    "200 Hz": "#E53935",
+    "100 Hz": "#FB8C00",
+    "50 Hz":  "#43A047",
+}
+
+
+def _hz_budgets(planner: str):
+    """Return (budget_dict, color_dict) tuned for the chosen planner."""
+    if planner in ("pilz_ptp", "pilz_lin"):
+        return _RT_BUDGETS_PILZ_MS, _RT_COLORS_PILZ
+    return _RT_BUDGETS_MS, _RT_COLORS
+
+
 _ARM_COLOR = {"right": "#E91E63", "left": "#2196F3"}
+
+# Default results directory (timing CSVs + plots saved here with timestamps)
+_RESULTS_DIR = Path(__file__).parent / "results"
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +207,22 @@ _ARM_CONFIG = {
 # CSV loading
 # ---------------------------------------------------------------------------
 def load_reachable_pts(csv_path: str, sort_by_z: bool = True):
-    """Load CSV and return only points with reachable=1. Optionally sort by Z."""
+    """Load CSV and return only points with reachable=1. Optionally sort by Z.
+
+    If the CSV contains qx/qy/qz/qw columns (e.g. produced by
+    joint_states_to_ee_poses.py), the recorded orientation is included in the
+    returned tuple as a 4th element.  Otherwise the 4th element is None.
+    """
     pts = []
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
             if row["reachable"] == "1":
-                pts.append((float(row["x"]), float(row["y"]), float(row["z"])))
+                x, y, z = float(row["x"]), float(row["y"]), float(row["z"])
+                quat = None
+                if "qx" in row and row["qx"] != "":
+                    quat = (float(row["qx"]), float(row["qy"]),
+                            float(row["qz"]), float(row["qw"]))
+                pts.append((x, y, z, quat))
     if sort_by_z:
         pts.sort(key=lambda p: p[2])  # sort low-to-high to avoid large jumps
     return pts
@@ -466,7 +508,8 @@ def run_arm(runner: WaypointRunner, pts: list, max_pts: int,
     timing_records = []
     t0 = time.time()
 
-    for i, (x, y, z) in enumerate(pts[:total]):
+    for i, (*xyz_tuple, recorded_quat) in enumerate(pts[:total]):
+        x, y, z = xyz_tuple
         log.info(f"[{arm}] [{i+1}/{total}]  -> ({x:.3f}, {y:.3f}, {z:.3f})")
 
         if all_orientations:
@@ -498,7 +541,7 @@ def run_arm(runner: WaypointRunner, pts: list, max_pts: int,
 
         elif split_timing:
             ok, ompl_ms, plan_dur_ms, motion_ms, total_ms, n_wpts, jpath = \
-                runner.plan_separate(x, y, z, do_execute=True)
+                runner.plan_separate(x, y, z, quat_xyzw=recorded_quat, do_execute=True)
             timing_records.append({
                 "x": x, "y": y, "z": z,
                 "success":             ok,
@@ -527,7 +570,12 @@ def run_arm(runner: WaypointRunner, pts: list, max_pts: int,
                     f"ompl={ompl_ms:.0f}ms (no path found)"
                 )
         else:
-            ok, plan_ms, exec_ms, total_ms = runner.move_to(x, y, z)
+            if recorded_quat is not None:
+                ok, ompl_ms, plan_dur_ms, exec_ms, total_ms, _, _ = \
+                    runner.plan_separate(x, y, z, quat_xyzw=recorded_quat, do_execute=True)
+                plan_ms = ompl_ms
+            else:
+                ok, plan_ms, exec_ms, total_ms = runner.move_to(x, y, z)
             timing_records.append({
                 "x": x, "y": y, "z": z,
                 "success":      ok,
@@ -657,15 +705,18 @@ def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
             (f"Total          ({planner_label} + motion)              ", tot_t),
         ]:
             print(f"  {label}")
-            print(f"    mean={arr.mean():.0f}ms  "
+            _m = arr.mean()
+            print(f"    mean={_m:.0f}ms  "
                   f"median={np.median(arr):.0f}ms  "
                   f"P95={np.percentile(arr,95):.0f}ms  "
-                  f"max={arr.max():.0f}ms")
+                  f"max={arr.max():.0f}ms  "
+                  f"→ ~{1000.0/max(_m, 0.1):.0f} Hz")
         print(f"\n  成功 orientation 分佈:")
         for name, cnt in sorted(orient_counts.items(), key=lambda x: -x[1]):
             print(f"    {name}: {cnt} 次 ({cnt/n*100:.0f}%)")
         print()
-        for label, budget_ms in _RT_BUDGETS_MS.items():
+        _budgets, _ = _hz_budgets(planner)
+        for label, budget_ms in _budgets.items():
             pct = np.mean(ompl_t <= budget_ms) * 100.0
             print(f"  {planner_label} within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
         print(f"{'='*65}\n")
@@ -689,10 +740,12 @@ def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
             ("Total          (OMPL + motion)                ", tot_t),
         ]:
             print(f"  {label}")
-            print(f"    mean={arr.mean():.0f}ms  "
+            _m = arr.mean()
+            print(f"    mean={_m:.0f}ms  "
                   f"median={np.median(arr):.0f}ms  "
                   f"P95={np.percentile(arr,95):.0f}ms  "
-                  f"max={arr.max():.0f}ms")
+                  f"max={arr.max():.0f}ms  "
+                  f"→ ~{1000.0/max(_m, 0.1):.0f} Hz")
         print(f"\n  Trajectory waypoints  : "
               f"mean={n_wpts.mean():.0f}  min={n_wpts.min()}  max={n_wpts.max()}")
         print(f"  Joint-space path len  : "
@@ -702,7 +755,8 @@ def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
         print(f"  OMPL / motion ratio   : mean={ratio.mean():.2f}×  "
               f"(OMPL is {pct_ompl:.0f}% of total time)")
         print()
-        for label, budget_ms in _RT_BUDGETS_MS.items():
+        _budgets, _ = _hz_budgets(planner)
+        for label, budget_ms in _budgets.items():
             pct = np.mean(ompl_t <= budget_ms) * 100.0
             print(f"  {planner_label} within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
         print(f"{'='*65}\n")
@@ -718,12 +772,15 @@ def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
                            ("Execution",          exec_t),
                            ("Total",              tot_t)]:
             print(f"  {label}:")
-            print(f"    mean={arr.mean():.0f}ms  "
+            _m = arr.mean()
+            print(f"    mean={_m:.0f}ms  "
                   f"median={np.median(arr):.0f}ms  "
                   f"P95={np.percentile(arr,95):.0f}ms  "
-                  f"max={arr.max():.0f}ms")
+                  f"max={arr.max():.0f}ms  "
+                  f"→ ~{1000.0/max(_m, 0.1):.0f} Hz")
         print()
-        for label, budget_ms in _RT_BUDGETS_MS.items():
+        _budgets, _ = _hz_budgets(planner)
+        for label, budget_ms in _budgets.items():
             pct = np.mean(plan_t <= budget_ms) * 100.0
             print(f"  Planning within {label} ({budget_ms:.1f} ms): {pct:.1f}%")
         print(f"{'='*58}\n")
@@ -732,17 +789,42 @@ def print_timing_stats(arm: str, records: list[dict], planner: str = "ompl"):
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
+def load_timing_csv(path: str) -> list[dict]:
+    """Reload a previously-saved timing CSV (from save_timing_csv) into dicts.
+    Restores numeric types so the records are usable by print_timing_stats/plot_timing.
+    """
+    _INT_COLS   = {"n_waypoints", "success"}
+    _FLOAT_COLS = {"ompl_ms", "planned_duration_ms", "motion_ms", "total_ms",
+                   "planning_ms", "execution_ms", "joint_path_len",
+                   "x", "y", "z", "qx", "qy", "qz", "qw"}
+    records = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            r = {}
+            for k, v in row.items():
+                if k in _INT_COLS:
+                    r[k] = int(v) if v not in ("", None) else 0
+                elif k in _FLOAT_COLS:
+                    r[k] = float(v) if v not in ("", None) else 0.0
+                else:
+                    r[k] = v  # orient_name, etc.
+            r["success"] = bool(r.get("success", 0))
+            records.append(r)
+    return records
+
+
 def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
-                planner: str = "ompl"):
+                planner: str = "ompl",
+                results_dir=None, stamp: str = None):
     """
     arm_records: {"right": [...], "left": [...]}  (one or both arms)
 
-    Automatically detects split-timing mode (ompl_ms key present) and renders
-    different panels:
+    Opens 4 independent figure windows:  Histogram · Timeline · 3-D Heatmap · CDF
+    Saves each as a separate PNG (with timestamp when results_dir is given).
 
-    Normal mode  → 4 panels: histogram · timeline (plan+exec) · 3D heatmap · CDF
-    Split mode   → 4 panels: planning histogram · planning+motion timeline · 3D heatmap
-                              · CDF comparing planning vs planned_duration
+    Normal mode  → histogram · timeline (plan+exec) · 3D heatmap · CDF
+    Split mode   → planning histogram · planning+motion timeline · 3D heatmap
+                   · CDF comparing planning vs planned_duration
     """
     planner_label = {
         "ompl":     "OMPL",
@@ -760,21 +842,37 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
     else:
         title_mode = "Planning & Execution Timing"
 
-    fig = plt.figure(figsize=(18, 13))
-    fig.suptitle(
-        f"MoveIt2 Waypoint Runner — {title_mode}\n"
-        "Real-time Teleoperation Evaluation",
-        fontsize=15, fontweight="bold"
-    )
-    gs = gridspec.GridSpec(2, 3, figure=fig,
-                           left=0.07, right=0.97,
-                           top=0.91, bottom=0.08,
-                           wspace=0.35, hspace=0.42)
+    # ── Output paths ─────────────────────────────────────────────────────────
+    if results_dir is not None:
+        _rd = Path(results_dir)
+        _rd.mkdir(parents=True, exist_ok=True)
+        _ts = stamp or datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        _base = Path(save_png).stem
+        def _png(suffix):
+            return str(_rd / f"{_base}_{_ts}_{suffix}.png")
+    else:
+        _base = str(Path(save_png).with_suffix(""))
+        def _png(suffix):
+            return f"{_base}_{suffix}.png"
 
-    ax_hist = fig.add_subplot(gs[0, 0])
-    ax_time = fig.add_subplot(gs[0, 1:])
-    ax_3d   = fig.add_subplot(gs[1, 0:2], projection="3d")
-    ax_cdf  = fig.add_subplot(gs[1, 2])
+    _main_title = (
+        f"MoveIt2 Waypoint Runner — {title_mode}\n"
+        "Real-time Teleoperation Evaluation"
+    )
+
+    # ── 4 independent figure windows ─────────────────────────────────────────
+    fig_hist = plt.figure(figsize=(9,  6))
+    fig_time = plt.figure(figsize=(13, 5))
+    fig_3d   = plt.figure(figsize=(9,  7))
+    fig_cdf  = plt.figure(figsize=(8,  6))
+    for _f, _lbl in [(fig_hist, "Histogram"), (fig_time, "Timeline"),
+                     (fig_3d, "3-D Heatmap"), (fig_cdf, "CDF")]:
+        _f.suptitle(f"{_main_title}  [{_lbl}]", fontsize=10, fontweight="bold")
+
+    ax_hist = fig_hist.add_subplot(111)
+    ax_time = fig_time.add_subplot(111)
+    ax_3d   = fig_3d.add_subplot(111, projection="3d")
+    ax_cdf  = fig_cdf.add_subplot(111)
 
     first_arm = next(iter(arm_records))
 
@@ -867,7 +965,7 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
             cbar_lbl = "planning time (ms)"
         sc = ax_3d.scatter(xs, ys, zs, c=ts, cmap="plasma", s=18, alpha=0.75,
                            vmin=0, vmax=np.percentile(ts, 98))
-        fig.colorbar(sc, ax=ax_3d, shrink=0.55, pad=0.01, label=cbar_lbl)
+        fig_3d.colorbar(sc, ax=ax_3d, shrink=0.55, pad=0.01, label=cbar_lbl)
         ax_3d.set_xlabel("X (m)", labelpad=6, fontsize=9)
         ax_3d.set_ylabel("Y (m)", labelpad=6, fontsize=9)
         ax_3d.set_zlabel("Z (m)", labelpad=6, fontsize=9)
@@ -875,9 +973,10 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
         ax_3d.set_title(f"3-D Workspace — {hmap_mode} time heatmap ({first_arm})",
                         fontsize=10)
 
-    # ── Budget lines ─────────────────────────────────────────────────────────
-    for label, ms in _RT_BUDGETS_MS.items():
-        c  = _RT_COLORS[label]
+    # ── Budget lines (planner-appropriate Hz reference) ──────────────────────
+    _plot_budgets, _plot_colors = _hz_budgets(planner)
+    for label, ms in _plot_budgets.items():
+        c  = _plot_colors[label]
         kw = dict(color=c, linestyle="--", linewidth=1.2, alpha=0.85)
         ax_hist.axvline(ms, **kw, label=f"{label} ({ms:.1f} ms)")
         ax_time.axhline(ms, **kw, label=f"{label} ({ms:.1f} ms)")
@@ -944,18 +1043,24 @@ def plot_timing(arm_records: dict[str, list[dict]], save_png: str,
         mticker.FuncFormatter(lambda v, _: f"{v:.0f}%")
     )
 
-    plt.savefig(save_png, dpi=150, bbox_inches="tight")
-    print(f"[plot] Saved → {save_png}")
-    plt.close(fig)
+    # ── Tight layout for each figure ─────────────────────────────────────────
+    for _f in (fig_hist, fig_time, fig_cdf):
+        _f.tight_layout(rect=[0, 0, 1, 0.94])
+    fig_3d.tight_layout()
 
-    # Try to open with a system viewer
-    for viewer in ("eog", "feh", "display", "xdg-open"):
-        if shutil.which(viewer):
-            subprocess.Popen([viewer, save_png],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-            print(f"[plot] Opened with {viewer}")
-            break
+    # ── Save all 4 PNGs ───────────────────────────────────────────────────────
+    for _fig, _suffix in [
+        (fig_hist, "hist"),
+        (fig_time, "timeline"),
+        (fig_3d,   "3d_heatmap"),
+        (fig_cdf,  "cdf"),
+    ]:
+        _path = _png(_suffix)
+        _fig.savefig(_path, dpi=150, bbox_inches="tight")
+        print(f"[plot] Saved → {_path}")
+
+    # ── Show all 4 windows simultaneously (blocks until closed) ──────────────
+    plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -1003,10 +1108,31 @@ def main():
                         help="Motion planner: ompl (default) | pilz_ptp | pilz_lin. "
                              "ompl=RRTConnect ~100-600ms, pilz=deterministic ~1-5ms.")
     parser.add_argument("--timing-csv", default=None,
-                        help="Override timing CSV filename (default: <arm>_waypoint_timing.csv)")
+                        help="Override timing CSV filename (auto: results/<arm>_timing_<stamp>.csv)")
     parser.add_argument("--save-png",   default=None,
-                        help="Override plot PNG filename (default: <arm>_waypoint_timing.png)")
+                        help="Override plot base name (auto: results/<arm>_timing_<stamp>_<type>.png)")
+    parser.add_argument("--results-dir", default=None,
+                        help=f"Folder for timing CSVs and plots "
+                             f"(default: {_RESULTS_DIR})")
+    parser.add_argument("--plot-csv",    default=None, metavar="CSV",
+                        help="Re-plot from a previously-saved timing CSV without "
+                             "running the robot (no ROS2 / MoveIt required)")
     args, ros_args = parser.parse_known_args()
+
+    # Results directory and timestamp (shared across all outputs this run)
+    results_dir = Path(args.results_dir) if args.results_dir else _RESULTS_DIR
+    results_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # --plot-csv: reload a saved timing CSV and re-generate plots (no ROS2)
+    if args.plot_csv:
+        records = load_timing_csv(args.plot_csv)
+        arm = args.arm
+        print_timing_stats(arm, records, args.planner)
+        png_base = Path(args.plot_csv).stem
+        plot_timing({arm: records}, png_base, args.planner,
+                    results_dir=results_dir, stamp=stamp)
+        sys.exit(0)
 
     sort_by_z = not args.no_sort
 
@@ -1051,11 +1177,11 @@ def main():
             right_timing = []
             for i in range(total):
                 if i < L:
-                    x, y, z = left_pts[i]
+                    x, y, z, rec_quat_l = left_pts[i]
                     print(f"[LEFT  {i+1}/{L}] -> ({x:.3f},{y:.3f},{z:.3f})")
                     if args.split_timing:
                         ok, ompl_ms, pd_ms, mot_ms, t_ms, nw, jp = \
-                            left_runner.plan_separate(x, y, z)
+                            left_runner.plan_separate(x, y, z, quat_xyzw=rec_quat_l)
                         left_timing.append({
                             "x": x, "y": y, "z": z, "success": ok,
                             "ompl_ms": ompl_ms, "planned_duration_ms": pd_ms,
@@ -1070,7 +1196,11 @@ def main():
                         else:
                             l_fail += 1
                     else:
-                        ok, p_ms, e_ms, t_ms = left_runner.move_to(x, y, z)
+                        if rec_quat_l is not None:
+                            ok, p_ms, _, e_ms, t_ms, _, _ = left_runner.plan_separate(
+                                x, y, z, quat_xyzw=rec_quat_l, do_execute=True)
+                        else:
+                            ok, p_ms, e_ms, t_ms = left_runner.move_to(x, y, z)
                         left_timing.append({"x": x, "y": y, "z": z, "success": ok,
                                             "planning_ms": p_ms, "execution_ms": e_ms,
                                             "total_ms": t_ms})
@@ -1080,11 +1210,11 @@ def main():
                         else:
                             l_fail += 1
                 if i < R:
-                    x, y, z = right_pts[i]
+                    x, y, z, rec_quat_r = right_pts[i]
                     print(f"[RIGHT {i+1}/{R}] -> ({x:.3f},{y:.3f},{z:.3f})")
                     if args.split_timing:
                         ok, ompl_ms, pd_ms, mot_ms, t_ms, nw, jp = \
-                            right_runner.plan_separate(x, y, z)
+                            right_runner.plan_separate(x, y, z, quat_xyzw=rec_quat_r)
                         right_timing.append({
                             "x": x, "y": y, "z": z, "success": ok,
                             "ompl_ms": ompl_ms, "planned_duration_ms": pd_ms,
@@ -1099,7 +1229,11 @@ def main():
                         else:
                             r_fail += 1
                     else:
-                        ok, p_ms, e_ms, t_ms = right_runner.move_to(x, y, z)
+                        if rec_quat_r is not None:
+                            ok, p_ms, _, e_ms, t_ms, _, _ = right_runner.plan_separate(
+                                x, y, z, quat_xyzw=rec_quat_r, do_execute=True)
+                        else:
+                            ok, p_ms, e_ms, t_ms = right_runner.move_to(x, y, z)
                         right_timing.append({"x": x, "y": y, "z": z, "success": ok,
                                              "planning_ms": p_ms, "execution_ms": e_ms,
                                              "total_ms": t_ms})
@@ -1124,16 +1258,19 @@ def main():
                 if left_timing:
                     arm_records["left"] = left_timing
                     print_timing_stats("left", left_timing, args.planner)
-                    csv_path = args.timing_csv or "left_waypoint_timing.csv"
+                    csv_path = args.timing_csv or str(
+                        results_dir / f"left_waypoint_timing_{stamp}.csv")
                     save_timing_csv(left_timing, csv_path)
                 if right_timing:
                     arm_records["right"] = right_timing
                     print_timing_stats("right", right_timing, args.planner)
-                    csv_path = args.timing_csv or "right_waypoint_timing.csv"
+                    csv_path = args.timing_csv or str(
+                        results_dir / f"right_waypoint_timing_{stamp}.csv")
                     save_timing_csv(right_timing, csv_path)
                 if arm_records:
-                    png = args.save_png or "bimanual_waypoint_timing.png"
-                    plot_timing(arm_records, png, args.planner)
+                    png_base = args.save_png or "bimanual_waypoint_timing"
+                    plot_timing(arm_records, png_base, args.planner,
+                                results_dir=results_dir, stamp=stamp)
 
         else:
             # ---- Single-arm mode ----
@@ -1163,10 +1300,12 @@ def main():
             if not args.no_timing and timing_records:
                 arm = args.arm
                 print_timing_stats(arm, timing_records, args.planner)
-                csv_out = args.timing_csv or f"{arm}_waypoint_timing.csv"
+                csv_out = args.timing_csv or str(
+                    results_dir / f"{arm}_waypoint_timing_{stamp}.csv")
                 save_timing_csv(timing_records, csv_out)
-                png_out = args.save_png or f"{arm}_waypoint_timing.png"
-                plot_timing({arm: timing_records}, png_out, args.planner)
+                png_base = args.save_png or f"{arm}_waypoint_timing"
+                plot_timing({arm: timing_records}, png_base, args.planner,
+                            results_dir=results_dir, stamp=stamp)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
