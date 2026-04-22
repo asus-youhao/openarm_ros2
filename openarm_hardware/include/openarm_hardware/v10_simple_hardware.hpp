@@ -89,7 +89,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   hardware_interface::return_type write(
       const rclcpp::Time& time, const rclcpp::Duration& period) override;
 
- private:
+ protected:
   // V10 default configuration
   static constexpr size_t ARM_DOF = 7;
   static constexpr size_t LEAP_HAND_DOF = 16;

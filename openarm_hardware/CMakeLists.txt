@@ -74,6 +74,7 @@ endif()
 
 add_library(${PROJECT_NAME} SHARED
   src/v10_simple_hardware.cpp
+  src/v10_lpf_hardware.cpp
   src/leap_hand_hardware.cpp
 )
 
