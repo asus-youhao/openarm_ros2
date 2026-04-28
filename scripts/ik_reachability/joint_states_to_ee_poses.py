@@ -48,6 +48,77 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Real-time mode (ROS2)
+# ---------------------------------------------------------------------------
+def run_realtime(args):
+    """
+    Subscribe to /joint_states, compute FK for both arms, print live EE poses.
+
+    Q: 這和 subscribe /tf 一樣嗎？
+    A: 結果相同，路徑不同：
+       /tf 路徑：robot_state_publisher 讀 /joint_states → 計算 FK → 發布 TF
+                 你用 tf2_ros.TransformListener 查詢 "world→openarm_right_link7"
+       本腳本路徑：直接讀 /joint_states → 用同一組 FK 公式自行計算
+       兩者數值應一致（誤差 < 1e-6m），但這種方式不需要 tf2_ros 依賴。
+    """
+    import rclpy
+    from rclpy.node import Node
+    from sensor_msgs.msg import JointState
+
+    RIGHT_JOINTS = [f"openarm_right_joint{i}" for i in range(1, 8)]
+    LEFT_JOINTS  = [f"openarm_left_joint{i}"  for i in range(1, 8)]
+
+    class FKMonitor(Node):
+        def __init__(self):
+            super().__init__("joint_states_fk_monitor")
+            self._js = {}
+            self.create_subscription(JointState, "/joint_states",
+                                     self._cb, 10)
+            self._timer = self.create_timer(
+                1.0 / args.rate, self._publish_fk)
+            self.get_logger().info(
+                f"Monitoring /joint_states at {args.rate} Hz — "
+                f"computing FK for both arms")
+
+        def _cb(self, msg: JointState):
+            for name, pos in zip(msg.name, msg.position):
+                self._js[name] = pos
+
+        def _publish_fk(self):
+            r_q = [self._js.get(n, 0.0) for n in RIGHT_JOINTS]
+            l_q = [self._js.get(n, 0.0) for n in LEFT_JOINTS]
+
+            Tr = compute_fk(r_q, "right")
+            Tl = compute_fk(l_q, "left")
+
+            def fmt(T, label):
+                x, y, z = T[0,3], T[1,3], T[2,3]
+                roll, pitch, yaw = mat_to_rpy(T[:3,:3])
+                qx, qy, qz, qw  = mat_to_quat(T[:3,:3])
+                r_deg = math.degrees(roll)
+                p_deg = math.degrees(pitch)
+                y_deg = math.degrees(yaw)
+                return (f"{label}: "
+                        f"xyz=({x:7.4f},{y:7.4f},{z:7.4f})  "
+                        f"rpy=({r_deg:7.2f}°,{p_deg:7.2f}°,{y_deg:7.2f}°)  "
+                        f"q=({qx:.4f},{qy:.4f},{qz:.4f},{qw:.4f})")
+
+            print(fmt(Tr, "RIGHT"))
+            print(fmt(Tl, "LEFT "))
+            print()
+
+    rclpy.init()
+    node = FKMonitor()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+# ---------------------------------------------------------------------------
 # FK geometry — derived from openarm_bimanual_control.urdf
 # ---------------------------------------------------------------------------
 def _rpy_matrix(roll, pitch, yaw):
@@ -277,8 +348,12 @@ def main():
         description="Compute FK from recorded joint states → EE pose CSV",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
-    parser.add_argument("input",
-        help="Input CSV file or folder containing CSV files")
+    parser.add_argument("input", nargs="?", default=None,
+        help="Input CSV file or folder (omit when using --realtime)")
+    parser.add_argument("--realtime", action="store_true",
+        help="Real-time mode: subscribe /joint_states and print FK for both arms")
+    parser.add_argument("--rate", type=float, default=10.0,
+        help="Print rate Hz in realtime mode (default: 10)")
     parser.add_argument("--out",      default=None,
         help="Output full-poses CSV path (single-file mode)")
     parser.add_argument("--waypoints", default=None,
@@ -293,6 +368,14 @@ def main():
     parser.add_argument("--merge",    default=None, metavar="PATH",
         help="(folder mode) Also write one combined waypoints CSV from all files")
     args = parser.parse_args()
+
+    # Real-time mode: no input file needed
+    if args.realtime:
+        run_realtime(args)
+        return
+
+    if args.input is None:
+        parser.error("input is required unless --realtime is set")
 
     if args.topic != FOLLOWER_TOPIC:
         globals()["FOLLOWER_TOPIC"] = args.topic
