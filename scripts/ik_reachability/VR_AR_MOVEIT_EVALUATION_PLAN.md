@@ -16,6 +16,7 @@
    - [階段 2-1：Pilz 規劃器比較 ✅](#階段-2-1pilz-規劃器比較測試--完成--planner-旗標)
    - [階段 2-2：MoveIt Servo 即時控制 🔲](#階段-2-2moveit-servo-即時笛卡爾控制--待測試)
    - [階段 3：realtime_ik_controller.py ✅](#階段-3繞過-ompl-的即時-ik-控制器--完成)
+   - [階段 3-1：Pico VR Delta IK 控制器 ✅](#階段-3-1pico-vr-搖桿相對運動-delta-ik-控制器--完成)
    - [階段 4：端到端延遲測試 🔲](#階段-4端到端延遲測試--待完成)
    - [階段 5：使用者操作實驗 🔲](#階段-5使用者任務操作實驗--待完成)
 5. [評估指標清單](#5-評估指標清單)
@@ -401,6 +402,86 @@ ik.robot_state.joint_state.position = last_joint_solution
 
 ---
 
+---
+
+### 階段 3-1：Pico VR 搖桿相對運動 Delta IK 控制器 ✅ 完成
+
+**動機**：`realtime_ik_controller.py`（階段 3）接收**絕對 PoseStamped**，
+但 Pico VR 搖桿輸出**相對增量（delta X/Y/Z + RPY）**，架構不符。
+本階段建立匹配搖桿操作模式的新控制器。
+
+**規劃器選擇依據（實測數據 2026-04-20）**：
+
+| 規劃器 | planning_ms (中位數) | motion_ms (中位數) | 推薦度 |
+|---|---|---|---|
+| OMPL RRTConnect | 30.5 ms | **1323 ms** | ❌ 搖桿回饋延遲超過 1s |
+| Pilz PTP | 3.9 ms | 165 ms | ⭐⭐⭐ 小步 ~50ms OK |
+| Pilz LIN | 4.1 ms | 134 ms | ⚠️ 成功率 96%（連續控制中 4% 失敗不可接受） |
+| **/compute_ik + JointTraj** | **< 10 ms** | **= horizon (60ms)** | **✅ 最佳** |
+
+**結論**：搖桿即時控制使用 `/compute_ik` + 短時程 JointTrajectory，
+不需要 OMPL 或 Pilz 的完整規劃管線。
+
+**架構**：
+```
+Pico VR 搖桿（未來）或鍵盤模擬（現在）
+     │  delta_x, delta_y, delta_z, delta_roll, delta_pitch, delta_yaw
+     │  （按住板機鍵才發出非零 delta）
+     ▼
+pico_delta_ik_controller.py
+     │  accumulated_pose += apply_delta(delta)   ← 累積絕對位姿
+     │  /compute_ik (seed = last joint solution)  ← 1–20 ms，防多解跳動
+     │  JointTrajectory (horizon = 60 ms)         ← 短時程，可被下一幀搶佔
+     ▼
+/right_arm_controller/joint_trajectory
+     ▼
+OpenArm O6 右臂
+```
+
+**檔案**：`scripts/ik_reachability/pico_delta_ik_controller.py`
+
+**使用方式**：
+
+```bash
+# 1. 鍵盤模擬搖桿（現在可用，不需 Pico 硬體）
+python3 pico_delta_ik_controller.py --arm right --pattern keyboard
+
+# 2. 自動正弦波測試（驗證 IK 連續性）
+python3 pico_delta_ik_controller.py --arm right --pattern sine --duration 20
+
+# 3. 圓形測試（Y-Z 平面，半徑 5cm）
+python3 pico_delta_ik_controller.py --arm right --pattern circle --radius 0.05
+
+# 4. 8 字形測試（X-Y 平面）
+python3 pico_delta_ik_controller.py --arm right --pattern lemniscate
+
+# 5. 停用碰撞（最快，需確認工作區域清空）
+python3 pico_delta_ik_controller.py --arm right --pattern circle --no-collisions
+
+# 6. 存入計時 CSV + 圖表
+python3 pico_delta_ik_controller.py --arm right --pattern circle \
+    --duration 30 --timing-csv results/delta_ik_circle.csv
+
+# 7. 未來接 Pico 實體（橋接節點發布 TwistStamped）
+python3 pico_delta_ik_controller.py --arm right --pattern topic
+```
+
+**鍵盤操作（--pattern keyboard）**：
+```
+位置（世界座標系）：  W/S = +X/-X    A/D = +Y/-Y    Q/E = +Z/-Z
+旋轉（EE 座標系）：   U/J = Roll     I/K = Pitch    O/L = Yaw
+步長調整：            + = 放大(×1.5)   - = 縮小(÷1.5)
+重置：                R = 回 home       P = 顯示當前位姿
+```
+
+**Pico 橋接注意事項（未來）**：
+- Pico 橋接節點發布 `/pico_right/delta_twist`（`geometry_msgs/TwistStamped`）
+- `twist.linear` = 手柄位移 (m)，`twist.angular` = RPY 增量 (rad)
+- 按住板機鍵才發出非零 delta → 靜止時不累積誤差
+- 建議搖桿映射比例：linear × 0.01（每 frame 1cm 最大），angular × 0.05 rad
+
+---
+
 ### 階段 4：端到端延遲測試 🔲 待完成
 
 ```
@@ -496,6 +577,7 @@ ik.robot_state.joint_state.position = last_joint_solution
 | `plot_reachability_csv.py` | 工作空間可視化 | ✅ 完成 |
 | `test_plan_timing_debug.py` | pymoveit2 state machine 計時 unit tests（19 tests） | ✅ 完成 |
 | `realtime_ik_controller.py` | 繞過 OMPL 的即時 IK 控制器（PoseStamped → /compute_ik → JointTrajectory） | ✅ 完成（階段 3） |
+| `pico_delta_ik_controller.py` | Pico VR 搖桿相對增量 IK 控制器（delta X/Y/Z/RPY → /compute_ik → JointTrajectory）keyboard/sine/circle/lemniscate/topic 五種模式 | ✅ 完成（階段 3-1） |
 | `servo_teleop_client.py` | MoveIt Servo 互動遙控 + 基準測試客戶端 | ✅ 完成（階段 2-2） |
 | `openarm_bringup/config/servo_right_config.yaml` | MoveIt Servo 右臂設定（100 Hz） | ✅ 完成（階段 2-2） |
 | `openarm_bringup/config/servo_left_config.yaml` | MoveIt Servo 左臂設定（100 Hz） | ✅ 完成（階段 2-2） |
@@ -514,23 +596,19 @@ ik.robot_state.joint_state.position = last_joint_solution
 [已完成] 階段 2-1：Pilz PTP/LIN 規劃器比較 ✅（--planner 旗標已加入）
 [已完成] 階段 2-2：MoveIt Servo 設定 ✅（config + launch + client 已建立）
 [已完成] 階段 3：realtime_ik_controller.py ✅
+[已完成] 階段 3-1：pico_delta_ik_controller.py ✅（delta IK，鍵盤/sine/circle/lemniscate/topic）
 
-[高優先] 階段 2-2 實際測試：
-        → 啟動 servo_right.launch.py，發送 TwistStamped
-        → 用 servo_teleop_client.py --benchmark 量測輸出延遲
-        → 觀察奇異點處理（servo_node/status）
+規劃器選擇結論（2026-04-22 實測）：
+  - OMPL：motion 中位數 1323ms → ❌ 搖桿操作完全不可用
+  - Pilz PTP：planning 3.9ms + motion 165ms → ⭐ 小步操作勉強可用（5Hz）
+  - Pilz LIN：成功率 96% → ⚠️ 不適合連續控制（失敗會中斷）
+  - /compute_ik + short JointTraj：planning <10ms + motion = horizon(60ms) → ✅ 最佳
 
-[高優先] 階段 3 實際測試：
-        → 啟動 realtime_ik_controller.py --arm right --dry-run 確認 IK 回應
-        → 再移除 --dry-run 實際控制機械臂
-        → 觀察 /right/ik_latency_ms 確認 1–20 ms 目標
-
-[中優先] 階段 2-1 實際量測：
-        → 執行 Pilz PTP vs OMPL 對比測試
-        → 生成兩份 timing CSV 並比較分佈（ompl_ms 差異預計 10–100倍）
-
-[低優先] 階段 4, 5：
-        → 需要 VR/AR 裝置連接後才能量測端到端延遲
+[高優先] 階段 3-1 實際測試：
+        → python3 pico_delta_ik_controller.py --arm right --pattern sine --dry-run
+        → 確認 IK 1-20ms 後移除 --dry-run 實際控制
+        → python3 pico_delta_ik_controller.py --arm right --pattern keyboard
+        → 鍵盤 WASD 操作測試平滑性
 ```
 
 ### 指令速查
@@ -578,5 +656,5 @@ ros2 topic echo /right/ik_latency_ms
 
 ---
 
-*最後更新：2026-04-20 — 階段 2-1/2-2/3 完成*
+*最後更新：2026-04-22 — 階段 3-1 完成：pico_delta_ik_controller.py（Pico VR 搖桿 delta IK）*
 *平台：OpenArm O6 Bimanual · ROS2 Humble · MoveIt2 · Ubuntu 22.04*
