@@ -362,6 +362,88 @@ class BackendDeltaIKController(Node):
         with self._joints_lock:
             self._last_joints = list(self.cfg["home_joints"])
 
+    def send_home_confirmed(
+        self,
+        pos_tol:    float = 0.025,   # m: TF vs home_pose must be within this
+        motion_sec: float = 3.5,     # wait time after each cmd (≥ trajectory duration)
+        max_tries:  int   = 5,       # max re-send attempts
+        poll_sec:   float = 0.3,     # TF polling interval during wait
+    ) -> bool:
+        """
+        Send home trajectory, then verify arrival via TF.
+        If arm has not reached home (TF pos error > pos_tol),
+        re-publish the command and wait again, up to max_tries times.
+
+        Returns True if arm reached home, False if max_tries exhausted.
+        """
+        home_xyz = self.cfg["home_pose"][:3]          # (x, y, z)
+        jnames   = self.cfg["joint_names"]
+
+        for attempt in range(1, max_tries + 1):
+            # ── Send the trajectory ──
+            msg = JointTrajectory()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.joint_names  = list(jnames)
+            pt = JointTrajectoryPoint()
+            pt.positions     = list(self.cfg["home_joints"])
+            pt.velocities    = [0.0] * len(pt.positions)
+            pt.time_from_start.sec = int(motion_sec * 0.85)   # traj finishes before we check
+            pt.time_from_start.nanosec = 0
+            msg.points = [pt]
+            self._traj_pub.publish(msg)
+            print(f"  [home] attempt {attempt}/{max_tries} — cmd sent, waiting {motion_sec:.1f}s...")
+
+            # ── Wait for motion + poll TF ──
+            t_deadline = time.time() + motion_sec
+            arrived    = False
+            while time.time() < t_deadline:
+                time.sleep(poll_sec)
+                tf_pose = self.get_current_ee_from_tf(timeout_sec=0.3)
+                if tf_pose is None:
+                    continue
+                dist = math.sqrt(
+                    (tf_pose[0] - home_xyz[0]) ** 2 +
+                    (tf_pose[1] - home_xyz[1]) ** 2 +
+                    (tf_pose[2] - home_xyz[2]) ** 2
+                )
+                print(f"  [home]   TF xyz=({tf_pose[0]:.3f},{tf_pose[1]:.3f},{tf_pose[2]:.3f})"
+                      f"  dist_to_home={dist*100:.1f}cm", end="\r", flush=True)
+                if dist <= pos_tol:
+                    arrived = True
+                    break
+
+            print()  # newline after \r
+
+            if arrived:
+                print(f"  [home] ✓ reached home in attempt {attempt}  dist={dist*100:.1f}cm")
+                # Sync internal pose + joints from TF / joint_states
+                tf_pose = self.get_current_ee_from_tf(timeout_sec=1.0)
+                if tf_pose is not None:
+                    self._pose = list(tf_pose)
+                with self._js_lock:
+                    js_snap = dict(self._joint_states)
+                if all(n in js_snap for n in jnames):
+                    with self._joints_lock:
+                        self._last_joints = [js_snap[n] for n in jnames]
+                return True
+            else:
+                # Check joint_states to see how far off we are
+                with self._js_lock:
+                    js_snap = dict(self._joint_states)
+                home_j = self.cfg["home_joints"]
+                j_err  = max(
+                    abs(js_snap.get(n, 0) - home_j[i])
+                    for i, n in enumerate(jnames)
+                ) if js_snap else 99.0
+                print(f"  [home] ✗ attempt {attempt} timed out  j_max_err={math.degrees(j_err):.1f}° — retrying...")
+
+        print(f"  [home] ✗ could not confirm home after {max_tries} attempts — continuing anyway")
+        hx, hy, hz, hqx, hqy, hqz, hqw = self.cfg["home_pose"]
+        self._pose = [hx, hy, hz, hqx, hqy, hqz, hqw]
+        with self._joints_lock:
+            self._last_joints = list(self.cfg["home_joints"])
+        return False
+
     def get_current_ee_from_tf(self, timeout_sec=0.5):
         try:
             t = self._tf_buffer.lookup_transform(
@@ -893,9 +975,8 @@ def main():
 
     try:
         if args.home_first:
-            print("  Moving to home...")
-            node.send_home()
-            time.sleep(3.5)
+            print("  Moving to home (with TF confirmation)...")
+            node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
 
         if args.pattern == "keyboard":
             node.run_pattern_keyboard()
