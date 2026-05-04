@@ -89,7 +89,7 @@ _HUMAN_CFG = {
         # joint  pref    damping  hard_lo  hard_hi
         "j1": ( 0.000,  0.15,  -1.396,  1.500),  # base-yaw: face forward  大馬達
         "j2": ( 0.700,  0.20,   0.000,  1.600),  # shoulder: slightly raised  大馬達
-        "j3": ( 0.000,  0.60,  -1.571,  0.000),  # upperarm yaw: j3=0 forward  大馬達
+        "j3": ( 0.000,  0.60,  -1.571,  0.300),  # upperarm yaw: j3=0 forward  大馬達
         "j4": ( 1.5708, 0.05,   0.250,  2.200),  # elbow: 90° forward-reach
         "j5": ( 0.000,  0.02,  -1.571,  1.571),  # forearm roll: neutral
         "j6": ( 0.000,  0.02,  -0.785,  0.785),  # wrist yaw: straight

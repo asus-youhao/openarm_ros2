@@ -171,7 +171,7 @@ class PinocchioIKSolver:
     POS_TOL   = 0.003
     ORI_TOL   = 0.15
     POS_RELAX = 0.010
-    MAX_ITER  = 200        # per seed
+    MAX_ITER  = 300        # per seed
     DT        = 0.3        # step size (0–1)
     LAMBDA    = 0.01       # damping
     # MU must be << 1 to avoid fighting the task objective.
