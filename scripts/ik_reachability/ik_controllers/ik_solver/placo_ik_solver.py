@@ -88,13 +88,15 @@ _HUMAN_RIGHT = {
     "openarm_right_joint7": (0.000,  -1.571,  1.571, 0.03),  # wrist pitch palm-fwd
 }
 _HUMAN_LEFT = {
-    "openarm_left_joint1":  (0.000,  -1.500,  1.396, 0.15),
-    "openarm_left_joint2":  (0.700,   0.000,  1.600, 0.25),
-    "openarm_left_joint3":  (0.000,   0.000,  1.571, 0.80),  # LEFT: j3=0=forward mirrored
-    "openarm_left_joint4":  (1.5708,  0.250,  2.200, 0.08),
-    "openarm_left_joint5":  (0.000,  -1.571,  1.571, 0.03),
-    "openarm_left_joint6":  (0.000,  -0.785,  0.785, 0.03),
-    "openarm_left_joint7":  (0.000,  -1.571,  1.571, 0.03),
+    # pref=-0.7 for joint2: LEFT arm URDF is mirrored (j2_left=-j2_right)
+    # Format: (pref, hard_lo, hard_hi, joints_weight)
+    "openarm_left_joint1": (0.000,   -3.491,  1.396, 0.15),  # j1 URDF[-200°,+80°]
+    "openarm_left_joint2": (-0.700,  -3.316,  0.175, 0.25),  # j2 pref=-0.7! URDF[-190°,+10°]
+    "openarm_left_joint3": (0.000,   -1.571,  1.571, 0.80),  # j3 full range [-90°,+90°]
+    "openarm_left_joint4": (1.5708,   0.000,  2.444, 0.08),  # j4 URDF[0°,+140°]
+    "openarm_left_joint5": (0.000,   -1.571,  1.571, 0.03),  # j5
+    "openarm_left_joint6": (0.000,   -0.785,  0.785, 0.03),  # j6
+    "openarm_left_joint7": (0.000,   -1.571,  1.571, 0.03),  # j7 axis=0 -1 0
 }
 _ARM_HUMAN = {"right": _HUMAN_RIGHT, "left": _HUMAN_LEFT}
 
@@ -113,11 +115,14 @@ _SEEDS_RIGHT = [
     [ 0.00,  0.60,  0.00,  1.2000,  0.00,  0.30,  0.00],
 ]
 _SEEDS_LEFT = [
-    [ 0.00,  0.70,  0.00,  1.5708,  0.00,  0.00,  0.00],
-    [ 0.00,  0.50,  0.00,  1.5708,  0.00,  0.00,  0.00],
-    [ 0.00,  1.00,  0.00,  1.5708,  0.00,  0.00,  0.00],
-    [-0.20,  0.70,  0.20,  1.5708,  0.00,  0.00,  0.00],
-    [ 0.20,  0.70,  0.20,  1.5708,  0.00,  0.00,  0.00],
+    # j2 must be NEGATIVE for left arm (URDF mirror: j2_left=-j2_right)
+    [ 0.00, -0.70,  0.00,  1.5708,  0.00,  0.00,  0.00],  # forward-reach home 90°
+    [ 0.00, -0.50,  0.00,  1.5708,  0.00,  0.00,  0.00],  # shoulder lower
+    [ 0.00, -1.00,  0.00,  1.5708,  0.00,  0.00,  0.00],  # shoulder higher
+    [-0.20, -0.70,  0.20,  1.5708,  0.00,  0.00,  0.00],  # j1 inward
+    [ 0.20, -0.70,  0.20,  1.5708,  0.00,  0.00,  0.00],  # j1 outward
+    [ 0.00, -0.80,  0.00,  2.0000,  0.00,  0.00,  0.00],  # elbow ~115°
+    [ 0.00, -0.60,  0.00,  1.2000,  0.00,  0.30,  0.00],  # forearm roll
 ]
 _ARM_SEEDS = {"right": _SEEDS_RIGHT, "left": _SEEDS_LEFT}
 

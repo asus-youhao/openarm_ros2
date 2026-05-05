@@ -136,8 +136,10 @@ _ARM_CONFIG = {
         "joint_names":  [f"openarm_left_joint{i}" for i in range(1, 8)],
         "base_link":    "world",
         "ee_link":      "openarm_left_link7",
-        "home_joints":  [0.0, 0.7, 0.0, 1.5708, 0.0, 0.0, 0.0],  # j4=90° forward-reach
-        "home_pose":    (0.0, 0.153, 0.350, 0.0, 0.7071, 0.0, 0.7071),  # placeholder — TF sync overrides
+        # j2=-0.7 (MIRRORED from right j2=+0.7): LEFT URDF j2 range [-190°,+10°]
+        "home_joints":  [0.0, -0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
+        # FK(home_joints) via pinocchio: EE=(0.2160, +0.2952, 0.5297), quat=(0.6642,-0.2425,0.6642,-0.2425)
+        "home_pose":    (0.2160, 0.2952, 0.5297, 0.6642, -0.2425, 0.6642, -0.2425),
         "workspace":    {"x": (-0.30, 0.30), "y": (0.05, 0.45), "z": (0.05, 0.65)},
         "cmd_topic":    "/left_joint_trajectory_controller/joint_trajectory",
         "latency_topic":"/left/delta_ik_latency_ms",
