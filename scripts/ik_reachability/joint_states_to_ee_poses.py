@@ -367,7 +367,36 @@ def main():
         help=f"Topic to read joint states from (default: {FOLLOWER_TOPIC})")
     parser.add_argument("--merge",    default=None, metavar="PATH",
         help="(folder mode) Also write one combined waypoints CSV from all files")
+    parser.add_argument("--joints", default=None,
+        help="7 joint angles (comma-separated) for direct FK, e.g. '0,0,0,1.5708,0,0,0'")
+    parser.add_argument("--deg", action="store_true",
+        help="Interpret --joints values as degrees (default: radians)")
     args = parser.parse_args()
+
+    # ── Direct FK mode: --joints ────────────────────────────────────────────
+    if args.joints is not None:
+        q_raw = [float(v) for v in args.joints.split(",")]
+        if len(q_raw) != 7:
+            sys.exit(f"ERROR: --joints requires exactly 7 values, got {len(q_raw)}")
+        q = [math.radians(v) for v in q_raw] if args.deg else q_raw
+        T = compute_fk(q, args.arm)
+        px, py, pz      = T[0, 3], T[1, 3], T[2, 3]
+        qx, qy, qz, qw = mat_to_quat(T[:3, :3])
+        roll, pitch, yaw = mat_to_rpy(T[:3, :3])
+        print(f"\nFK  arm={args.arm}")
+        print(f"  Input  (deg): {[round(math.degrees(v), 2) for v in q]}")
+        print(f"  Input  (rad): {[round(v, 6) for v in q]}")
+        print(f"  EE xyz : ({px:.6f}, {py:.6f}, {pz:.6f})")
+        print(f"  EE quat: qx={qx:.6f}  qy={qy:.6f}  qz={qz:.6f}  qw={qw:.6f}")
+        r_d = math.degrees(roll); p_d = math.degrees(pitch); y_d = math.degrees(yaw)
+        print(f"  EE RPY : roll={r_d:.2f}°  pitch={p_d:.2f}°  yaw={y_d:.2f}°")
+        print()
+        print("  # Paste into _ARM_CONFIG:")
+        q_rounded = [round(v, 4) for v in q]
+        print(f"  \"home_joints\": {q_rounded},")
+        print(f"  \"home_pose\":   ({px:.4f}, {py:.4f}, {pz:.4f}, "
+              f"{qx:.4f}, {qy:.4f}, {qz:.4f}, {qw:.4f}),")
+        return
 
     # Real-time mode: no input file needed
     if args.realtime:
