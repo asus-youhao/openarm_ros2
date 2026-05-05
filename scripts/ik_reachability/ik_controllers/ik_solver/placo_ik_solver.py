@@ -89,11 +89,12 @@ _HUMAN_RIGHT = {
 }
 _HUMAN_LEFT = {
     # pref=-0.7 for joint2: LEFT arm URDF is mirrored (j2_left=-j2_right)
+    # Safety limits mirrored from RIGHT: j1[-1.500,+1.396] j2[-1.600,0.000] j3[0.000,+1.571] j4 same
     # Format: (pref, hard_lo, hard_hi, joints_weight)
-    "openarm_left_joint1": (0.000,   -3.491,  1.396, 0.15),  # j1 URDF[-200°,+80°]
-    "openarm_left_joint2": (-0.700,  -3.316,  0.175, 0.25),  # j2 pref=-0.7! URDF[-190°,+10°]
-    "openarm_left_joint3": (0.000,   -1.571,  1.571, 0.80),  # j3 full range [-90°,+90°]
-    "openarm_left_joint4": (1.5708,   0.000,  2.444, 0.08),  # j4 URDF[0°,+140°]
+    "openarm_left_joint1": (0.000,   -1.500,  1.396, 0.15),  # mirror RIGHT [-1.396,+1.500]
+    "openarm_left_joint2": (-0.700,  -1.600,  0.000, 0.25),  # mirror RIGHT [0.000,+1.600]
+    "openarm_left_joint3": (0.000,    0.000,  1.571, 0.80),  # mirror RIGHT [-1.571,0.000]
+    "openarm_left_joint4": (1.5708,   0.250,  2.200, 0.08),  # same as right
     "openarm_left_joint5": (0.000,   -1.571,  1.571, 0.03),  # j5
     "openarm_left_joint6": (0.000,   -0.785,  0.785, 0.03),  # j6
     "openarm_left_joint7": (0.000,   -1.571,  1.571, 0.03),  # j7 axis=0 -1 0

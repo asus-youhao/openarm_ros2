@@ -73,10 +73,10 @@ _RIGHT_CFG: List[JointCfg] = [
 # URDF j2_left: limits[-190°,+10°], pref=-0.7 (mirrors right j2=+0.7)
 # URDF j1_left: limits[-200°,+80°]  j7_left: axis=0 -1 0 (mirrored Y)
 _LEFT_CFG: List[JointCfg] = [
-    JointCfg( 0.0000, -1.3000,  0.3000, -3.4907,  1.3963, 3.0, "j1_shoulder_yaw"),
-    JointCfg(-0.7000, -1.6000,  0.0000, -3.3161,  0.1745, 4.0, "j2_shoulder_pitch_pref=-0.7"),
-    JointCfg( 0.0000, -1.5708,  0.3000, -1.5708,  1.5708, 8.0, "j3_upperarm_yaw_j3=0_fwd"),
-    JointCfg( 1.5708,  0.5000,  2.1000,  0.0000,  2.4435, 2.0, "j4_elbow_flex_90deg"),
+    JointCfg( 0.0000, -0.9000,  0.4000, -1.5000,  1.3963, 3.0, "j1_shoulder_yaw"),
+    JointCfg(-0.7000, -1.5000,  0.0000, -1.6000,  0.0000, 4.0, "j2_shoulder_pitch_pref=-0.7"),
+    JointCfg( 0.0000,  0.2000,  1.5708,  0.0000,  1.5800, 8.0, "j3_upperarm_yaw_j3=0_fwd"),
+    JointCfg( 1.5708,  0.5000,  2.1000,  0.2500,  2.2000, 2.0, "j4_elbow_flex_90deg"),
     JointCfg( 0.0000, -1.5708,  1.5708, -1.5708,  1.5708, 0.8, "j5_forearm_roll"),
     JointCfg( 0.0000, -0.7854,  0.7854, -0.7854,  0.7854, 0.8, "j6_wrist_yaw"),
     JointCfg( 0.0000, -1.5708,  1.5708, -1.5708,  1.5708, 1.0, "j7_wrist_pitch_axis_mirrored"),
