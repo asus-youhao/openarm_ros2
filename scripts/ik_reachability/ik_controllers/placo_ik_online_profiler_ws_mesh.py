@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-placo_ik_online_profiler.py
-===========================
-與 tracker_ee_delta_ik_backend.py --pattern ee_delta --solver placo 完全等價，
-但加入深度 profiling：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
+placo_ik_online_profiler_ws_mesh.py
+===================================
+基於 placo_ik_online_profiler.py，但將矩形 workspace clamp
+替換為由 placo_ws_analyze.WorkspaceMesh (.npz) 驅動的真實形狀 clamp。
+
+  --ws-mesh <path.npz>   載入掃描產生的 WorkspaceMesh（取代矩形 box）
+  --ws-mesh-or  0.0      最低 orient_rate 門檻（若 npz 缺少時從 CSV rebuild）
+
+原有深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
 並揭露為何原版測到 20-30 ms。
 
 【為什麼原版是 20-30 ms？】
@@ -63,6 +68,7 @@ import os as _os, sys as _sys
 _DIR    = _os.path.dirname(_os.path.abspath(__file__))
 _PARENT = _os.path.dirname(_DIR)          # ik_reachability/
 _sys.path.insert(0, _PARENT)              # for rclpy / ROS imports
+_sys.path.insert(0, _DIR)                 # for kbd_controller.py
 _sys.path.insert(0, _os.path.join(_DIR, "ik_solver"))  # placo_ik_solver.py
 
 import argparse
@@ -70,6 +76,8 @@ import csv
 import datetime
 import json
 import math
+import os
+import sys
 import threading
 import time
 from typing import Dict, List, Optional, Tuple
@@ -93,6 +101,8 @@ from placo_ik_solver import (
     _ARM_SEEDS,
     _quat_to_rot,
 )
+from placo_ws_analyze import WorkspaceMesh
+from kbd_controller import KbdController
 
 # ── ARM config（mirrors tracker_ee_delta_ik_backend.py）─────────────────────
 _ARM_CONFIG = {
@@ -100,9 +110,9 @@ _ARM_CONFIG = {
         "joint_names":  [f"openarm_left_joint{i}"  for i in range(1, 8)],
         "base_link":    "world",
         "ee_link":      "openarm_left_link7",
-        "home_joints":  [0.0, -0.7, 0.0, 1.5708, 0.0, 0.0, 0.0],
+        "home_joints":  [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":    (0.2160, 0.2952, 0.5297, 0.6642, -0.2425, 0.6642, -0.2425),
-        "workspace":    {"x": (-0.20, 0.40), "y": (0.05, 0.45), "z": (0.05, 0.65)},
+        "workspace":    {"x": (-0.20, 0.42), "y": (0.05, 0.45), "z": (0.35, 0.8)},
         "cmd_topic":    "/left_joint_trajectory_controller/joint_trajectory",
         "latency_topic":"/left/delta_ik_latency_ms",
         "profile_topic":"/left/placo_profile",
@@ -112,9 +122,9 @@ _ARM_CONFIG = {
         "joint_names":  [f"openarm_right_joint{i}" for i in range(1, 8)],
         "base_link":    "world",
         "ee_link":      "openarm_right_link7",
-        "home_joints":  [0.0, 0.7, 0.0, 1.5708, 0.0, 0.0, 0.0],
+        "home_joints":  [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":    (0.2160, -0.2952, 0.5297, 0.6642, 0.2425, 0.6642, 0.2425),
-        "workspace":    {"x": (-0.20, 0.40), "y": (-0.45, -0.05), "z": (0.05, 0.65)},
+        "workspace":    {"x": (-0.20, 0.42), "y": (-0.45, -0.05), "z": (0.35, 0.8)},
         "cmd_topic":    "/right_joint_trajectory_controller/joint_trajectory",
         "latency_topic":"/right/delta_ik_latency_ms",
         "profile_topic":"/right/placo_profile",
@@ -130,6 +140,8 @@ _W_ORI     = 0.3
 _W_JOINTS  = 1e-4
 _MAX_ITER  = 250
 _DT        = 0.010
+
+# ── (KbdController moved to kbd_controller.py) ───────────────────────────────
 
 # ── Resource helpers ─────────────────────────────────────────────────────────
 def _mem_rss_kb() -> int:
@@ -329,7 +341,7 @@ class PlacoOnlineProfiler(Node):
     """
 
     def __init__(self, args):
-        super().__init__("placo_ik_online_profiler")
+        super().__init__("placo_ik_online_profiler_ws_mesh")
         self.args = args
         cfg = _ARM_CONFIG[args.arm]
         self.cfg = cfg
@@ -367,6 +379,15 @@ class PlacoOnlineProfiler(Node):
         # Workspace clamp toggle
         self._ws_clamp = not getattr(args, "no_ws_clamp", False)
 
+        # WorkspaceMesh (replaces rectangular box clamp when provided)
+        self._ws_mesh: Optional[WorkspaceMesh] = None
+        npz_path = getattr(args, "ws_mesh", None)
+        if npz_path:
+            if not os.path.isfile(npz_path):
+                raise FileNotFoundError(f"--ws-mesh file not found: {npz_path}")
+            self._ws_mesh = WorkspaceMesh.load(npz_path)
+            self._ws_clamp = True  # mesh clamp always active when loaded
+
         # URDF + placo session
         urdf = _find_urdf()
         self._placo_session = PlacoSession(
@@ -401,6 +422,11 @@ class PlacoOnlineProfiler(Node):
         self._pending    = None
         self._msg_count  = 0
 
+        # Keyboard controller
+        self._kbd = KbdController(
+            init_mode="keyboard" if getattr(args, "keyboard", False) else "tracker"
+        )
+
         # CSV
         self._csv_fh     = None
         self._csv_writer = None
@@ -431,13 +457,26 @@ class PlacoOnlineProfiler(Node):
         print(f"  cmd topic:      {cfg['cmd_topic']}")
         print(f"  profile topic:  {cfg['profile_topic']}")
         print(f"  CSV: {csv_path}")
-        clamp_str = "ON" if self._ws_clamp else "OFF (--no-ws-clamp)"
+        if self._ws_mesh is not None:
+            summ = self._ws_mesh.summary()
+            clamp_str = (
+                f"WorkspaceMesh  {summ['n_reachable_voxels']} voxels  "
+                f"step={summ['step_m']*100:.0f}cm  "
+                f"vol~{summ['total_volume_cm3']:.0f}cm³"
+            )
+        else:
+            clamp_str = "rectangular box (no --ws-mesh)" if self._ws_clamp else "OFF"
         print(f"  workspace clamp: {clamp_str}")
         print(f"{'═'*65}")
+        print(f"  Scale presets: 1=0.10× 2=0.25× 3=0.50× 4=0.75× 5=1.00×(def)")
+        print(f"  Scale presets: 6=1.50× 7=2.00× 8=3.00× 9=5.00×   +/-=fine  0=reset")
+        print(f"  t=mode  p=pause  r=reset-ref  v=verbose  h=home  Ctrl-C=quit  ?=help")
+        print(f"  KEYBOARD: w/s=Y  a/d=X  q/e=Z  i/k=pitch  j/l=yaw  u/o=roll")
+        print(f"{'═'*65}")
         print(f"\n  {'step':>5}  {'ik_ms':>7}  {'robot':>6}  {'loop':>6}  {'iters':>5}  "
-              f"{'pos_mm':>6}  {'tr_mm':>6}  {'mem_MB':>6}  {'ddl':>4}")
+              f"{'pos_mm':>6}  {'tr_mm':>6}  {'mem_MB':>6}  {'scale':>6}  {'ddl':>4}")
         print(f"  {'─'*5}  {'─'*7}  {'─'*6}  {'─'*6}  {'─'*5}  "
-              f"{'─'*6}  {'─'*6}  {'─'*6}  {'─'*4}")
+              f"{'─'*6}  {'─'*6}  {'─'*6}  {'─'*6}  {'─'*4}")
 
     # ── Callbacks ──────────────────────────────────────────────────────────────
     def _js_cb(self, msg: JointState):
@@ -557,6 +596,9 @@ class PlacoOnlineProfiler(Node):
         """Main ee_delta loop — identical to run_pattern_ee_delta() in backend."""
         dt_sec = 1.0 / self._rate_hz
 
+        # Start keyboard controller
+        self._kbd.start()
+
         # Sync from TF + joint_states at start
         print("\n  Syncing from TF2 and /joint_states...")
         time.sleep(0.5)
@@ -585,59 +627,111 @@ class PlacoOnlineProfiler(Node):
         while rclpy.ok():
             t_step = time.perf_counter()
 
+            # ── Keyboard events ────────────────────────────────────────────
+            kbd = self._kbd
+            if kbd.request_quit:
+                print("\n  [kbd] quit — exiting run loop")
+                break
+            if kbd.request_home:
+                kbd.request_home = False
+                print("\n  [kbd] sending home...")
+                self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
+            if kbd.reset_ref:
+                kbd.reset_ref = False
+                self._ee_delta_ref_xyz = None
+                self._ee_delta_ref_q   = None
+                self._ee_delta_last_t  = None
+                print("\n  [kbd] session reference reset")
+
             with self._delta_lock:
-                msg = self._pending
+                tracker_msg = self._pending
                 self._pending = None
+
+            # ── Select input source: tracker topic or keyboard ─────────────
+            _kbd_mode = kbd.mode
+            if _kbd_mode == "keyboard":
+                tracker_msg = None                         # discard tracker topic
+                xyz_d = kbd.pop_xyz()                      # (dx,dy,dz) scaled, or None
+                rpy_d = kbd.pop_rpy()                      # (dr,dp,dy) scaled, or None
+                msg   = (xyz_d, rpy_d) if (xyz_d is not None or rpy_d is not None) else None
+            else:
+                xyz_d = rpy_d = None
+                msg   = tracker_msg
 
             if msg is None:
                 idle_s = time.time() - _no_msg_t
                 if idle_s >= 2.0:
                     _no_msg_t = time.time()
+                    paused_str = "  [PAUSED]" if kbd.paused else ""
                     print(
-                        f"\r  [WAIT] no ee_delta  cb={self._msg_count}"
+                        f"\r  [WAIT] {_kbd_mode}{paused_str}  cb={self._msg_count}"
                         f"  steps={step_count}  idle={idle_s:.0f}s"
+                        f"  scale={kbd.scale:.2f}×"
                         f"  pose=[{self._pose[0]:.3f},{self._pose[1]:.3f},{self._pose[2]:.3f}]",
                         end="", flush=True,
                     )
-            elif isinstance(msg, PoseStamped):
+            elif (isinstance(msg, PoseStamped) or isinstance(msg, tuple)) and not kbd.paused:
                 _no_msg_t = time.time()
-                dx = msg.pose.position.x
-                dy = msg.pose.position.y
-                dz = msg.pose.position.z
-                dq = (msg.pose.orientation.x, msg.pose.orientation.y,
-                      msg.pose.orientation.z, msg.pose.orientation.w)
-                if abs(dq[3]) < 0.01 and all(abs(v) < 0.01 for v in dq[:3]):
-                    dq = (0., 0., 0., 1.)
-
                 t_wall = time.time()
-                gap = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
-                is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
-                self._ee_delta_last_t = t_wall
-
-                if is_new:
-                    ref = self._get_tf(0.3)
-                    if ref is not None:
-                        self._ee_delta_ref_xyz = tuple(ref[:3])
-                        self._ee_delta_ref_q   = tuple(ref[3:7])
-                        self._pose             = list(ref)
-                        print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  (TF)")
-                    else:
-                        self._ee_delta_ref_xyz = tuple(self._pose[:3])
-                        self._ee_delta_ref_q   = tuple(self._pose[3:7])
-
-                # Build target pose
-                if self._ee_delta_ref_xyz is not None:
-                    base_xyz = self._ee_delta_ref_xyz
-                    base_q   = self._ee_delta_ref_q
-                else:
-                    base_xyz = tuple(self._pose[:3])
+                if _kbd_mode == "keyboard":
+                    # ── Keyboard direct: incremental step from last IK pose ─
+                    # xyz_d / rpy_d are already scale-applied by KbdController
+                    xyz_d, rpy_d = msg
+                    dx, dy, dz = xyz_d if xyz_d is not None else (0., 0., 0.)
+                    dq = _qfrom_rpy(*rpy_d) if rpy_d is not None else (0., 0., 0., 1.)
+                    base_xyz = tuple(self._pose[:3])   # incremental base
                     base_q   = tuple(self._pose[3:7])
+                    dx_arm   = (dx, dy, dz)             # already in base frame
+                else:
+                    # ── Tracker topic: absolute offset from session ref ──────
+                    dx = msg.pose.position.x
+                    dy = msg.pose.position.y
+                    dz = msg.pose.position.z
 
-                dx_arm = _rotate_vec((dx, dy, dz), self._calib_q)
+                    # ── Apply keyboard scale to delta ────────────────────────
+                    _s = kbd.scale
+                    dx *= _s
+                    dy *= _s
+                    dz *= _s
+                    dq = (msg.pose.orientation.x, msg.pose.orientation.y,
+                          msg.pose.orientation.z, msg.pose.orientation.w)
+                    if abs(dq[3]) < 0.01 and all(abs(v) < 0.01 for v in dq[:3]):
+                        dq = (0., 0., 0., 1.)
+
+                    gap = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
+                    is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
+                    self._ee_delta_last_t = t_wall
+
+                    if is_new:
+                        ref = self._get_tf(0.3)
+                        if ref is not None:
+                            self._ee_delta_ref_xyz = tuple(ref[:3])
+                            self._ee_delta_ref_q   = tuple(ref[3:7])
+                            self._pose             = list(ref)
+                            print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  (TF)")
+                        else:
+                            self._ee_delta_ref_xyz = tuple(self._pose[:3])
+                            self._ee_delta_ref_q   = tuple(self._pose[3:7])
+
+                    # Build target pose
+                    if self._ee_delta_ref_xyz is not None:
+                        base_xyz = self._ee_delta_ref_xyz
+                        base_q   = self._ee_delta_ref_q
+                    else:
+                        base_xyz = tuple(self._pose[:3])
+                        base_q   = tuple(self._pose[3:7])
+
+                    dx_arm = _rotate_vec((dx, dy, dz), self._calib_q)
+
                 raw_x  = base_xyz[0] + dx_arm[0]
                 raw_y  = base_xyz[1] + dx_arm[1]
                 raw_z  = base_xyz[2] + dx_arm[2]
-                if self._ws_clamp:
+                if self._ws_mesh is not None:
+                    # Real-shape clamp via WorkspaceMesh KDTree
+                    clamped, _inside = self._ws_mesh.clamp(
+                        np.array([raw_x, raw_y, raw_z]))
+                    new_x, new_y, new_z = float(clamped[0]), float(clamped[1]), float(clamped[2])
+                elif self._ws_clamp:
                     new_x = max(ws["x"][0], min(ws["x"][1], raw_x))
                     new_y = max(ws["y"][0], min(ws["y"][1], raw_y))
                     new_z = max(ws["z"][0], min(ws["z"][1], raw_z))
@@ -724,7 +818,7 @@ class PlacoOnlineProfiler(Node):
                 self._records.append(row)
 
                 # ── Print every step ───────────────────────────────────────
-                if step_count % 5 == 0 or getattr(args, "verbose", False):
+                if step_count % 5 == 0 or kbd.verbose or getattr(args, "verbose", False):
                     tag = "✓" if r["success"] else "✗"
                     dlm = "!" if deadline_missed else " "
                     print(
@@ -736,6 +830,7 @@ class PlacoOnlineProfiler(Node):
                         f"  {r['pos_err_mm']:6.2f}"
                         f"  {track_err:6.2f}"
                         f"  {r['mem_kb']/1024:6.1f}"
+                        f"  ×{kbd.scale:.2f}"
                         f"  {dlm}{tag}",
                         end="", flush=True,
                     )
@@ -917,6 +1012,7 @@ class PlacoOnlineProfiler(Node):
         print(f"  [plot] Saved → {plot_path}")
 
     def destroy_node(self):
+        self._kbd.stop()
         if self._csv_fh:
             self._csv_fh.close()
         super().destroy_node()
@@ -954,14 +1050,28 @@ def _parse_args():
                    help="Send arm to home position (with TF confirmation) before starting")
     p.add_argument("--no-ws-clamp", action="store_true", dest="no_ws_clamp",
                    help="Disable workspace XYZ clamping (allow IK to target any reachable pose)")
+    p.add_argument("--ws-mesh",    default=None, dest="ws_mesh",
+                   help="Path to WorkspaceMesh .npz (from placo_ws_analyze.py). "
+                        "Replaces rectangular box clamp with real scanned workspace shape.")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every step (not just every 5th)")
+    p.add_argument("--keyboard",  action="store_true",
+                   help="Start in KEYBOARD mode (w/s/a/d/q/e) instead of tracker mode")
     return p.parse_args()
 
 
 def main():
     global args
     args = _parse_args()
+    # Convenience: auto-find npz for the selected arm if not specified
+    if not args.ws_mesh:
+        _auto = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "results", f"reachability_{args.arm}_ws.npz",
+        )
+        if os.path.isfile(_auto):
+            args.ws_mesh = _auto
+            print(f"  [ws_mesh] auto-detected: {_auto}")
 
     rclpy.init()
     node = PlacoOnlineProfiler(args)
