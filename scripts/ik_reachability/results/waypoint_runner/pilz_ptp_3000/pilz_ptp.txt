@@ -1,0 +1,23 @@
+=================================================================
+ Split Timing — right arm  (3000 ok / 0 fail / 3000 total)
+ Planner: Pilz-PTP
+=================================================================
+  Pilz-PTP planning (IK + path + time-param)          
+    mean=4ms  median=4ms  P95=5ms  max=26ms  → ~246 Hz
+  Planned traj duration (TOTG/IPTP output)      
+    mean=0ms  median=0ms  P95=0ms  max=0ms  → ~10000 Hz
+  Robot motion   (actual execution wall-clock)  
+    mean=511ms  median=183ms  P95=1602ms  max=2302ms  → ~2 Hz
+  Total          (OMPL + motion)                
+    mean=515ms  median=187ms  P95=1608ms  max=2313ms  → ~2 Hz
+
+  Trajectory waypoints  : mean=0  min=0  max=0
+  Joint-space path len  : mean=0.520 rad  P95=2.589 rad
+  OMPL / motion ratio   : mean=0.02×  (OMPL is 2% of total time)
+
+  Pilz-PTP within 500 Hz (2.0 ms): 0.0%
+  Pilz-PTP within 200 Hz (5.0 ms): 85.9%
+  Pilz-PTP within 100 Hz (10.0 ms): 99.9%
+  Pilz-PTP within 50 Hz (20.0 ms): 100.0%
+=================================================================
+

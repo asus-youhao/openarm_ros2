@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!--
+　Copyright 2025 Enactic, Inc.
+
+　Licensed under the Apache License, Version 2.0 (the "License");
+　you may not use this file except in compliance with the License.
+　You may obtain a copy of the License at
+
+　    http://www.apache.org/licenses/LICENSE-2.0
+
+　Unless required by applicable law or agreed to in writing, software
+　distributed under the License is distributed on an "AS IS" BASIS,
+　WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+　See the License for the specific language governing permissions and
+　limitations under the License.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="openarm_bimanual_o6">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="hardware_type" default="real" />
+    <xacro:arg name="use_fake_hardware" default="false" />
+    <xacro:arg name="right_can_interface" default="can2" />
+    <xacro:arg name="left_can_interface" default="can3" />
+    <xacro:arg name="right_o6_can_interface" default="can0" />
+    <xacro:arg name="left_o6_can_interface" default="can1" />
+
+    <!--
+    Import openarm bimanual urdf with O6 hands 
+    This version explicitly passes O6 hand parameters
+    -->
+    <xacro:include filename="$(find openarm_description)/urdf/robot/v10.urdf.xacro" />
+
+    <!-- 
+    Call the v10 macro with bimanual=true and ee_type=o6 
+    Note: This requires v10.urdf.xacro to have a proper macro definition
+    For now, we use a simpler approach: directly include the URDF
+    -->
+    <xacro:property name="bimanual" value="true" />
+    <xacro:property name="hand" value="true" />
+    <xacro:property name="ee_type" value="o6" />
+    <xacro:property name="ros2_control" value="false" />  <!-- MoveIt doesn't need ros2_control tags -->
+    <xacro:property name="arm_type" value="v10" />
+
+    <link name="base_link"/>
+    <joint name="world_to_pedestal" type="fixed">
+        <parent link="world"/>
+        <child link="base_link"/>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+</robot>

@@ -1,0 +1,23 @@
+=================================================================
+ Split Timing — right arm  (3000 ok / 0 fail / 3000 total)
+ Planner: OMPL
+=================================================================
+  OMPL planning (IK + path + time-param)          
+    mean=31ms  median=31ms  P95=46ms  max=72ms  → ~33 Hz
+  Planned traj duration (TOTG/IPTP output)      
+    mean=0ms  median=0ms  P95=0ms  max=0ms  → ~10000 Hz
+  Robot motion   (actual execution wall-clock)  
+    mean=1181ms  median=1252ms  P95=2070ms  max=3189ms  → ~1 Hz
+  Total          (OMPL + motion)                
+    mean=1211ms  median=1288ms  P95=2109ms  max=3228ms  → ~1 Hz
+
+  Trajectory waypoints  : mean=0  min=0  max=0
+  Joint-space path len  : mean=1.900 rad  P95=4.600 rad
+  OMPL / motion ratio   : mean=0.04×  (OMPL is 4% of total time)
+
+  OMPL within 10 Hz (100.0 ms): 100.0%
+  OMPL within 5 Hz (200.0 ms): 100.0%
+  OMPL within 2 Hz (500.0 ms): 100.0%
+  OMPL within 1 Hz (1000.0 ms): 100.0%
+=================================================================
+
