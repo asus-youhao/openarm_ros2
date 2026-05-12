@@ -1,0 +1,35 @@
+{
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/home/asus/ros2_ws_yh/install/xr_msgs/local/lib/python3.10/dist-packages",
+        "/home/asus/ros2_ws_yh/build/setting_info",
+        "/home/asus/ros2_ws_yh/install/setting_info/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/pressure_diagram",
+        "/home/asus/ros2_ws_yh/install/pressure_diagram/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/gui_control",
+        "/home/asus/ros2_ws_yh/install/gui_control/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/graphic_display",
+        "/home/asus/ros2_ws_yh/install/graphic_display/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/linker_hand_ros2_sdk",
+        "/home/asus/ros2_ws_yh/install/linker_hand_ros2_sdk/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/install/arm_control/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/asus/ros2_ws_yh/install/xr_msgs/local/lib/python3.10/dist-packages",
+        "/home/asus/ros2_ws_yh/build/setting_info",
+        "/home/asus/ros2_ws_yh/install/setting_info/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/pressure_diagram",
+        "/home/asus/ros2_ws_yh/install/pressure_diagram/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/gui_control",
+        "/home/asus/ros2_ws_yh/install/gui_control/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/graphic_display",
+        "/home/asus/ros2_ws_yh/install/graphic_display/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/build/linker_hand_ros2_sdk",
+        "/home/asus/ros2_ws_yh/install/linker_hand_ros2_sdk/lib/python3.10/site-packages",
+        "/home/asus/ros2_ws_yh/install/arm_control/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}
