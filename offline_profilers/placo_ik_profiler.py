@@ -62,10 +62,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 # ── Path setup ────────────────────────────────────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_DIR, "ik_solver"))   # placo_ik_solver.py
+_HERE = os.path.dirname(os.path.abspath(__file__))             # offline_profilers/
+_ROOT = os.path.dirname(_HERE)                                 # project root
+sys.path.insert(0, _ROOT)                                      # paths.py
+sys.path.insert(0, os.path.join(_ROOT, "ik_solver"))           # placo_ik_solver
 
-sys.path.insert(0, _DIR)   # for paths.py
 from paths import today_dir as _today_dir, timestamp as _timestamp  # noqa: E402
 from placo_ik_solver import (  # noqa: E402
     _find_urdf,

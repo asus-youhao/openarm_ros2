@@ -65,11 +65,12 @@ CSV columns（延伸自原版）：
 
 # ── Path setup ───────────────────────────────────────────────────────────────
 import os as _os, sys as _sys
-_DIR    = _os.path.dirname(_os.path.abspath(__file__))
-_PARENT = _os.path.dirname(_DIR)
-_sys.path.insert(0, _PARENT)
-_sys.path.insert(0, _DIR)
-_sys.path.insert(0, _os.path.join(_DIR, "ik_solver"))
+_HERE = _os.path.dirname(_os.path.abspath(__file__))           # ik_node/
+_ROOT = _os.path.dirname(_HERE)                                # project root
+_sys.path.insert(0, _ROOT)                                     # paths.py
+_sys.path.insert(0, _HERE)                                     # siblings: session, node
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
+_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
 
 import argparse
 import os

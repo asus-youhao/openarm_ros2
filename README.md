@@ -8,17 +8,49 @@
 ## 目錄結構
 
 ```
-controllers/
-├── README.md                          ← 本文件
-├── tracker_ee_delta_ik_backend.py     ← ★ 主推薦：4 種 IK 後端（scipy/pybullet/pinocchio/placo）
-├── tracker_ee_delta_ik_controller.py       ← 基礎版（MoveIt /compute_ik）
-├── tracker_ee_delta_ik_controller_tf.py    ← TF2 版（MoveIt + TF 初始化）
-├── tracker_ee_delta_ik_controller_tf copy.py  ← 舊備份（同上）
-├── tracker_ee_delta_ik_forward_reach.py    ← Forward-Reach IK（MoveIt + 限制）
-├── tracker_ee_delta_ik_forward_reach_tf.py ← Forward-Reach + TF2（最完整舊版）
-├── tracker_ee_delta_ik_natural.py          ← NaturalIK 防肘部上飄版
-└── tracker_ee_delta_ik_pure.py             ← 純 Python IK（無需 MoveIt）
+ik_controllers/
+├── README.md              ← 本文件
+├── paths.py               ← 統一輸出路徑 helper（csv_path / png_for / ws_mesh_path）
+│
+├── docs/                  ← 設計與分析文件（見 docs/README.md）
+│
+├── trackers/              ← VR tracker → ROS topic（上游）
+│   ├── tracker_ee_absolute.py
+│   └── tracker_ee_delta_ik_backend.py  ★ 多 IK 後端統一控制器
+│
+├── ik_node/               ← ROS IK 節點 + 即時 profiler
+│   ├── placo_ik_node.py                       核心 ROS Node + AsyncCsvWriter + TfPoller
+│   ├── placo_ik_session.py                    純 Python IK session（無 ROS）
+│   ├── kbd_controller.py                      鍵盤 daemon
+│   ├── placo_ik_online_profiler.py            delta 模式 profiler
+│   ├── placo_ik_online_profiler_ws_mesh.py    delta + WorkspaceMesh clamp
+│   ├── placo_ik_absolute_profiler.py          絕對座標 profiler
+│   └── placo_ik_absolute_profiler_ws_mesh.py  絕對 + WorkspaceMesh clamp
+│
+├── ws_mesh/               ← WorkspaceMesh 工具集（離線，無 ROS）
+│   ├── placo_ws_reachability.py    掃描可達空間
+│   ├── placo_ws_analyze.py         建立 WorkspaceMesh + .npz
+│   ├── placo_ws_view3d.py          互動 3D 視覺化
+│   └── placo_ws_clamp_benchmark.py box vs mesh clamp 速度比較
+│
+├── offline_profilers/     ← 離線 IK 基準測試（無 ROS）
+│   └── placo_ik_profiler.py
+│
+├── ik_solver/             ← solver 後端
+│   └── placo_ik_solver.py
+│
+├── archive/               ← 舊備份（保留以便回溯）
+│   ├── placo_ik_profiler_copy.py
+│   └── placo_ik_profiler_copy2.py
+│
+└── results/               ← 由 paths.py 統一管理
+    ├── YYYYMMDD/                                各日 CSV / PNG
+    ├── reachability_{arm}_ws.npz                WorkspaceMesh（auto-detect）
+    └── legacy/                                  舊散落產物
 ```
+
+> **路徑 helper（`paths.py`）**：所有 profiler/tracker 不再硬編碼 `results/yyyymmdd/...`，
+> 一律 `from paths import csv_path` → `csv_path('placo_online', arm, mode)`。
 
 ---
 

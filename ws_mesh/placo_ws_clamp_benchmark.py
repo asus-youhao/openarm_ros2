@@ -44,8 +44,10 @@ import time
 import numpy as np
 
 # ── path setup ────────────────────────────────────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _DIR)
+_HERE = os.path.dirname(os.path.abspath(__file__))             # ws_mesh/
+_ROOT = os.path.dirname(_HERE)                                 # project root
+sys.path.insert(0, _ROOT)                                      # paths.py
+sys.path.insert(0, _HERE)                                      # placo_ws_analyze sibling
 
 from paths import ws_mesh_path as _ws_mesh_path, clamp_benchmark_png as _clamp_benchmark_png
 from placo_ws_analyze import WorkspaceMesh

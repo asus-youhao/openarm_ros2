@@ -38,9 +38,10 @@ CSV columns
 
 # ── path setup ────────────────────────────────────────────────────────────────
 import os as _os, sys as _sys
-_DIR    = _os.path.dirname(_os.path.abspath(__file__))
-_SOLVER = _os.path.join(_DIR, "ik_solver")
-_sys.path.insert(0, _SOLVER)
+_HERE = _os.path.dirname(_os.path.abspath(__file__))           # ws_mesh/
+_ROOT = _os.path.dirname(_HERE)                                # project root
+_sys.path.insert(0, _ROOT)                                     # paths.py
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 
 import argparse
 import csv

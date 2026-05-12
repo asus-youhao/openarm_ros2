@@ -13,8 +13,9 @@ Fix-2 applied
 """
 
 import os as _os, sys as _sys
-_DIR = _os.path.dirname(_os.path.abspath(__file__))
-_sys.path.insert(0, _os.path.join(_DIR, "ik_solver"))
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_ROOT = _os.path.dirname(_HERE)
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
 import time
 import numpy as np

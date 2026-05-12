@@ -60,10 +60,11 @@ CSV columns（延伸自原版）：
 
 # ── Path setup（must be before any local imports）────────────────────────────
 import os as _os, sys as _sys
-_DIR    = _os.path.dirname(_os.path.abspath(__file__))
-_PARENT = _os.path.dirname(_DIR)          # ik_reachability/
-_sys.path.insert(0, _PARENT)              # for rclpy / ROS imports
-_sys.path.insert(0, _os.path.join(_DIR, "ik_solver"))  # placo_ik_solver.py
+_HERE = _os.path.dirname(_os.path.abspath(__file__))           # ik_node/
+_ROOT = _os.path.dirname(_HERE)                                # project root
+_sys.path.insert(0, _ROOT)                                     # paths.py
+_sys.path.insert(0, _HERE)                                     # siblings
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 
 import argparse
 import csv

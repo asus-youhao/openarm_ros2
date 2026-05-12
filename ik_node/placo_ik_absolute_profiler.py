@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """
-placo_ik_absolute_profiler_ws_mesh.py
-=====================================
-placo_ik_absolute_profiler.py 的 WorkspaceMesh 版本。
-將矩形 workspace box clamp 替換為由 placo_ws_analyze.WorkspaceMesh (.npz)
-驅動的真實形狀 clamp。
-
-  --ws-mesh <path.npz>   載入掃描產生的 WorkspaceMesh（取代矩形 box）
-
-原有絕對座標 profiling 完全保留（auto-calibration offset, PlacoSession）。
+placo_ik_absolute_profiler.py
+=============================
+placo_ik_online_profiler.py 的絕對座標版本。
 
 接收 tracker_ee_absolute.py 發布的 /ee_target/{arm} (PoseStamped)
   → pose.position.{x,y,z}   = 絕對 XYZ，已換算到 ROS 世界座標系 (m)
@@ -73,10 +67,11 @@ CSV columns（與 online_profiler 相同 + absolute-specific 欄位）：
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 import os as _os, sys as _sys
-_DIR    = _os.path.dirname(_os.path.abspath(__file__))
-_PARENT = _os.path.dirname(_DIR)
-_sys.path.insert(0, _PARENT)
-_sys.path.insert(0, _os.path.join(_DIR, "ik_solver"))
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_ROOT = _os.path.dirname(_HERE)
+_sys.path.insert(0, _ROOT)                                     # paths.py
+_sys.path.insert(0, _HERE)
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
 import argparse
 import csv
@@ -98,7 +93,7 @@ from std_msgs.msg import Float32, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
-from paths import csv_path as _csv_path, png_for as _png_for, ws_mesh_path as _ws_mesh_path
+from paths import csv_path as _csv_path, png_for as _png_for
 from placo_ik_solver import (
     _find_urdf,
     _HUMAN_RIGHT,
@@ -106,7 +101,6 @@ from placo_ik_solver import (
     _JOINT_NAMES,
     _quat_to_rot,
 )
-from placo_ws_analyze import WorkspaceMesh
 
 # ── ARM config ────────────────────────────────────────────────────────────────
 _ARM_CONFIG = {
@@ -168,29 +162,6 @@ def _qfrom_rpy(r, p, y):
     sr, sp, sy = math.sin(r/2), math.sin(p/2), math.sin(y/2)
     return (sr*cp*cy - cr*sp*sy, cr*sp*cy + sr*cp*sy,
             cr*cp*sy - sr*sp*cy, cr*cp*cy + sr*sp*sy)
-
-
-def _qmul(q1, q2):
-    """Hamilton product of two unit quaternions (x,y,z,w)."""
-    x1, y1, z1, w1 = q1;  x2, y2, z2, w2 = q2
-    return (w1*x2 + x1*w2 + y1*z2 - z1*y2,
-            w1*y2 - x1*z2 + y1*w2 + z1*x2,
-            w1*z2 + x1*y2 - y1*x2 + z1*w2,
-            w1*w2 - x1*x2 - y1*y2 - z1*z2)
-
-
-def _qconj(q):
-    """Conjugate (= inverse) of a unit quaternion (x,y,z,w)."""
-    return (-q[0], -q[1], -q[2], q[3])
-
-
-def _qrpy_deg(q):
-    """(x,y,z,w) → (roll, pitch, yaw) degrees."""
-    qx, qy, qz, qw = q
-    roll  = math.degrees(math.atan2(2*(qw*qx + qy*qz), 1 - 2*(qx**2 + qy**2)))
-    pitch = math.degrees(math.asin(max(-1., min(1., 2*(qw*qy - qz*qx)))))
-    yaw   = math.degrees(math.atan2(2*(qw*qz + qx*qy), 1 - 2*(qy**2 + qz**2)))
-    return roll, pitch, yaw
 
 
 # ── PlacoSession（identical to placo_ik_online_profiler.py）─────────────────
@@ -320,7 +291,7 @@ class PlacoAbsoluteProfiler(Node):
     """
 
     def __init__(self, args):
-        super().__init__("placo_ik_absolute_profiler_ws_mesh")
+        super().__init__("placo_ik_absolute_profiler")
         self.args = args
         cfg = _ARM_CONFIG[args.arm]
         self.cfg = cfg
@@ -354,19 +325,6 @@ class PlacoAbsoluteProfiler(Node):
 
         self._first_tracker_xyz  = None
         self._calib_lock         = threading.Lock()
-        # Orientation calibration fields
-        self._first_tracker_quat = (0., 0., 0., 1.)
-        self._q_offset           = (0., 0., 0., 1.)  # arm_home_R ⊗ conj(tracker_startup_R)
-        self._rot_calib_done     = (getattr(args, "no_rot", False)
-                                    or getattr(args, "no_auto_calib", False))
-
-        # WorkspaceMesh (replaces rectangular box clamp when provided)
-        self._ws_mesh: Optional[WorkspaceMesh] = None
-        npz_path = getattr(args, "ws_mesh", None)
-        if npz_path:
-            if not os.path.isfile(npz_path):
-                raise FileNotFoundError(f"--ws-mesh file not found: {npz_path}")
-            self._ws_mesh = WorkspaceMesh.load(npz_path)
 
         # Rate / deadline
         self._rate_hz     = float(getattr(args, "rate", 20.0))
@@ -415,23 +373,13 @@ class PlacoAbsoluteProfiler(Node):
         self._csv_path   = csv_p
 
         print(f"\n{'═'*65}")
-        print(f"  Placo IK Absolute Profiler  [WorkspaceMesh]")
+        print(f"  Placo IK Absolute Profiler")
         print(f"  arm={args.arm}  mode={'rebuild' if args.rebuild else 'CACHED+early_exit'}")
-        if self._ws_mesh is not None:
-            summ = self._ws_mesh.summary()
-            clamp_str = (f"WorkspaceMesh  {summ['n_reachable_voxels']} voxels  "
-                         f"step={summ['step_m']*100:.0f}cm  "
-                         f"vol~{summ['total_volume_cm3']:.0f}cm³")
-        else:
-            clamp_str = "rectangular box (no --ws-mesh)"
         print(f"  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms")
         print(f"  abs topic:      {cfg['abs_topic']}")
         print(f"  cmd topic:      {cfg['cmd_topic']}")
         print(f"  profile topic:  {cfg['profile_topic']}")
         print(f"  CSV: {csv_path}")
-        print(f"  workspace clamp: {clamp_str}")
-        no_rot_mode = getattr(args, "no_rot", False)
-        print(f"  orientation    : {'FIXED home (--no-rot, W_ORI=0)  <- Step 1' if no_rot_mode else 'TRACKED - q_offset auto-calib at startup  <- Step 2'}")
         print(f"{'═'*65}")
         print(f"\n  {'step':>5}  {'ik_ms':>7}  {'robot':>6}  {'loop':>6}  {'iters':>5}  "
               f"{'pos_mm':>6}  {'tr_mm':>6}  {'mem_MB':>6}  {'ddl':>4}")
@@ -464,9 +412,9 @@ class PlacoAbsoluteProfiler(Node):
             return None
 
     # ── Auto-calibration ───────────────────────────────────────────────────────
-    def _try_calibrate(self, tracker_xyz: np.ndarray, tracker_quat: tuple) -> bool:
+    def _try_calibrate(self, tracker_xyz: np.ndarray) -> bool:
         """
-        Try to complete auto-calibration (position offset + orientation q_offset).
+        Try to complete auto-calibration.
         Called from the main loop on first valid tracker message.
         Returns True when calibration is done.
         """
@@ -474,61 +422,25 @@ class PlacoAbsoluteProfiler(Node):
             if self._calib_done:
                 return True
             if self._first_tracker_xyz is None:
-                self._first_tracker_xyz  = tracker_xyz.copy()
-                self._first_tracker_quat = tracker_quat
+                self._first_tracker_xyz = tracker_xyz.copy()
 
         # Get current EE from TF
         tf_pose = self._get_tf(timeout_sec=2.0)
         if tf_pose is None:
             print("  [calib] ⚠ TF unavailable, using home_pose as reference")
             robot_xyz = np.array(self.cfg["home_pose"][:3])
-            arm_q     = tuple(self.cfg["home_pose"][3:7])
         else:
             robot_xyz = np.array(tf_pose[:3])
-            arm_q     = tuple(tf_pose[3:7])
             self._pose = list(tf_pose)
 
         with self._calib_lock:
             self._offset = robot_xyz - self._first_tracker_xyz
-            # Orientation: q_offset = arm_q ⊗ conj(tracker_startup_q)
-            # → each step: q_target = q_offset ⊗ tracker_current_q
-            self._q_offset       = _qnorm(_qmul(arm_q, _qconj(self._first_tracker_quat)))
-            self._rot_calib_done = True
-            self._calib_done     = True
+            self._calib_done = True
 
-        arm_rpy  = _qrpy_deg(arm_q)
-        trk_rpy  = _qrpy_deg(self._first_tracker_quat)
-        off_rpy  = _qrpy_deg(self._q_offset)
-        print(f"\n  [calib] ✓ position offset = [{self._offset[0]:+.4f}, "
+        print(f"\n  [calib] ✓ offset = [{self._offset[0]:+.4f}, "
               f"{self._offset[1]:+.4f}, {self._offset[2]:+.4f}] m")
-        print(f"  [calib] ✓ q_offset RPY    = "
-              f"[{off_rpy[0]:+.1f},{off_rpy[1]:+.1f},{off_rpy[2]:+.1f}]°")
-        print(f"          robot_EE_xyz = {[f'{v:.4f}' for v in robot_xyz]}")
-        print(f"          tracker_xyz  = {[f'{v:.4f}' for v in self._first_tracker_xyz]}")
-        print(f"          arm_q  RPY   = [{arm_rpy[0]:+.1f},{arm_rpy[1]:+.1f},{arm_rpy[2]:+.1f}]°")
-        print(f"          tracker RPY  = [{trk_rpy[0]:+.1f},{trk_rpy[1]:+.1f},{trk_rpy[2]:+.1f}]°")
-        return True
-
-    def _try_rot_calibrate(self, tracker_quat: tuple) -> bool:
-        """
-        Orientation-only calibration — used when position was calibrated via --offset
-        so _try_calibrate was skipped.  Non-blocking: returns False if TF not ready.
-        """
-        tf_pose = self._get_tf(timeout_sec=0.3)
-        if tf_pose is None:
-            return False
-        arm_q = tuple(tf_pose[3:7])
-        q_off = _qnorm(_qmul(arm_q, _qconj(tracker_quat)))
-        with self._calib_lock:
-            self._q_offset       = q_off
-            self._rot_calib_done = True
-        arm_rpy  = _qrpy_deg(arm_q)
-        trk_rpy  = _qrpy_deg(tracker_quat)
-        off_rpy  = _qrpy_deg(q_off)
-        print(f"\n  [rot_calib] ✓ q_offset RPY = "
-              f"[{off_rpy[0]:+.1f},{off_rpy[1]:+.1f},{off_rpy[2]:+.1f}]°")
-        print(f"              arm_q  RPY   = [{arm_rpy[0]:+.1f},{arm_rpy[1]:+.1f},{arm_rpy[2]:+.1f}]°")
-        print(f"              tracker RPY  = [{trk_rpy[0]:+.1f},{trk_rpy[1]:+.1f},{trk_rpy[2]:+.1f}]°")
+        print(f"          robot_EE_xyz   = {robot_xyz}")
+        print(f"          tracker_xyz    = {self._first_tracker_xyz}")
         return True
 
     # ── Home-first（mirrors tracker backend send_home_confirmed）──────────────
@@ -689,16 +601,12 @@ class PlacoAbsoluteProfiler(Node):
 
                 # ── Auto-calibration (first message only) ─────────────────────
                 if not self._calib_done:
-                    if not self._try_calibrate(tracker_xyz, tq):
+                    if not self._try_calibrate(tracker_xyz):
                         # Still waiting for TF; skip this step
                         sleep_s = dt_sec - (time.perf_counter() - t_step)
                         if sleep_s > 0:
                             time.sleep(sleep_s)
                         continue
-
-                # Orientation calibration (for --offset / manual position case)
-                if not self._rot_calib_done:
-                    self._try_rot_calibrate(tq)
 
                 # ── Apply calibration offset → robot world frame ──────────────
                 with self._calib_lock:
@@ -707,36 +615,21 @@ class PlacoAbsoluteProfiler(Node):
                 robot_target_xyz = tracker_xyz + offset
 
                 # ── Workspace clamping ────────────────────────────────────────
-                if self._ws_mesh is not None:
-                    # Real-shape clamp via WorkspaceMesh KDTree
-                    clamped, _inside = self._ws_mesh.clamp(
-                        robot_target_xyz)
-                    new_x, new_y, new_z = float(clamped[0]), float(clamped[1]), float(clamped[2])
-                else:
-                    new_x = max(ws["x"][0], min(ws["x"][1], robot_target_xyz[0]))
-                    new_y = max(ws["y"][0], min(ws["y"][1], robot_target_xyz[1]))
-                    new_z = max(ws["z"][0], min(ws["z"][1], robot_target_xyz[2]))
+                new_x = max(ws["x"][0], min(ws["x"][1], robot_target_xyz[0]))
+                new_y = max(ws["y"][0], min(ws["y"][1], robot_target_xyz[1]))
+                new_z = max(ws["z"][0], min(ws["z"][1], robot_target_xyz[2]))
                 target_xyz = np.array([new_x, new_y, new_z])
 
-                # Orientation: apply q_offset calibration
-                # Step 1: --no-rot -> W_ORI=0, arm keeps home orientation
-                # Step 2: q_target = q_offset * tracker_current_q
-                no_rot = getattr(self.args, "no_rot", False)
-                if no_rot:
-                    tq_target = tuple(self.cfg["home_pose"][3:7])
-                else:
-                    with self._calib_lock:
-                        q_off = self._q_offset
-                    tq_target = _qnorm(_qmul(q_off, tq))
-                target_R = _quat_to_rot(*tq_target)
+                # ── Orientation: use tracker quat directly ────────────────────
+                # tracker_ee_absolute already converted pico→ROS orientation
+                target_R = _quat_to_rot(*tq)
 
                 with self._joints_lock:
                     seed = list(self._last_joints)
 
-                # IK solve (profiled)
+                # ── IK solve (profiled) ────────────────────────────────────────
                 t_total = time.perf_counter()
-                r = self._placo_session.solve_step(target_xyz, target_R, seed,
-                                                   no_rot=no_rot)
+                r = self._placo_session.solve_step(target_xyz, target_R, seed)
                 ik_ms    = r["solve_ms"]
                 total_ms = (time.perf_counter() - t_total) * 1000.0
 
@@ -748,7 +641,7 @@ class PlacoAbsoluteProfiler(Node):
 
                 if r["success"]:
                     self._pose = [new_x, new_y, new_z,
-                                  tq_target[0], tq_target[1], tq_target[2], tq_target[3]]
+                                  tq[0], tq[1], tq[2], tq[3]]
                     with self._joints_lock:
                         self._last_joints = r["joints"]
                     if not getattr(self.args, "dry_run", False):
@@ -1008,13 +901,6 @@ def _parse_args():
                    help="Compute IK but do not publish trajectory")
     p.add_argument("--home-first", action="store_true", dest="home_first",
                    help="Send arm to home position (with TF confirmation) before starting")
-    p.add_argument("--ws-mesh",    default=None, dest="ws_mesh",
-                   help="Path to WorkspaceMesh .npz (from placo_ws_analyze.py). "
-                        "Replaces rectangular box clamp with real scanned workspace shape.")
-    p.add_argument("--no-rot",    action="store_true", dest="no_rot",
-                   help="Step 1: position-only IK (W_ORI=0). "
-                        "Verify position+mesh mapping before enabling orientation "
-                        "tracking (Step 2 = without this flag).")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every step (not just every 5th)")
     return p.parse_args()
@@ -1023,12 +909,6 @@ def _parse_args():
 def main():
     global args
     args = _parse_args()
-    # Auto-detect WorkspaceMesh npz for the selected arm
-    if not getattr(args, "ws_mesh", None):
-        _auto = _ws_mesh_path(args.arm)
-        if os.path.isfile(_auto):
-            args.ws_mesh = _auto
-            print(f"  [ws_mesh] auto-detected: {_auto}")
 
     rclpy.init()
     node = PlacoAbsoluteProfiler(args)

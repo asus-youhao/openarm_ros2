@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-_IK_DIR = __import__('os').path.dirname(__import__('os').path.abspath(__file__))
 import os as _os, sys as _sys
-# Parent dir (ik_reachability/) for ROS/rclpy imports
-_sys.path.insert(0, _os.path.join(_IK_DIR, ".."))
-# ik_solver/ sub-folder takes priority for solver modules
-_sys.path.insert(0, _os.path.join(_IK_DIR, "ik_solver"))
+_HERE = _os.path.dirname(_os.path.abspath(__file__))           # trackers/
+_ROOT = _os.path.dirname(_HERE)                                # project root
+_sys.path.insert(0, _ROOT)                                     # paths.py
+_sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo / other solvers
 """
 tracker_ee_delta_ik_backend.py — 多 IK 後端控制器（無需 MoveIt）
 =================================================================
