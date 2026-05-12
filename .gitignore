@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Local-only environment overrides
+.env
+.envrc
+
+# Large profiler artifacts (kept under results/ but not all needed in git history)
+# Comment out if you want to track results/
+# results/*/*.csv
+# results/*/*.png
