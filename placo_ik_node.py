@@ -55,6 +55,7 @@ from placo_ik_solver import _find_urdf, _quat_to_rot
 from placo_ws_analyze import WorkspaceMesh
 from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
+from paths import csv_path as _csv_path, png_for as _png_for
 
 
 # ── ARM config ────────────────────────────────────────────────────────────────
@@ -309,17 +310,10 @@ class PlacoOnlineProfiler(Node):
             init_mode="keyboard" if getattr(args, "keyboard", False) else "tracker")
 
         # Fix-3: async CSV writer
-        ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         mode = "cached" if not args.rebuild else "rebuild"
-        if args.csv:
-            csv_path = args.csv
-        else:
-            out_dir = os.path.join(
-                _DIR, "results", datetime.datetime.now().strftime("%Y%m%d"))
-            os.makedirs(out_dir, exist_ok=True)
-            csv_path = os.path.join(out_dir, f"placo_online_{ts}_{args.arm}_{mode}.csv")
-        self._csv_writer = AsyncCsvWriter(csv_path, CSV_FIELDS)
-        self._csv_path   = csv_path
+        csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
+        self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
+        self._csv_path   = csv_p
 
         self._print_banner()
 
@@ -714,7 +708,7 @@ class PlacoOnlineProfiler(Node):
         rows = self._records
         if not rows:
             return
-        plot_path = self.args.plot or self._csv_path.replace(".csv", ".png")
+        plot_path = self.args.plot or _png_for(self._csv_path)
         t      = list(range(len(rows)))
         iters_ = [r["iterations"] for r in rows]
         pos_e  = [r["pos_err_mm"]    for r in rows]
