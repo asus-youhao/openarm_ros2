@@ -92,6 +92,7 @@ import time
 import numpy as np
 import rclpy
 import rclpy.executors
+from paths import today_dir as _today_dir
 from copy import deepcopy
 from geometry_msgs.msg import Pose, PoseStamped, TwistStamped
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -874,15 +875,12 @@ class BackendDeltaIKController(Node):
     # ------------------------------------------------------------------
     def _make_output_paths(self):
         """Auto-generate dated output paths.
-        Structure:  <script_dir>/results/yyyymmdd/
-          files:    delta_ik_timing_mmddHHMM_<arm>_<solver>.{csv,png}
+        Structure:  results/yyyymmdd/delta_ik_timing_mmddHHMM_<arm>_<solver>.{csv,png}
         """
         import datetime
-        now  = datetime.datetime.now()
-        date_folder = now.strftime("%Y%m%d")
-        stem = now.strftime("%m%d%H%M") + f"_{self.args.arm}_{self._solver_name}"
-        out_dir = pathlib.Path(_IK_DIR) / "results" / date_folder
-        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = (datetime.datetime.now().strftime("%m%d%H%M")
+                + f"_{self.args.arm}_{self._solver_name}")
+        out_dir = pathlib.Path(_today_dir())
         csv_path = out_dir / f"delta_ik_timing_{stem}.csv"
         png_path = out_dir / f"delta_ik_timing_{stem}.png"
         return csv_path, png_path

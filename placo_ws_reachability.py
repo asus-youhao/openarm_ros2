@@ -51,6 +51,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from paths import reachability_csv as _reachability_csv, png_for as _png_for
 from placo_ik_solver import (
     _find_urdf,
     _HUMAN_RIGHT,
@@ -585,14 +586,8 @@ def main():
     z_range = tuple(args.z) if args.z else ws_def["z"]
 
     # Output paths
-    ts      = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "results",
-        datetime.datetime.now().strftime("%Y%m%d"),
-    )
-    os.makedirs(out_dir, exist_ok=True)
-    csv_path  = args.csv  or os.path.join(out_dir, f"reachability_{ts}_{args.arm}.csv")
-    plot_path = args.plot or csv_path.replace(".csv", ".png")
+    csv_path  = args.csv  or _reachability_csv(args.arm)
+    plot_path = args.plot or _png_for(csv_path)
 
     print(f"\n{'═'*65}")
     print(f"  Placo Workspace Reachability Sweeper")

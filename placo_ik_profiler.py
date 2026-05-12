@@ -65,6 +65,8 @@ import numpy as np
 _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_DIR, "ik_solver"))   # placo_ik_solver.py
 
+sys.path.insert(0, _DIR)   # for paths.py
+from paths import today_dir as _today_dir, timestamp as _timestamp  # noqa: E402
 from placo_ik_solver import (  # noqa: E402
     _find_urdf,
     _HUMAN_RIGHT,
@@ -1051,7 +1053,8 @@ def main():
                       f"考慮降低 --rate（目前 {args.rate:.0f}Hz）或改用 --cache-robot。")
 
         # Plot
-        plot_path = args.plot or f"placo_rt_{arm}_{args.traj}_{mode_str}_{ts}.png"
+        plot_path = args.plot or os.path.join(
+            _today_dir(), f"placo_rt_{arm}_{args.traj}_{mode_str}_{ts}.png")
         _make_plot_realtime(rows, plot_path, arm, args.rate, args.traj, args.cache_robot)
         return
 
@@ -1137,11 +1140,10 @@ def main():
     if args.plot:
         _make_plot(rows, args.plot, arm, dt)
     elif rows:
-        # Auto-generate dated plot name
-        import datetime
-        ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        png = os.path.join(os.path.dirname(args.csv) if args.csv else ".",
-                           f"placo_profile_{arm}_{ts}.png")
+        # Auto-generate dated plot name (results/yyyymmdd/ when no --csv given)
+        ts  = _timestamp()
+        out_dir = os.path.dirname(args.csv) if args.csv else _today_dir()
+        png = os.path.join(out_dir, f"placo_profile_{arm}_{ts}.png")
         _make_plot(rows, png, arm, dt)
 
     # ── Close CSV ──────────────────────────────────────────────────────────────

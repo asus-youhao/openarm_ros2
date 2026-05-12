@@ -47,6 +47,7 @@ import numpy as np
 _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DIR)
 
+from paths import ws_mesh_path as _ws_mesh_path, clamp_benchmark_png as _clamp_benchmark_png
 from placo_ws_analyze import WorkspaceMesh
 
 # ── default workspace boxes (mirrors _ARM_CONFIG) ─────────────────────────────
@@ -369,8 +370,7 @@ def main():
     else:
         npz = args.npz
         if not npz:
-            _auto = os.path.join(
-                _DIR, "results", f"reachability_{args.arm}_ws.npz")
+            _auto = _ws_mesh_path(args.arm)
             if os.path.isfile(_auto):
                 npz = _auto
                 print(f"  [auto] found npz: {_auto}")
@@ -394,10 +394,7 @@ def main():
         scaling = _run_size_scaling(args.arm, n_query=500, rng=rng)
 
     # ── Plot ──────────────────────────────────────────────────────────────────
-    import datetime
-    ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = args.plot or os.path.join(
-        _DIR, "results", f"clamp_benchmark_{ts}_{args.arm}.png")
+    out = args.plot or _clamp_benchmark_png(args.arm)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     try:
         _save_plot(res, scaling, args.arm, out)
