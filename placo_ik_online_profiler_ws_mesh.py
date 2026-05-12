@@ -77,6 +77,7 @@ import threading
 
 import rclpy
 
+from paths import ws_mesh_path as _ws_mesh_path
 from placo_ik_session import _MAX_ITER
 from placo_ik_node import PlacoOnlineProfiler
 
@@ -127,7 +128,7 @@ def main():
 
     # Auto-detect WorkspaceMesh if not specified
     if not args.ws_mesh:
-        _auto = os.path.join(_DIR, "results", f"reachability_{args.arm}_ws.npz")
+        _auto = _ws_mesh_path(args.arm)
         if os.path.isfile(_auto):
             args.ws_mesh = _auto
             print(f"  [ws_mesh] auto-detected: {_auto}")

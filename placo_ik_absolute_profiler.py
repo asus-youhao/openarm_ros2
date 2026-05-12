@@ -92,6 +92,7 @@ from std_msgs.msg import Float32, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
+from paths import csv_path as _csv_path, png_for as _png_for
 from placo_ik_solver import (
     _find_urdf,
     _HUMAN_RIGHT,
@@ -363,22 +364,12 @@ class PlacoAbsoluteProfiler(Node):
 
         # Records + CSV
         self._records: List[Dict] = []
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         mode = "rebuild" if args.rebuild else "cached"
-        if args.csv:
-            csv_path = args.csv
-        else:
-            out_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "results",
-                datetime.datetime.now().strftime("%Y%m%d"),
-            )
-            os.makedirs(out_dir, exist_ok=True)
-            csv_path = os.path.join(
-                out_dir, f"placo_abs_{ts}_{args.arm}_{mode}.csv")
-        self._csv_fh     = open(csv_path, "w", newline="")
+        csv_p = args.csv or _csv_path("placo_abs", args.arm, mode)
+        self._csv_fh     = open(csv_p, "w", newline="")
         self._csv_writer = csv.writer(self._csv_fh)
         self._csv_writer.writerow(_CSV_FIELDS)
-        self._csv_path   = csv_path
+        self._csv_path   = csv_p
 
         print(f"\n{'═'*65}")
         print(f"  Placo IK Absolute Profiler")
@@ -792,8 +783,7 @@ class PlacoAbsoluteProfiler(Node):
         rows = self._records
         if not rows:
             return
-        plot_path = getattr(self.args, "plot", "") or \
-            self._csv_path.replace(".csv", ".png")
+        plot_path = getattr(self.args, "plot", "") or _png_for(self._csv_path)
 
         t      = list(range(len(rows)))
         ik_ms_ = [r["ik_ms"]          for r in rows]
