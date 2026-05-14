@@ -90,16 +90,22 @@ def _parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--arm",       default="right", choices=["right", "left"])
-    p.add_argument("--rate",      type=float, default=20.0,
+    p.add_argument("--rate",      type=float, default=100.0,
                    help="Control-loop Hz  (default: 20).  Also sets solver dt.")
-    p.add_argument("--horizon",   type=float, default=60.0,
-                   help="JointTrajectory duration ms  (default: 60)")
+    p.add_argument("--horizon",   type=float, default=1.0,
+                   help="JointTrajectory duration ms  (default: 100)")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
     p.add_argument("--rebuild",   action="store_true",
                    help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
                    help="Disable joint velocity limits in IK solver  (not recommended)")
+    p.add_argument("--lpf-alpha", default="1.0", dest="lpf_alpha",
+                   help="Output-side 1st-order LPF on joint cmd. "
+                        "'1.0' = off (default).  Single value '0.5' = uniform; "
+                        "comma list '0.7,0.7,0.7,0.7,0.4,0.4,0.4' = per-joint J1..J7. "
+                        "Smaller α = heavier smoothing + more lag "
+                        "(α=0.5 @ 20Hz ≈ 2.2Hz cutoff, ≈ 1 sample lag).")
     p.add_argument("--calib-yaw", type=float, default=0.0, dest="calib_yaw",
                    help="Tracker→arm yaw offset in degrees  (default: 0)")
     p.add_argument("--calib-rpy", default=None, dest="calib_rpy",
