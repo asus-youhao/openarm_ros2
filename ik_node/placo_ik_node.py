@@ -81,7 +81,7 @@ ARM_CONFIG = {
         "ee_link":       "openarm_right_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
-        "workspace":     {"x": (-0.20, 0.42), "y": (-0.45, -0.05), "z": (0.35, 0.8)},
+        "workspace":     {"x": (-0.20, 0.4), "y": (-0.4, -0.05), "z": (0.35, 0.8)},
         "cmd_topic":     "/right_joint_trajectory_controller/joint_trajectory",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",
@@ -120,6 +120,18 @@ def _rotate_vec(v, q):
     qx, qy, qz, qw = q; vx, vy, vz = v
     tx = 2*(qy*vz-qz*vy); ty = 2*(qz*vx-qx*vz); tz = 2*(qx*vy-qy*vx)
     return (vx+qw*tx+qy*tz-qz*ty, vy+qw*ty+qz*tx-qx*tz, vz+qw*tz+qx*ty-qy*tx)
+
+
+def _parse_lpf_alpha(spec: str, n_joints: int) -> List[float]:
+    """Parse --lpf-alpha as single float (uniform) or comma list of len n_joints."""
+    parts = [p.strip() for p in str(spec).split(",")]
+    if len(parts) == 1:
+        return [float(parts[0])] * n_joints
+    if len(parts) != n_joints:
+        raise ValueError(
+            f"--lpf-alpha needs 1 or {n_joints} values, got {len(parts)}: {spec!r}"
+        )
+    return [float(p) for p in parts]
 
 
 # ── Fix-1: TF Poller ──────────────────────────────────────────────────────────
@@ -283,6 +295,14 @@ class PlacoOnlineProfiler(Node):
             vel_limits = not getattr(args, "no_vel_limits", False),
         )
 
+        # Output-side LPF on joint commands  (Fix-D)
+        n_joints = len(cfg["joint_names"])
+        self._lpf_alpha: List[float] = _parse_lpf_alpha(
+            getattr(args, "lpf_alpha", "1.0"), n_joints
+        )
+        self._lpf_active   = any(a < 0.999 for a in self._lpf_alpha)
+        self._filt_joints: Optional[List[float]] = None
+
         # TF2 + Fix-1 poller (started in run() after initial sync)
         self._tf_buffer   = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -395,6 +415,7 @@ class PlacoOnlineProfiler(Node):
                 if all(n in js for n in jnames):
                     with self._joints_lock:
                         self._last_joints = [js[n] for n in jnames]
+                self._filt_joints = None    # re-anchor LPF on next IK step
                 return True
             else:
                 with self._js_lock:
@@ -423,6 +444,22 @@ class PlacoOnlineProfiler(Node):
         pt.time_from_start.nanosec = int(self._horizon_ms * 1e6)
         msg.points = [pt]
         self._traj_pub.publish(msg)
+
+    # ── Output LPF on joint command (Fix-D) ───────────────────────────────────
+    def _filter_joints(self, raw: List[float]) -> List[float]:
+        """
+        1st-order per-joint LPF: filt = α·raw + (1-α)·prev.
+        α=1.0 → passthrough.  Re-anchors to raw whenever state is None
+        (initial step, after home).
+        """
+        if not self._lpf_active or self._filt_joints is None:
+            self._filt_joints = list(raw)
+            return list(self._filt_joints)
+        self._filt_joints = [
+            a * r + (1.0 - a) * p
+            for a, r, p in zip(self._lpf_alpha, raw, self._filt_joints)
+        ]
+        return list(self._filt_joints)
 
     # ── Main control loop ─────────────────────────────────────────────────────
     def run(self):
@@ -583,9 +620,10 @@ class PlacoOnlineProfiler(Node):
                     self._pose = [new_x, new_y, new_z,
                                   new_q[0], new_q[1], new_q[2], new_q[3]]
                     with self._joints_lock:
-                        self._last_joints = r["joints"]
+                        self._last_joints = r["joints"]      # raw, for next IK seed
+                    joints_out = self._filter_joints(r["joints"])
                     if not self.args.dry_run:
-                        self._publish(r["joints"])
+                        self._publish(joints_out)
                     self._latency_pub.publish(Float32(data=float(ik_ms)))
 
                 step_count += 1
@@ -800,6 +838,12 @@ class PlacoOnlineProfiler(Node):
                   f"step={s['step_m']*100:.0f}cm  vol~{s['total_volume_cm3']:.0f}cm³")
         else:
             print(f"  ws_clamp : {'box' if self._ws_clamp else 'OFF'}")
+        if self._lpf_active:
+            alpha_str = (f"{self._lpf_alpha[0]:.2f}" if len(set(self._lpf_alpha)) == 1
+                         else "[" + ",".join(f"{a:.2f}" for a in self._lpf_alpha) + "]")
+            print(f"  lpf      : α={alpha_str}  (1st-order on joint cmd)")
+        else:
+            print(f"  lpf      : OFF")
         print(f"{'═'*65}")
         print(f"  1-9=scale  +/-=fine  t=mode  p=pause  r=reset  h=home  ?=help  Ctrl-C=quit")
         print(f"  KEYBOARD: w/s=±Y  a/d=±X  q/e=±Z  i/k=pitch  j/l=yaw  u/o=roll")

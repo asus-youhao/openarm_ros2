@@ -25,10 +25,10 @@ from typing import Dict, List
 _POS_TOL   = 0.003    # m  — early-exit convergence threshold
 _POS_RELAX = 0.010    # m  — success acceptance threshold (relaxed)
 _W_POS     = 1.0      # position task weight
-_W_ORI     = 0.3      # orientation task weight
+_W_ORI     = 0.8      # orientation task weight
 _W_JOINTS  = 1e-4     # naturalness (joint preference) weight
 _W_REG     = 1e-5     # regularisation weight (DLS equivalent)
-_MAX_ITER  = 25       # solver iteration cap
+_MAX_ITER  = 5       # solver iteration cap
 
 
 # ── Resource helper ───────────────────────────────────────────────────────────
