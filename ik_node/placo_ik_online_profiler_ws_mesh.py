@@ -90,22 +90,35 @@ def _parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--arm",       default="right", choices=["right", "left"])
-    p.add_argument("--rate",      type=float, default=100.0,
-                   help="Control-loop Hz  (default: 20).  Also sets solver dt.")
-    p.add_argument("--horizon",   type=float, default=1.0,
-                   help="JointTrajectory duration ms  (default: 100)")
+    p.add_argument("--rate",      type=float, default=50.0,
+                   help="Control-loop Hz  (default: 50).  Also sets solver dt.")
+    p.add_argument("--horizon",   type=float, default=None,
+                   help="JointTrajectory duration ms  (default: auto = 1.5× period)")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
     p.add_argument("--rebuild",   action="store_true",
                    help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
                    help="Disable joint velocity limits in IK solver  (not recommended)")
-    p.add_argument("--lpf-alpha", default="1.0", dest="lpf_alpha",
+    p.add_argument("--lpf-alpha", default="0.25,0.25,0.25,0.4,0.6,0.6,0.6",
+                   dest="lpf_alpha",
                    help="Output-side 1st-order LPF on joint cmd. "
-                        "'1.0' = off (default).  Single value '0.5' = uniform; "
-                        "comma list '0.7,0.7,0.7,0.7,0.4,0.4,0.4' = per-joint J1..J7. "
-                        "Smaller α = heavier smoothing + more lag "
-                        "(α=0.5 @ 20Hz ≈ 2.2Hz cutoff, ≈ 1 sample lag).")
+                        "Single value '0.5' = uniform; "
+                        "comma list '0.3,0.3,0.3,0.3,0.6,0.6,0.6' = per-joint J1..J7. "
+                        "Smaller α = heavier smoothing + more lag. "
+                        "Default: 0.25,0.25,0.25,0.4,0.6,0.6,0.6")
+    p.add_argument("--ori-lpf-alpha", type=float, default=0.35, dest="ori_lpf_alpha",
+                   help="Input-side SLERP EMA on target orientation. "
+                        "0.35 = moderate smoothing (default). "
+                        "1.0 = off. Smaller = heavier smoothing.")
+    p.add_argument("--ee-delta-gap-sec", type=float, default=0.8, dest="ee_delta_gap_sec",
+                   help="Seconds without tracker msg before resetting session ref (default: 0.8)")
+    p.add_argument("--joint-jump-guard-deg", type=float, default=15.0,
+                   dest="joint_jump_guard_deg",
+                   help="Max single-joint delta per step in degrees. "
+                        "IK output exceeding this is rejected. 0 = off. (default: 15)")
+    p.add_argument("--no-rot-tracking", action="store_true", dest="no_rot_tracking",
+                   help="Disable orientation tracking (position-only IK)")
     p.add_argument("--calib-yaw", type=float, default=0.0, dest="calib_yaw",
                    help="Tracker→arm yaw offset in degrees  (default: 0)")
     p.add_argument("--calib-rpy", default=None, dest="calib_rpy",
@@ -139,6 +152,16 @@ def main():
         if os.path.isfile(_auto):
             args.ws_mesh = _auto
             print(f"  [ws_mesh] auto-detected: {_auto}")
+
+    # Fix-7: Horizon auto-compute (must be ≥ control period)
+    period_ms = 1000.0 / args.rate
+    if args.horizon is None:
+        args.horizon = round(1.5 * period_ms, 1)
+        print(f"  [horizon] auto → {args.horizon:.1f}ms  (1.5× period @ {args.rate:.0f}Hz)")
+    elif args.horizon < period_ms:
+        print(f"  ⚠ --horizon {args.horizon:.1f}ms < period {period_ms:.1f}ms "
+              f"→ clamped to {period_ms:.1f}ms")
+        args.horizon = period_ms
 
     rclpy.init()
     node = PlacoOnlineProfiler(args)
