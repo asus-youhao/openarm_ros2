@@ -100,6 +100,15 @@ def _parse_args():
                    help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
                    help="Disable joint velocity limits in IK solver  (not recommended)")
+    p.add_argument("--input-lpf-alpha", default="0.3", dest="input_lpf_alpha",
+                   help="Input-side 1st-order LPF on orientation delta (quaternion EMA). "
+                        "1.0 = off.  0.3 = moderate (recommended).  0.1 = heavy. "
+                        "Smaller α = smoother rotation tracking + more lag.  "
+                        "(α=0.3 @ 100Hz ≈ 4.8Hz cutoff, ≈ 3 sample lag)")
+    p.add_argument("--max-joint-delta-deg", type=float, default=15.0,
+                   dest="max_joint_delta_deg",
+                   help="Max allowed single-step joint change in degrees "
+                        "(>90 = off).  Default 15.0°.")
     p.add_argument("--lpf-alpha", default="1.0", dest="lpf_alpha",
                    help="Output-side 1st-order LPF on joint cmd. "
                         "'1.0' = off (default).  Single value '0.5' = uniform; "

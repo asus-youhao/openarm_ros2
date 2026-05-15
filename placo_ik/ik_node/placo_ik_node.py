@@ -122,6 +122,54 @@ def _rotate_vec(v, q):
     return (vx+qw*tx+qy*tz-qz*ty, vy+qw*ty+qz*tx-qx*tz, vz+qw*tz+qx*ty-qy*tx)
 
 
+def _q_slerp(q0, q1, t):
+    """
+    Spherical linear interpolation between two quaternions.
+    q0, q1 are (x,y,z,w) tuples.  t in [0,1].
+    Used for smoothed orientation mixing (input LPF).
+    """
+    dot = q0[0]*q1[0] + q0[1]*q1[1] + q0[2]*q1[2] + q0[3]*q1[3]
+    if dot < 0.0:
+        q1 = (-q1[0], -q1[1], -q1[2], -q1[3])
+        dot = -dot
+    if dot > 0.9995:
+        result = (q0[i] + t*(q1[i] - q0[i]) for i in range(4))
+        n = math.sqrt(sum(v*v for v in result))
+        return tuple(v/n for v in result)
+    theta_0 = math.acos(min(dot, 1.0))
+    sin_theta_0 = math.sin(theta_0)
+    s0 = math.sin((1.0 - t) * theta_0) / sin_theta_0
+    s1 = math.sin(t * theta_0) / sin_theta_0
+    return (
+        s0*q0[0] + s1*q1[0], s0*q0[1] + s1*q1[1],
+        s0*q0[2] + s1*q1[2], s0*q0[3] + s1*q1[3],
+    )
+
+
+class QuaternionEmaFilter:
+    """
+    1st-order IIR (exponential moving average) on quaternion deltas.
+    
+    When a new dq arrives from the tracker, the filter stores a smoothed
+    version: dq_smooth = slerp(identity, dq_raw, alpha_input).
+    This damps high-frequency orientation noise from the VR tracker.
+    
+    Alpha range: [0, 1]
+      1.0 = passthrough (no filtering, default)
+      0.3 = moderate smoothing (recommended starting point)
+      0.1 = heavy smoothing (adds lag)
+    """
+    def __init__(self, alpha: float = 1.0):
+        self._alpha = alpha
+    
+    def update(self, dq_raw):
+        """Apply EMA to raw quaternion delta. Returns smoothed dq."""
+        if self._alpha >= 0.999:
+            return dq_raw
+        # slerp between identity (no change) and the raw delta
+        return _q_slerp((0., 0., 0., 1.), dq_raw, self._alpha)
+
+
 def _parse_lpf_alpha(spec: str, n_joints: int) -> List[float]:
     """Parse --lpf-alpha as single float (uniform) or comma list of len n_joints."""
     parts = [p.strip() for p in str(spec).split(",")]
@@ -295,6 +343,10 @@ class PlacoOnlineProfiler(Node):
             vel_limits = not getattr(args, "no_vel_limits", False),
         )
 
+        # Input-side LPF on orientation delta (quaternion EMA — Fix for rotation jitter)
+        self._input_lpf_alpha = float(getattr(args, "input_lpf_alpha", "0.3"))
+        self._dq_filter = QuaternionEmaFilter(alpha=self._input_lpf_alpha)
+
         # Output-side LPF on joint commands  (Fix-D)
         n_joints = len(cfg["joint_names"])
         self._lpf_alpha: List[float] = _parse_lpf_alpha(
@@ -302,6 +354,11 @@ class PlacoOnlineProfiler(Node):
         )
         self._lpf_active   = any(a < 0.999 for a in self._lpf_alpha)
         self._filt_joints: Optional[List[float]] = None
+
+        # Joint-delta guard (reject IK solutions with excessive single-step change)
+        self._max_joint_delta_deg = float(getattr(args, "max_joint_delta_deg", "15.0"))
+        self._max_joint_delta_rad = math.radians(self._max_joint_delta_deg)
+        self._joint_delta_active  = self._max_joint_delta_deg < 90.0  # off if > 90°
 
         # TF2 + Fix-1 poller (started in run() after initial sync)
         self._tf_buffer   = Buffer()
@@ -563,6 +620,8 @@ class PlacoOnlineProfiler(Node):
                            msg.pose.orientation.z, msg.pose.orientation.w)
                     if abs(dq[3]) < 0.01 and all(abs(v) < 0.01 for v in dq[:3]):
                         dq = (0., 0., 0., 1.)
+                    # Apply input LPF on orientation delta (soaks up IMU noise)
+                    dq = self._dq_filter.update(dq)
 
                     gap    = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
                     is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
@@ -617,11 +676,34 @@ class PlacoOnlineProfiler(Node):
                 deadline_missed = int(loop_wall_ms > self._deadline_ms)
 
                 if r["success"]:
-                    self._pose = [new_x, new_y, new_z,
-                                  new_q[0], new_q[1], new_q[2], new_q[3]]
-                    with self._joints_lock:
-                        self._last_joints = r["joints"]      # raw, for next IK seed
-                    joints_out = self._filter_joints(r["joints"])
+                    # Joint-delta guard: reject solutions with excessive single-step change
+                    joint_delta_jumped = False
+                    if self._joint_delta_active:
+                        with self._joints_lock:
+                            prev = list(self._last_joints)
+                        delta = max(
+                            abs(r["joints"][i] - prev[i]) for i in range(len(prev))
+                        )
+                        if delta > self._max_joint_delta_rad:
+                            joint_delta_jumped = True
+                            # Fall back to filtered previous joints (hold position)
+                            print(
+                                f"\n  [J-DELTA] rejected {math.degrees(delta):.1f}° > "
+                                f"{self._max_joint_delta_deg:.0f}°  step={step_count}"
+                            )
+
+                    if not joint_delta_jumped:
+                        self._pose = [new_x, new_y, new_z,
+                                      new_q[0], new_q[1], new_q[2], new_q[3]]
+                        with self._joints_lock:
+                            self._last_joints = r["joints"]      # raw, for next IK seed
+                        joints_out = self._filter_joints(r["joints"])
+                    else:
+                        # Joint delta rejected — hold last position, use filtered previous
+                        with self._joints_lock:
+                            joints_out = list(self._last_joints)
+                        joints_out = self._filter_joints(joints_out)
+
                     if not self.args.dry_run:
                         self._publish(joints_out)
                     self._latency_pub.publish(Float32(data=float(ik_ms)))

@@ -23,12 +23,13 @@ from typing import Dict, List
 
 # ── IK tuning constants ───────────────────────────────────────────────────────
 _POS_TOL   = 0.003    # m  — early-exit convergence threshold
+_ORI_TOL   = 0.05     # rad (~3°) — orientation early-exit threshold (added for rotation jitter fix)
 _POS_RELAX = 0.010    # m  — success acceptance threshold (relaxed)
 _W_POS     = 1.0      # position task weight
 _W_ORI     = 0.8      # orientation task weight
 _W_JOINTS  = 1e-4     # naturalness (joint preference) weight
-_W_REG     = 1e-5     # regularisation weight (DLS equivalent)
-_MAX_ITER  = 5       # solver iteration cap
+_W_REG     = 1e-3     # regularisation weight (DLS equivalent) — increased from 1e-5 for better damping
+_MAX_ITER  = 20      # solver iteration cap — increased from 5 for orientation convergence
 
 
 # ── Resource helper ───────────────────────────────────────────────────────────
@@ -158,8 +159,18 @@ class PlacoSession:
             iters_used += 1
             if not self._rebuild:
                 T_ee = robot.get_T_world_frame(self._ee_link)   # cached each iter
-                if float(np.linalg.norm(T_ee[:3, 3] - target_xyz)) < _POS_TOL:
-                    break   # converged — skip remaining iterations
+                pos_ok = float(np.linalg.norm(T_ee[:3, 3] - target_xyz)) < _POS_TOL
+                if pos_ok:
+                    if no_rot:
+                        break   # position converged, orientation not tracked
+                    # Also check orientation convergence (rotation error ≤ 3°)
+                    R_ee = T_ee[:3, :3]
+                    # Rotation error = angle of R_ee^T * target_R
+                    R_err = R_ee.T @ target_R
+                    ori_err = np.arccos(np.clip((np.trace(R_err) - 1.0) / 2.0, -1.0, 1.0))
+                    if ori_err < _ORI_TOL:
+                        break   # both position and orientation converged
+                    # Position OK but orientation not yet — continue iterating
         loop_ms = (time.perf_counter() - t0) * 1000.0
 
         # ── Final state (reuse T_ee already computed in last early-exit check) ─
