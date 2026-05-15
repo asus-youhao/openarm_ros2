@@ -133,7 +133,7 @@ def _q_slerp(q0, q1, t):
         q1 = (-q1[0], -q1[1], -q1[2], -q1[3])
         dot = -dot
     if dot > 0.9995:
-        result = (q0[i] + t*(q1[i] - q0[i]) for i in range(4))
+        result = [q0[i] + t*(q1[i] - q0[i]) for i in range(4)]
         n = math.sqrt(sum(v*v for v in result))
         return tuple(v/n for v in result)
     theta_0 = math.acos(min(dot, 1.0))
