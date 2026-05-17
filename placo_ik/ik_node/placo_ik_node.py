@@ -50,7 +50,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Float64MultiArray, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
@@ -70,7 +70,8 @@ ARM_CONFIG = {
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
         "workspace":     {"x": (-0.20, 0.42), "y": (0.05, 0.45), "z": (0.35, 0.8)},
-        "cmd_topic":     "/left_joint_trajectory_controller/joint_trajectory",
+        "traj_topic":    "/left_joint_trajectory_controller/joint_trajectory",
+        "fwd_cmd_topic": "/left_forward_position_controller/commands",
         "latency_topic": "/left/delta_ik_latency_ms",
         "profile_topic": "/left/placo_profile",
         "ee_delta_topic": "/ee_delta/left",
@@ -82,7 +83,8 @@ ARM_CONFIG = {
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
         "workspace":     {"x": (-0.20, 0.4), "y": (-0.4, -0.05), "z": (0.35, 0.8)},
-        "cmd_topic":     "/right_joint_trajectory_controller/joint_trajectory",
+        "traj_topic":    "/right_joint_trajectory_controller/joint_trajectory",
+        "fwd_cmd_topic": "/right_forward_position_controller/commands",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",
         "ee_delta_topic": "/ee_delta/right",
@@ -353,7 +355,17 @@ class PlacoOnlineProfiler(Node):
             self._tf_buffer, cfg["base_link"], cfg["ee_link"], poll_sec=0.05)
 
         # Publishers
-        self._traj_pub    = self.create_publisher(JointTrajectory, cfg["cmd_topic"], 10)
+        # JointTrajectory publisher — used ONLY by send_home_confirmed()
+        self._traj_pub = self.create_publisher(
+            JointTrajectory, cfg["traj_topic"], 10)
+        # ForwardCommandController publisher — used for hot-loop streaming
+        self._use_traj = getattr(args, 'use_traj', False)
+        if self._use_traj:
+            # Legacy mode: use JointTrajectoryController for streaming
+            self._fwd_pub = None
+        else:
+            self._fwd_pub = self.create_publisher(
+                Float64MultiArray, cfg["fwd_cmd_topic"], 10)
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
         self._profile_pub = self.create_publisher(String, cfg["profile_topic"], 10)
 
@@ -500,18 +512,130 @@ class PlacoOnlineProfiler(Node):
         self._reset_orientation_filter()
         return False
 
-    # ── Publish trajectory ────────────────────────────────────────────────────
+    def send_home_fwd(
+        self,
+        pos_tol:    float = 0.025,
+        motion_sec: float = 3.5,
+        ramp_hz:    float = 50.0,
+    ) -> bool:
+        """
+        Ramp arm to home via ForwardCommandController (linear interpolation).
+
+        Unlike send_home_confirmed() which sends a single JointTrajectory,
+        this method publishes intermediate joint positions at `ramp_hz` via
+        Float64MultiArray, suitable for when JointTrajectoryController is not
+        active.
+
+        Used automatically when --home-first is specified in ForwardCmd mode.
+        """
+        if self._fwd_pub is None:
+            # Fallback: use trajectory controller
+            return self.send_home_confirmed(pos_tol=pos_tol, motion_sec=motion_sec)
+
+        jnames = self.cfg["joint_names"]
+        home   = self.cfg["home_joints"]
+        home_xyz = self.cfg["home_pose"][:3]
+
+        # Read current joint positions
+        with self._js_lock:
+            js = dict(self._joint_states)
+        if not all(n in js for n in jnames):
+            print("  [home_fwd] ⚠ joint states not available — waiting 2s...")
+            time.sleep(2.0)
+            with self._js_lock:
+                js = dict(self._joint_states)
+            if not all(n in js for n in jnames):
+                print("  [home_fwd] ✗ still no joint states — aborting")
+                return False
+
+        start = [js[n] for n in jnames]
+
+        # Check if already near home
+        max_delta_deg = max(math.degrees(abs(s - h)) for s, h in zip(start, home))
+        if max_delta_deg < 1.0:
+            print(f"  [home_fwd] already near home (max_Δ={max_delta_deg:.1f}°)")
+            return True
+
+        # Compute ramp duration based on max joint delta and speed limit
+        # Conservative: max 30°/s to avoid sudden movements
+        max_speed_dps = 30.0   # degrees per second
+        ramp_sec = max(1.0, max_delta_deg / max_speed_dps)
+        ramp_sec = min(ramp_sec, motion_sec)
+
+        n_steps = int(ramp_sec * ramp_hz)
+        dt = 1.0 / ramp_hz
+
+        print(f"  [home_fwd] ramping {max_delta_deg:.1f}° over "
+              f"{ramp_sec:.1f}s ({n_steps} steps at {ramp_hz}Hz)...")
+
+        for step in range(n_steps + 1):
+            alpha = step / max(1, n_steps)  # 0.0 → 1.0
+            # Smooth ease-in-out (cosine interpolation)
+            alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
+            interp = [s + alpha_smooth * (h - s) for s, h in zip(start, home)]
+
+            msg = Float64MultiArray()
+            msg.data = interp
+            self._fwd_pub.publish(msg)
+
+            if step % max(1, n_steps // 10) == 0:
+                pct = alpha * 100
+                print(f"  [home_fwd]   {pct:.0f}%", end="\r", flush=True)
+
+            time.sleep(dt)
+
+        print()
+
+        # Verify arrival via TF
+        time.sleep(0.5)
+        tf = self._get_tf(1.0)
+        if tf is not None:
+            dist = math.sqrt(sum((tf[i] - home_xyz[i])**2 for i in range(3)))
+            if dist <= pos_tol:
+                print(f"  [home_fwd] ✓ reached home  dist={dist*100:.1f}cm")
+                self._pose = list(tf)
+                with self._js_lock:
+                    js = dict(self._joint_states)
+                if all(n in js for n in jnames):
+                    with self._joints_lock:
+                        self._last_joints = [js[n] for n in jnames]
+                self._filt_joints = None
+                self._reset_orientation_filter()
+                return True
+            else:
+                print(f"  [home_fwd] ⚠ dist={dist*100:.1f}cm — close but "
+                      f"may need adjustment")
+        else:
+            print("  [home_fwd] ⚠ could not verify via TF")
+
+        # Even if TF check isn't perfect, set internal state to home
+        with self._joints_lock:
+            self._last_joints = list(home)
+        self._filt_joints = None
+        self._reset_orientation_filter()
+        hx, hy, hz, hqx, hqy, hqz, hqw = self.cfg["home_pose"]
+        self._pose = [hx, hy, hz, hqx, hqy, hqz, hqw]
+        return True
+
+    # ── Publish to hardware ────────────────────────────────────────────────────
     def _publish(self, joints: List[float]):
-        msg = JointTrajectory()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.joint_names  = list(self.cfg["joint_names"])
-        pt = JointTrajectoryPoint()
-        pt.positions     = list(joints)
-        hs = max(0.001, self._horizon_ms / 1000.0)
-        pt.time_from_start.sec = int(hs)
-        pt.time_from_start.nanosec = int((hs % 1.0) * 1e9)
-        msg.points = [pt]
-        self._traj_pub.publish(msg)
+        if self._fwd_pub is not None:
+            # Solution A: stream directly via ForwardCommandController
+            msg = Float64MultiArray()
+            msg.data = joints
+            self._fwd_pub.publish(msg)
+        else:
+            # Legacy: JointTrajectoryController
+            msg = JointTrajectory()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.joint_names  = list(self.cfg["joint_names"])
+            pt = JointTrajectoryPoint()
+            pt.positions     = list(joints)
+            hs = max(0.001, self._horizon_ms / 1000.0)
+            pt.time_from_start.sec = int(hs)
+            pt.time_from_start.nanosec = int((hs % 1.0) * 1e9)
+            msg.points = [pt]
+            self._traj_pub.publish(msg)
 
     # ── Output LPF on joint command (Fix-D) ───────────────────────────────────
     def _filter_joints(self, raw: List[float]) -> List[float]:
@@ -918,7 +1042,10 @@ class PlacoOnlineProfiler(Node):
         print(f"  arm={args.arm}  mode={'rebuild' if args.rebuild else 'CACHED+early_exit'}")
         print(f"  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms")
         print(f"  ee_delta : {cfg['ee_delta_topic']}")
-        print(f"  cmd      : {cfg['cmd_topic']}")
+        if self._fwd_pub is not None:
+            print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
+        else:
+            print(f"  cmd      : {cfg['traj_topic']}  (JointTrajectoryController)")
         print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
         if self._ws_mesh is not None:

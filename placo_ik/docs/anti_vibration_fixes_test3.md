@@ -151,6 +151,7 @@ while the orientation delta was applied in the raw tracker frame → frame misma
 --ee-delta-gap-sec 0.8      # Gap before resetting tracker reference
 --joint-jump-guard-deg 15   # Max joint delta per step (0 = off)
 --no-rot-tracking           # Position-only IK (disable orientation)
+--use-traj                  # Revert to JointTrajectoryController (legacy)
 ```
 
 ## New CSV / Profiling Columns
@@ -163,23 +164,86 @@ while the orientation delta was applied in the raw tracker frame → frame misma
 
 ---
 
-## Recommended Test Command
+## Fix 9 — ForwardCommandController (Actual Root Cause Fix)
+
+**Date:** 2026-05-17
+**Problem:** Fixes 1–8 reduced jitter but vibration persisted.
+
+### Root Cause Analysis
+
+CSV analysis (`analyze_vibration.py`) revealed:
+
+| Metric | test3 (Fixes 1-8) | test1 (heavy LPF) | Healthy |
+|--------|-------|-------|---------|
+| cmd/state ratio | **1.5–3.6×** | 1.2–1.4× | ≈ 1.0× |
+| Direction reversal | **60–68%** | 7–9% | < 20% |
+| Dominant FFT peak | **13–14 Hz** | ~1 Hz | no peak |
+
+The `JointTrajectoryController` was the root cause. It receives a single-point
+trajectory every 26 ms, aborts the previous interpolation, and starts a new
+"reach this position in 30 ms" step response — creating a staircase of step
+inputs at the motor PID.
+
+`send_home_confirmed()` is smooth because it sends ONE trajectory over 3 seconds.
+
+### Solution
+
+Switch the hot-loop publisher from `JointTrajectoryController` to
+`ForwardCommandController`. The forward controller passes positions **directly**
+to the hardware interface with no interpolation/PID — the motor firmware handles
+tracking. This is the standard approach for real-time teleoperation.
+
+### Changes
+
+1. **ARM_CONFIG**: Split `cmd_topic` into `traj_topic` (for home) + `fwd_cmd_topic` (for streaming)
+2. **`_publish()`**: Sends `Float64MultiArray` to `/right_forward_position_controller/commands`
+3. **`send_home_confirmed()`**: Still uses `JointTrajectory` via `_traj_pub` (for `--use-traj` mode)
+4. **`send_home_fwd()`**: New method for homing in ForwardCmd mode — ramps to home via cosine-interpolated position streaming at 50 Hz with conservative 30°/s speed limit
+5. **`--use-traj`**: CLI flag to revert to legacy JointTrajectoryController behavior
+
+### Launch Prerequisite
+
+The robot must be launched with `robot_controller:=forward_position_controller`:
 
 ```bash
-# Default anti-vibration configuration (50 Hz, auto horizon, per-joint LPF, SLERP)
+# Bimanual
+ros2 launch openarm_bringup openarm.bimanual.launch.py \
+    robot_controller:=forward_position_controller
+
+# Or O6 bimanual
+ros2 launch openarm_bringup openarm_o6_bimanual.launch.py \
+    robot_controller:=forward_position_controller
+```
+
+`--home-first` now works in both modes:
+- **ForwardCmd mode**: uses `send_home_fwd()` (cosine ramp at 50Hz, 30°/s max)
+- **Legacy mode** (`--use-traj`): uses `send_home_confirmed()` (JointTrajectory)
+
+---
+
+## Recommended Test Commands
+
+```bash
+# Step 1: Launch robot with ForwardCommandController
+ros2 launch openarm_bringup openarm.bimanual.launch.py \
+    robot_controller:=forward_position_controller
+
+# Step 2: Run teleoperation with homing
 python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right
 
-# If vibration persists, try less output smoothing on wrist:
-python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right \
-    --lpf-alpha 0.25,0.25,0.25,0.4,1.0,1.0,1.0
+# Step 3: Record control CSV for analysis
+python3 scripts/controller_layer/analy_arm_controller.py \
+    --mode topic --arm right
 
-# If vibration persists, increase input smoothing:
-python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right \
-    --ori-lpf-alpha 0.25
+# Step 4: Analyze vibration
+python3 results/analyze_vibration.py results/<csv_file>.csv
+```
 
-# Position-only test (isolate whether vibration is orientation-specific):
-python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right \
-    --no-rot-tracking
+### If ForwardCommandController is not feasible
+
+```bash
+# Legacy mode with JointTrajectoryController (may vibrate)
+python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right --use-traj
 ```
 
 ## Verification Checklist
@@ -189,3 +253,20 @@ python3 ./placo_ik_online_profiler_ws_mesh.py --home-first --arm right \
 3. **joint_jump_guard** should fire rarely (< 1% of steps)
 4. **iterations** median should be 3–8 (near-target), up to 15–20 for large moves
 5. No audible motor buzz or visible arm vibration during RPY rotation
+6. **cmd/state ratio** ≈ 1.0× (verify with `analyze_vibration.py`)
+7. **Direction reversal** < 20% during smooth motion
+
+## Vibration Analysis Tool
+
+```bash
+# Single CSV analysis with plot
+python3 results/analyze_vibration.py results/<csv>.csv
+
+# Compare two runs
+python3 results/analyze_vibration.py results/test3.csv results/test1.csv \
+    --labels "ForwardCmd" "JointTraj"
+
+# Text-only (no matplotlib needed)
+python3 results/analyze_vibration.py results/<csv>.csv --no-plot
+```
+
