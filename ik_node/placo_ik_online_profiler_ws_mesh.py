@@ -139,6 +139,9 @@ def _parse_args():
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
                    help="Start in KEYBOARD mode  (w/s/a/d/q/e/i/k/j/l/u/o)")
+    p.add_argument("--use-traj",  action="store_true", dest="use_traj",
+                   help="Use JointTrajectoryController instead of "
+                        "ForwardCommandController (legacy mode, may vibrate)")
     return p.parse_args()
 
 
@@ -171,8 +174,14 @@ def main():
 
     try:
         if args.home_first:
-            print("  Moving to home (with TF confirmation)...")
-            node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
+            if args.use_traj:
+                # Legacy: use JointTrajectoryController for homing
+                print("  Moving to home (JointTrajectory)...")
+                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
+            else:
+                # ForwardCmd: ramp to home via direct position streaming
+                print("  Moving to home (ForwardCommand ramp)...")
+                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()
     except KeyboardInterrupt:
         print("\n\n  Ctrl-C — stopping...")
