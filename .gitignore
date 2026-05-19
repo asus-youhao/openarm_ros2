@@ -16,3 +16,4 @@ scripts/ik_reachability/20260410/*
 scripts/controller_layer/lpf/csv/*
 scripts/controller_layer/lpf/img/*
 scripts/ik_reachability/ik_controllers/results
+placo_ik/results/*

@@ -126,6 +126,10 @@ def _parse_args():
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
                    help="Start in KEYBOARD mode  (w/s/a/d/q/e/i/k/j/l/u/o)")
+    p.add_argument("--boundary-margin", type=float, default=0.05,
+                   dest="boundary_margin",
+                   help="Soft-clamp margin in metres  (default: 0.05 = 5 cm). "
+                        "Distance from workspace boundary where damping begins.")
     return p.parse_args()
 
 

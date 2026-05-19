@@ -580,7 +580,7 @@ class ROSNode(Node):
         # Create trajectory point
         point = JointTrajectoryPoint()
         point.positions = positions
-        point.time_from_start = Duration(sec=0, nanosec=100000000)  # 100ms
+        point.time_from_start = Duration(sec=1, nanosec=100000000)  # 100ms
         
         goal_msg.trajectory.points = [point]
         
