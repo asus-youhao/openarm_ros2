@@ -18,6 +18,7 @@
 ## Teleop 平滑機制
 - [adaptive_dls.md](adaptive_dls.md) — Adaptive DLS damping（方案 C）— 奇異點 wrist wobble 解法
 - [wrist_vel_cap.md](wrist_vel_cap.md) — Joint 5/6/7 velocity cap，QP 硬約束限制 wrist 單步爆衝
+- [set2d_continuous_approach.md](set2d_continuous_approach.md) — 方案 D：移除 success-freeze gate，邊界時「持續逼近但走不到」
 
 ## 工具集
 - [ws_mesh_tools.md](ws_mesh_tools.md) — WorkspaceMesh 6 個工具（reachability / analyze / view3d / clamp benchmark / profiler ws_mesh 版）

@@ -315,6 +315,14 @@ class PlacoOnlineProfiler(Node):
         self._lpf_active   = any(a < 0.999 for a in self._lpf_alpha)
         self._filt_joints: Optional[List[float]] = None
 
+        # Set2-D: success-gate behaviour
+        # False (default) → always publish (continuous approach, vel-limit saturates)
+        # True            → freeze on failure (legacy "stop on OOR" behaviour)
+        self._success_gate    = bool(getattr(args, "success_gate", False))
+        self._fail_streak     = 0
+        self._fail_warn_every = 20    # print warning every N consecutive fails
+
+
         # TF2 + Fix-1 poller (started in run() after initial sync)
         self._tf_buffer   = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -634,13 +642,33 @@ class PlacoOnlineProfiler(Node):
                 with self._joints_lock:
                     self._last_joints = r["joints"]
 
+                # ── Set2-D: continuous approach (no success-freeze) ───────────
+                # Always publish; trust QP joint+velocity limits to keep the
+                # solution feasible.  On failure (pos_err > POS_RELAX), update
+                # _pose to the SOLVER'S ACTUAL EE (r["ee_xyz"]) instead of the
+                # unreachable target, preventing cumulative drift.  Orientation
+                # is held at previous value on fail (no r["ee_R"] available).
+                # CLI --success-gate restores the old freeze behaviour for A/B.
                 if r["success"]:
                     self._pose = [new_x, new_y, new_z,
                                   new_q[0], new_q[1], new_q[2], new_q[3]]
-                    joints_out = self._filter_joints(r["joints"])
-                    if not self.args.dry_run:
-                        self._publish(joints_out)
-                    self._latency_pub.publish(Float32(data=float(ik_ms)))
+                    self._fail_streak = 0
+                else:
+                    ee = r["ee_xyz"]
+                    self._pose[0] = float(ee[0])
+                    self._pose[1] = float(ee[1])
+                    self._pose[2] = float(ee[2])
+                    # _pose[3:7] (orientation) intentionally kept at last value
+                    self._fail_streak += 1
+                    if self._fail_streak % self._fail_warn_every == 0:
+                        print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
+                              f"streak={self._fail_streak} — publishing partial solve")
+
+                publish_ok = r["success"] or not self._success_gate
+                joints_out = self._filter_joints(r["joints"])
+                if publish_ok and not self.args.dry_run:
+                    self._publish(joints_out)
+                self._latency_pub.publish(Float32(data=float(ik_ms)))
 
                 step_count += 1
 
@@ -898,6 +926,11 @@ class PlacoOnlineProfiler(Node):
             print(f"  lpf      : α={alpha_str}  (1st-order on joint cmd)")
         else:
             print(f"  lpf      : OFF")
+        print(f"  publish  : {'success-gate (legacy freeze)' if self._success_gate else 'always (continuous approach, Set2-D)'}")
+        if self._stuck_reset_ms > 0:
+            print(f"  stuck-rst: {self._stuck_reset_ms:.0f}ms outside → auto ref reset (Set2-F)")
+        else:
+            print(f"  stuck-rst: OFF")
         print(f"{'═'*65}")
         print(f"  1-9=scale  +/-=fine  t=mode  p=pause  r=reset  h=home  ?=help  Ctrl-C=quit")
         print(f"  KEYBOARD: w/s=±Y  a/d=±X  q/e=±Z  i/k=pitch  j/l=yaw  u/o=roll")

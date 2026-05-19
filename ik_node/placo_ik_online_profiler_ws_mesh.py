@@ -134,6 +134,12 @@ def _parse_args():
                    dest="boundary_margin",
                    help="Soft-clamp margin in metres  (default: 0.05 = 5 cm). "
                         "Distance from workspace boundary where damping begins.")
+    p.add_argument("--success-gate", action="store_true", dest="success_gate",
+                   help="Restore legacy 'freeze on IK failure' behaviour. "
+                        "Default (off) = Set2-D continuous approach: always publish, "
+                        "let velocity_limits saturate the partial solution. "
+                        "Set this flag to revert to the old behaviour where IK "
+                        "pos_err > 10mm causes the arm to stop moving.")
     return p.parse_args()
 
 
