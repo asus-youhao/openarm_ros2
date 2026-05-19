@@ -100,6 +100,10 @@ def _parse_args():
                    help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
                    help="Disable joint velocity limits in IK solver  (not recommended)")
+    p.add_argument("--wrist-vel-cap", type=float, default=4.0, dest="wrist_vel_cap",
+                   help="Wrist (joint5-7) velocity cap in rad/s for teleop smoothness. "
+                        "URDF default = 20.94 rad/s (1200°/s) lets IK noise pass through. "
+                        "Default 4.0 rad/s ≈ 230°/s.  0 or negative = use URDF default.")
     p.add_argument("--lpf-alpha", default="1.0", dest="lpf_alpha",
                    help="Output-side 1st-order LPF on joint cmd. "
                         "'1.0' = off (default).  Single value '0.5' = uniform; "

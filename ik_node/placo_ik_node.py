@@ -298,12 +298,13 @@ class PlacoOnlineProfiler(Node):
         # IK session — Fix-2: rate_hz → dt=1/rate_hz; vel_limits=True
         urdf = _find_urdf()
         self._placo_session = PlacoSession(
-            urdf       = urdf,
-            arm        = args.arm,
-            rebuild    = args.rebuild,
-            max_iter   = getattr(args, "max_iter", _MAX_ITER),
-            rate_hz    = self._rate_hz,
-            vel_limits = not getattr(args, "no_vel_limits", False),
+            urdf          = urdf,
+            arm           = args.arm,
+            rebuild       = args.rebuild,
+            max_iter      = getattr(args, "max_iter", _MAX_ITER),
+            rate_hz       = self._rate_hz,
+            vel_limits    = not getattr(args, "no_vel_limits", False),
+            wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
         )
 
         # Output-side LPF on joint commands  (Fix-D)
