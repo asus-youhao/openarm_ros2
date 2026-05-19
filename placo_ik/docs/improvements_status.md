@@ -40,7 +40,7 @@
 | **A** | Soft clamp（軟邊界 / 彈性場）取代 hard snap | ✅ 完成 | `ik_node/ws_boundary.py::SoftClamp` / CLI `--boundary-margin 0.05` | 支援 ws_mesh + box 兩種底層；徑向 damping 取代離散 voxel snap |
 | **B** | Decoupled position/orientation handling | ❌ 未做 | — | 目前仍是單一 QP；若再有「位置已到、旋轉卡 wrist」問題再做 |
 | **C** | Adaptive DLS damping（奇異點 λ 動態調整）| ✅ 完成 | `placo_ik_session.py`：`_DLS_LAMBDA_BASE/MAX/SIGMA_THRESH` + Jacobian SVD 每步算 σ_min | CSV 新增 `sigma_min`、`lambda_dls` 兩欄 |
-| **D** | Velocity-limited target 取代 success-freeze | ❌ 未做 | `placo_ik_node.py:637` 仍是 `if r["success"]: publish` | 目前靠 success guard 防止壞指令；改 D 後手臂會「持續逼近但走不到」更直覺，但要先確認 vel_limits 行為 |
+| **D** | Velocity-limited target 取代 success-freeze | ✅ 完成 | `placo_ik_node.py::run()` always publish + `_pose` 漂移防護 / CLI `--success-gate`（回退） | 詳見 [set2d_continuous_approach.md](set2d_continuous_approach.md) — 「持續逼近但走不到」取代凍結 |
 | **E** | OOR / boundary distance 反饋 topic | ✅ 完成 | `ik_node/ws_boundary.py::BoundaryMonitor` 發 `/{arm}/boundary_dist_mm` (Float32) + `/{arm}/boundary_state` (JSON String) | VR app 訂閱即可加震動 / 顏色反饋 |
 | **F** | Stuck detection + ref auto-resync | ❌ 未做 | — | 目前只靠 `_ee_delta_gap_sec=0.35s` 斷線重設；OOR 持續推但未斷線會累積 delta |
 
@@ -95,7 +95,9 @@ VR Tracker (40 Hz)
    ↓
  _last_joints = r["joints"]   ← always update (no success gate)
    ↓
- if r["success"]: ←━━━━━━━━━━━━━━ Set2-D success-gate freeze ❌ 仍在
+ always publish ←━━━━━━━━━━━━━━━ Set2-D continuous approach ✅
+   └── _pose drift防護 (fail 時用 r["ee_xyz"])
+   └── --success-gate flag 回退舊行為
    ↓
  [_filter_joints()]                                   ← Set1-D ✅
    └── per-joint LPF (α default 1.0 = off)
@@ -138,6 +140,8 @@ VR Tracker (40 Hz)
 | `--wrist-vel-cap` | 4.0 | Wrist QP 速度硬約束 (rad/s) | Extra |
 | `--lpf-alpha` | 1.0 | 輸出端 joint cmd LPF | Set1-D |
 | `--boundary-margin` | 0.05 | Soft clamp damping 起始距離 (m) | Set2-A |
+| `--success-gate` | False | 回到舊 freeze on IK fail 行為（A/B 用） | Set2-D |
+| `--stuck-reset-ms` | 500 | 連續 outside N ms 自動 ref reset；0 停用 | Set2-F |
 | `--ws-mesh` | (auto) | WorkspaceMesh .npz 路徑 | Set2-A 底層 |
 | `--no-ws-clamp` | False | 完全停用 workspace clamp | — |
 | `--dry-run` | False | 算 IK 但不送軌跡 | — |
@@ -166,6 +170,7 @@ VR Tracker (40 Hz)
 - [vr_realtime_ik_analysis.md](vr_realtime_ik_analysis.md) — VR 即時控制 IK 4 大指標對齊度評估
 - [adaptive_dls.md](adaptive_dls.md) — Set2-C 詳細設計
 - [wrist_vel_cap.md](wrist_vel_cap.md) — Wrist velocity cap 詳細設計
+- [set2d_continuous_approach.md](set2d_continuous_approach.md) — Set2-D 詳細設計（移除 success-freeze gate）
 - [placo_solver_analysis.md](placo_solver_analysis.md) — Placo IK 架構分析
 - [ik_solver_weights.md](ik_solver_weights.md) — 4 種 solver 的權重設計
 - [ws_mesh_tools.md](ws_mesh_tools.md) — WorkspaceMesh 工具集
@@ -174,7 +179,7 @@ VR Tracker (40 Hz)
 
 ## 推薦下一步
 
-**做完 Set2-D (移除 success-gate) + Set2-F (stuck detection)** 應該能徹底解決你說的「邊界卡頓」感。
+✅ **Set2-D + Set2-F 已完成** — 邊界卡頓 + return snap 兩個失敗模式應該都已解決。
 
 之後如果 wrist 旋轉抖動仍有殘餘：
 1. 先把 **Set1-A 的 per-joint CSV** 補上，量化抖動頻譜
