@@ -27,8 +27,8 @@ _POS_RELAX = 0.010    # m  — success acceptance threshold (relaxed)
 _W_POS     = 1.0      # position task weight
 _W_ORI     = 0.8      # orientation task weight
 _W_JOINTS  = 1e-4     # naturalness (joint preference) weight
-_W_REG     = 1e-5     # regularisation weight (DLS equivalent)
-_MAX_ITER  = 5       # solver iteration cap
+_W_REG     = 5e-5     # regularisation weight (DLS equivalent)
+_MAX_ITER  = 15      # solver iteration cap (left arm regularly needs 5+)
 
 
 # ── Resource helper ───────────────────────────────────────────────────────────

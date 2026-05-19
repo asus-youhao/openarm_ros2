@@ -58,6 +58,7 @@ from placo_ik_solver import _find_urdf, _quat_to_rot
 from placo_ws_analyze import WorkspaceMesh
 from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
+from ws_boundary import SoftClamp, BoundaryMonitor
 from paths import csv_path as _csv_path, png_for as _png_for
 
 
@@ -69,7 +70,7 @@ ARM_CONFIG = {
         "ee_link":       "openarm_left_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
-        "workspace":     {"x": (-0.20, 0.42), "y": (0.05, 0.45), "z": (0.35, 0.8)},
+        "workspace":     {"x": (-0.20, 0.62), "y": (0.05, 0.65), "z": (0.15, 0.8)},
         "cmd_topic":     "/left_joint_trajectory_controller/joint_trajectory",
         "latency_topic": "/left/delta_ik_latency_ms",
         "profile_topic": "/left/placo_profile",
@@ -81,7 +82,7 @@ ARM_CONFIG = {
         "ee_link":       "openarm_right_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
-        "workspace":     {"x": (-0.20, 0.4), "y": (-0.4, -0.05), "z": (0.35, 0.8)},
+        "workspace":     {"x": (-0.20, 0.62), "y": (-0.65, -0.05), "z": (0.15, 0.8)},
         "cmd_topic":     "/right_joint_trajectory_controller/joint_trajectory",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",
@@ -284,6 +285,15 @@ class PlacoOnlineProfiler(Node):
             self._ws_mesh  = WorkspaceMesh.load(npz_path)
             self._ws_clamp = True
 
+        # Soft boundary (方案 A + E)
+        _soft_margin = float(getattr(args, "boundary_margin", 0.05))
+        self._soft_clamp    = SoftClamp(
+            ws_mesh  = self._ws_mesh,
+            margin_m = _soft_margin,
+            box_ws   = self.cfg["workspace"] if not self._ws_mesh else None,
+        )
+        self._bdry_monitor  = None   # created after super().__init__ publishes
+
         # IK session — Fix-2: rate_hz → dt=1/rate_hz; vel_limits=True
         urdf = _find_urdf()
         self._placo_session = PlacoSession(
@@ -337,6 +347,9 @@ class PlacoOnlineProfiler(Node):
         csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
         self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
         self._csv_path   = csv_p
+
+        # BoundaryMonitor needs publisher → create after node is fully initialised
+        self._bdry_monitor = BoundaryMonitor(self, args.arm)
 
         self._print_banner()
 
@@ -584,19 +597,17 @@ class PlacoOnlineProfiler(Node):
                     base_q   = self._ee_delta_ref_q   or tuple(self._pose[3:7])
                     dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
 
-                # ── Workspace clamp ───────────────────────────────────────
-                raw_x = base_xyz[0] + dx_arm[0]
-                raw_y = base_xyz[1] + dx_arm[1]
-                raw_z = base_xyz[2] + dx_arm[2]
-                if self._ws_mesh is not None:
-                    clamped, _ = self._ws_mesh.clamp(np.array([raw_x, raw_y, raw_z]))
-                    new_x, new_y, new_z = float(clamped[0]), float(clamped[1]), float(clamped[2])
-                elif self._ws_clamp:
-                    new_x = max(ws["x"][0], min(ws["x"][1], raw_x))
-                    new_y = max(ws["y"][0], min(ws["y"][1], raw_y))
-                    new_z = max(ws["z"][0], min(ws["z"][1], raw_z))
+                # ── Workspace clamp (方案 A: SoftClamp 取代硬 snap) ─────────
+                raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
+                                        base_xyz[1] + dx_arm[1],
+                                        base_xyz[2] + dx_arm[2]])
+                dx_arm_arr  = np.array(dx_arm)
+                if self._ws_clamp or self._ws_mesh is not None:
+                    new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
+                    new_x, new_y, new_z = float(new_xyz_arr[0]), float(new_xyz_arr[1]), float(new_xyz_arr[2])
+                    self._bdry_monitor.publish(_bs)   # 方案 E: topic + console
                 else:
-                    new_x, new_y, new_z = raw_x, raw_y, raw_z
+                    new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
 
                 new_q      = _qnorm(_qmul(dq, base_q))
                 target_xyz = np.array([new_x, new_y, new_z])
@@ -616,11 +627,14 @@ class PlacoOnlineProfiler(Node):
                 loop_wall_ms    = (time.perf_counter() - t_step) * 1000.0
                 deadline_missed = int(loop_wall_ms > self._deadline_ms)
 
+                # Always update seed — prevents cascade failures when _last_joints
+                # stays stale while the target keeps moving (Fix for left-arm drop)
+                with self._joints_lock:
+                    self._last_joints = r["joints"]
+
                 if r["success"]:
                     self._pose = [new_x, new_y, new_z,
                                   new_q[0], new_q[1], new_q[2], new_q[3]]
-                    with self._joints_lock:
-                        self._last_joints = r["joints"]      # raw, for next IK seed
                     joints_out = self._filter_joints(r["joints"])
                     if not self.args.dry_run:
                         self._publish(joints_out)
