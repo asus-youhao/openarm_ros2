@@ -50,7 +50,7 @@ from rclpy.node import Node
 from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Float32, Float64MultiArray, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
@@ -71,7 +71,8 @@ ARM_CONFIG = {
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
         "workspace":     {"x": (-0.20, 0.62), "y": (0.05, 0.65), "z": (0.15, 0.8)},
-        "cmd_topic":     "/left_joint_trajectory_controller/joint_trajectory",
+        "traj_topic":    "/left_joint_trajectory_controller/joint_trajectory",
+        "fwd_cmd_topic": "/left_forward_position_controller/commands",
         "latency_topic": "/left/delta_ik_latency_ms",
         "profile_topic": "/left/placo_profile",
         "ee_delta_topic": "/ee_delta/left",
@@ -83,7 +84,8 @@ ARM_CONFIG = {
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
         "workspace":     {"x": (-0.20, 0.62), "y": (-0.65, -0.05), "z": (0.15, 0.8)},
-        "cmd_topic":     "/right_joint_trajectory_controller/joint_trajectory",
+        "traj_topic":    "/right_joint_trajectory_controller/joint_trajectory",
+        "fwd_cmd_topic": "/right_forward_position_controller/commands",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",
         "ee_delta_topic": "/ee_delta/right",
@@ -96,7 +98,8 @@ CSV_FIELDS = [
     "dx", "dy", "dz",
     "robot_ms", "setup_ms", "loop_ms",
     "iterations", "iter_ms",
-    "pos_err_mm", "track_err_mm",
+    "pos_err_mm", "ori_err_deg", "track_err_mm",
+    "max_joint_delta_deg", "joint_jump_guard",
     "mem_kb", "deadline_missed",
     "sigma_min", "lambda_dls",          # Adaptive DLS (方案 C)
 ]
@@ -122,6 +125,36 @@ def _rotate_vec(v, q):
     qx, qy, qz, qw = q; vx, vy, vz = v
     tx = 2*(qy*vz-qz*vy); ty = 2*(qz*vx-qx*vz); tz = 2*(qx*vy-qy*vx)
     return (vx+qw*tx+qy*tz-qz*ty, vy+qw*ty+qz*tx-qx*tz, vz+qw*tz+qx*ty-qy*tx)
+
+def _qconj(q):
+    x, y, z, w = q
+    return (-x, -y, -z, w)
+
+def _qdot(q1, q2):
+    return sum(a * b for a, b in zip(q1, q2))
+
+def _qslerp(q0, q1, alpha):
+    """SLERP from q0 to q1. alpha=1.0 returns q1."""
+    q0 = _qnorm(q0)
+    q1 = _qnorm(q1)
+    alpha = max(0.0, min(1.0, float(alpha)))
+    dot = _qdot(q0, q1)
+    if dot < 0.0:
+        q1 = tuple(-v for v in q1)
+        dot = -dot
+    if dot > 0.9995:
+        return _qnorm(tuple((1.0 - alpha) * a + alpha * b for a, b in zip(q0, q1)))
+    theta_0 = math.acos(max(-1.0, min(1.0, dot)))
+    sin_theta_0 = math.sin(theta_0)
+    theta = theta_0 * alpha
+    s0 = math.cos(theta) - dot * math.sin(theta) / sin_theta_0
+    s1 = math.sin(theta) / sin_theta_0
+    return _qnorm(tuple(s0 * a + s1 * b for a, b in zip(q0, q1)))
+
+def _rotate_quat(q, frame_q):
+    """Similarity transform: rotate a delta quaternion through frame_q.
+    dq_arm = frame_q * dq * conj(frame_q)"""
+    return _qnorm(_qmul(_qmul(frame_q, _qnorm(q)), _qconj(frame_q)))
 
 
 def _parse_lpf_alpha(spec: str, n_joints: int) -> List[float]:
@@ -260,7 +293,7 @@ class PlacoOnlineProfiler(Node):
         self._ee_delta_ref_xyz = None
         self._ee_delta_ref_q   = None
         self._ee_delta_last_t  = None
-        self._ee_delta_gap_sec = 0.35   # seconds before resetting session ref
+        self._ee_delta_gap_sec = float(getattr(args, "ee_delta_gap_sec", 0.8))
 
         # Calibration quaternion (tracker → arm frame)
         crpy = getattr(args, "calib_rpy", None)
@@ -270,6 +303,18 @@ class PlacoOnlineProfiler(Node):
             rr, rp = 0.0, 0.0
             ry = math.radians(getattr(args, "calib_yaw", 0.0))
         self._calib_q = _qfrom_rpy(rr, rp, ry)
+        self._no_rot_tracking = bool(getattr(args, "no_rot_tracking", False))
+
+        # Input-side orientation smoothing (Fix-1: SLERP EMA).
+        # alpha=1.0 disables smoothing.
+        self._ori_lpf_alpha = max(0.0, min(1.0, float(
+            getattr(args, "ori_lpf_alpha", 0.35))))
+        self._ori_lpf_active = self._ori_lpf_alpha < 0.999
+        self._ori_filt_q: Optional[Tuple[float, float, float, float]] = None
+
+        # Hard guard against IK branch jumps (Fix-5).
+        self._joint_jump_guard_deg = float(
+            getattr(args, "joint_jump_guard_deg", 15.0))
 
         # Rate / timing
         self._rate_hz     = float(getattr(args, "rate", 20.0))
@@ -307,7 +352,7 @@ class PlacoOnlineProfiler(Node):
             wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
         )
 
-        # Output-side LPF on joint commands  (Fix-D)
+        # Output-side LPF on joint commands  (Fix-D / Fix-3)
         n_joints = len(cfg["joint_names"])
         self._lpf_alpha: List[float] = _parse_lpf_alpha(
             getattr(args, "lpf_alpha", "1.0"), n_joints
@@ -330,7 +375,17 @@ class PlacoOnlineProfiler(Node):
             self._tf_buffer, cfg["base_link"], cfg["ee_link"], poll_sec=0.05)
 
         # Publishers
-        self._traj_pub    = self.create_publisher(JointTrajectory, cfg["cmd_topic"], 10)
+        # JointTrajectory publisher — used ONLY by send_home_confirmed()
+        self._traj_pub = self.create_publisher(
+            JointTrajectory, cfg["traj_topic"], 10)
+        # ForwardCommandController publisher — used for hot-loop streaming
+        self._use_traj = getattr(args, 'use_traj', False)
+        if self._use_traj:
+            # Legacy mode: use JointTrajectoryController for streaming
+            self._fwd_pub = None
+        else:
+            self._fwd_pub = self.create_publisher(
+                Float64MultiArray, cfg["fwd_cmd_topic"], 10)
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
         self._profile_pub = self.create_publisher(String, cfg["profile_topic"], 10)
 
@@ -388,6 +443,26 @@ class PlacoOnlineProfiler(Node):
         except TransformException:
             return None
 
+    def _reset_orientation_filter(self) -> None:
+        self._ori_filt_q = None
+
+    def _filter_orientation(self, q_target) -> Tuple[float, float, float, float]:
+        """SLERP EMA on target orientation, after frame calibration."""
+        q_target = _qnorm(q_target)
+        if not self._ori_lpf_active or self._ori_filt_q is None:
+            self._ori_filt_q = q_target
+            return q_target
+        self._ori_filt_q = _qslerp(self._ori_filt_q, q_target, self._ori_lpf_alpha)
+        return self._ori_filt_q
+
+    def _joint_jump_guard(self, prev: List[float], new: List[float]) -> Tuple[bool, float]:
+        """Return (triggered, max_delta_deg).  Rejects IK output with any joint > limit."""
+        max_delta = max(
+            math.degrees(abs(n - p)) for p, n in zip(prev, new)
+        ) if prev and new else 0.0
+        limit = self._joint_jump_guard_deg
+        return (limit > 0.0 and max_delta > limit), max_delta
+
     # ── Send home ─────────────────────────────────────────────────────────────
     def send_home_confirmed(
         self,
@@ -439,6 +514,7 @@ class PlacoOnlineProfiler(Node):
                     with self._joints_lock:
                         self._last_joints = [js[n] for n in jnames]
                 self._filt_joints = None    # re-anchor LPF on next IK step
+                self._reset_orientation_filter()
                 return True
             else:
                 with self._js_lock:
@@ -455,18 +531,134 @@ class PlacoOnlineProfiler(Node):
         self._pose = [hx, hy, hz, hqx, hqy, hqz, hqw]
         with self._joints_lock:
             self._last_joints = list(self.cfg["home_joints"])
+        self._filt_joints = list(self._last_joints)
+        self._reset_orientation_filter()
         return False
 
-    # ── Publish trajectory ────────────────────────────────────────────────────
+    def send_home_fwd(
+        self,
+        pos_tol:    float = 0.025,
+        motion_sec: float = 3.5,
+        ramp_hz:    float = 50.0,
+    ) -> bool:
+        """
+        Ramp arm to home via ForwardCommandController (linear interpolation).
+
+        Unlike send_home_confirmed() which sends a single JointTrajectory,
+        this method publishes intermediate joint positions at `ramp_hz` via
+        Float64MultiArray, suitable for when JointTrajectoryController is not
+        active.
+
+        Used automatically when --home-first is specified in ForwardCmd mode.
+        """
+        if self._fwd_pub is None:
+            # Fallback: use trajectory controller
+            return self.send_home_confirmed(pos_tol=pos_tol, motion_sec=motion_sec)
+
+        jnames = self.cfg["joint_names"]
+        home   = self.cfg["home_joints"]
+        home_xyz = self.cfg["home_pose"][:3]
+
+        # Read current joint positions
+        with self._js_lock:
+            js = dict(self._joint_states)
+        if not all(n in js for n in jnames):
+            print("  [home_fwd] ⚠ joint states not available — waiting 2s...")
+            time.sleep(2.0)
+            with self._js_lock:
+                js = dict(self._joint_states)
+            if not all(n in js for n in jnames):
+                print("  [home_fwd] ✗ still no joint states — aborting")
+                return False
+
+        start = [js[n] for n in jnames]
+
+        # Check if already near home
+        max_delta_deg = max(math.degrees(abs(s - h)) for s, h in zip(start, home))
+        if max_delta_deg < 1.0:
+            print(f"  [home_fwd] already near home (max_Δ={max_delta_deg:.1f}°)")
+            return True
+
+        # Compute ramp duration based on max joint delta and speed limit
+        # Conservative: max 30°/s to avoid sudden movements
+        max_speed_dps = 30.0   # degrees per second
+        ramp_sec = max(1.0, max_delta_deg / max_speed_dps)
+        ramp_sec = min(ramp_sec, motion_sec)
+
+        n_steps = int(ramp_sec * ramp_hz)
+        dt = 1.0 / ramp_hz
+
+        print(f"  [home_fwd] ramping {max_delta_deg:.1f}° over "
+              f"{ramp_sec:.1f}s ({n_steps} steps at {ramp_hz}Hz)...")
+
+        for step in range(n_steps + 1):
+            alpha = step / max(1, n_steps)  # 0.0 → 1.0
+            # Smooth ease-in-out (cosine interpolation)
+            alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
+            interp = [s + alpha_smooth * (h - s) for s, h in zip(start, home)]
+
+            msg = Float64MultiArray()
+            msg.data = interp
+            self._fwd_pub.publish(msg)
+
+            if step % max(1, n_steps // 10) == 0:
+                pct = alpha * 100
+                print(f"  [home_fwd]   {pct:.0f}%", end="\r", flush=True)
+
+            time.sleep(dt)
+
+        print()
+
+        # Verify arrival via TF
+        time.sleep(0.5)
+        tf = self._get_tf(1.0)
+        if tf is not None:
+            dist = math.sqrt(sum((tf[i] - home_xyz[i])**2 for i in range(3)))
+            if dist <= pos_tol:
+                print(f"  [home_fwd] ✓ reached home  dist={dist*100:.1f}cm")
+                self._pose = list(tf)
+                with self._js_lock:
+                    js = dict(self._joint_states)
+                if all(n in js for n in jnames):
+                    with self._joints_lock:
+                        self._last_joints = [js[n] for n in jnames]
+                self._filt_joints = None
+                self._reset_orientation_filter()
+                return True
+            else:
+                print(f"  [home_fwd] ⚠ dist={dist*100:.1f}cm — close but "
+                      f"may need adjustment")
+        else:
+            print("  [home_fwd] ⚠ could not verify via TF")
+
+        # Even if TF check isn't perfect, set internal state to home
+        with self._joints_lock:
+            self._last_joints = list(home)
+        self._filt_joints = None
+        self._reset_orientation_filter()
+        hx, hy, hz, hqx, hqy, hqz, hqw = self.cfg["home_pose"]
+        self._pose = [hx, hy, hz, hqx, hqy, hqz, hqw]
+        return True
+
+    # ── Publish to hardware ────────────────────────────────────────────────────
     def _publish(self, joints: List[float]):
-        msg = JointTrajectory()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.joint_names  = list(self.cfg["joint_names"])
-        pt = JointTrajectoryPoint()
-        pt.positions     = list(joints)
-        pt.time_from_start.nanosec = int(self._horizon_ms * 1e6)
-        msg.points = [pt]
-        self._traj_pub.publish(msg)
+        if self._fwd_pub is not None:
+            # Solution A: stream directly via ForwardCommandController
+            msg = Float64MultiArray()
+            msg.data = joints
+            self._fwd_pub.publish(msg)
+        else:
+            # Legacy: JointTrajectoryController
+            msg = JointTrajectory()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.joint_names  = list(self.cfg["joint_names"])
+            pt = JointTrajectoryPoint()
+            pt.positions     = list(joints)
+            hs = max(0.001, self._horizon_ms / 1000.0)
+            pt.time_from_start.sec = int(hs)
+            pt.time_from_start.nanosec = int((hs % 1.0) * 1e9)
+            msg.points = [pt]
+            self._traj_pub.publish(msg)
 
     # ── Output LPF on joint command (Fix-D) ───────────────────────────────────
     def _filter_joints(self, raw: List[float]) -> List[float]:
@@ -535,6 +727,7 @@ class PlacoOnlineProfiler(Node):
                 self._ee_delta_ref_xyz = None
                 self._ee_delta_ref_q   = None
                 self._ee_delta_last_t  = None
+                self._reset_orientation_filter()
                 print("\n  [kbd] session reference reset")
 
             # ── Input routing: tracker topic vs keyboard ───────────────────
@@ -602,10 +795,13 @@ class PlacoOnlineProfiler(Node):
                         else:
                             self._ee_delta_ref_xyz = tuple(self._pose[:3])
                             self._ee_delta_ref_q   = tuple(self._pose[3:7])
+                        self._reset_orientation_filter()
 
                     base_xyz = self._ee_delta_ref_xyz or tuple(self._pose[:3])
                     base_q   = self._ee_delta_ref_q   or tuple(self._pose[3:7])
                     dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
+                    # Fix-8: apply calibration to orientation delta (was missing)
+                    dq       = _rotate_quat(dq, self._calib_q)
 
                 # ── Workspace clamp (方案 A: SoftClamp 取代硬 snap) ─────────
                 raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
@@ -619,16 +815,20 @@ class PlacoOnlineProfiler(Node):
                 else:
                     new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
 
-                new_q      = _qnorm(_qmul(dq, base_q))
+                # Fix-1: compute target orientation, then SLERP-filter
+                new_q_raw  = _qnorm(_qmul(dq, base_q))
+                new_q      = base_q if self._no_rot_tracking else self._filter_orientation(new_q_raw)
                 target_xyz = np.array([new_x, new_y, new_z])
                 target_R   = _quat_to_rot(*new_q)
 
+                # Fix-6: seed from filtered joints (what the robot is actually tracking)
                 with self._joints_lock:
-                    seed = list(self._last_joints)
+                    seed = list(self._filt_joints or self._last_joints)
 
                 # ── IK solve ──────────────────────────────────────────────
                 t_total = time.perf_counter()
-                r = self._placo_session.solve_step(target_xyz, target_R, seed)
+                r = self._placo_session.solve_step(
+                    target_xyz, target_R, seed, no_rot=self._no_rot_tracking)
                 ik_ms    = r["solve_ms"]
                 total_ms = (time.perf_counter() - t_total) * 1000.0
 
@@ -636,38 +836,60 @@ class PlacoOnlineProfiler(Node):
                     np.array(r["ee_xyz"]) - target_xyz)) * 1000.0
                 loop_wall_ms    = (time.perf_counter() - t_step) * 1000.0
                 deadline_missed = int(loop_wall_ms > self._deadline_ms)
+                # Fix-5: reject IK solutions with large inter-step joint jumps
+                guard_hit, max_joint_delta_deg = self._joint_jump_guard(
+                    seed, r["joints"])
 
-                # Always update seed — prevents cascade failures when _last_joints
-                # stays stale while the target keeps moving (Fix for left-arm drop)
-                with self._joints_lock:
-                    self._last_joints = r["joints"]
-
+                # ── Anti-jump: two complementary methods ──────────────────────
+                # Method 1 (proactive) : wrist_vel_cap in PlacoSession — QP hard
+                #                        constraint on j5-7; caps single-step Δq
+                #                        BEFORE the IK returns.
+                # Method 2 (reactive)  : joint_jump_guard above — detects post-IK
+                #                        any joint Δ > N°/step; rejects publish.
+                # Method 1 should catch most cases; Method 2 is the safety net
+                # for redundancy flips / large target leaps method 1 missed.
+                #
                 # ── Set2-D: continuous approach (no success-freeze) ───────────
-                # Always publish; trust QP joint+velocity limits to keep the
-                # solution feasible.  On failure (pos_err > POS_RELAX), update
-                # _pose to the SOLVER'S ACTUAL EE (r["ee_xyz"]) instead of the
-                # unreachable target, preventing cumulative drift.  Orientation
-                # is held at previous value on fail (no r["ee_R"] available).
-                # CLI --success-gate restores the old freeze behaviour for A/B.
-                if r["success"]:
-                    self._pose = [new_x, new_y, new_z,
-                                  new_q[0], new_q[1], new_q[2], new_q[3]]
-                    self._fail_streak = 0
-                else:
-                    ee = r["ee_xyz"]
-                    self._pose[0] = float(ee[0])
-                    self._pose[1] = float(ee[1])
-                    self._pose[2] = float(ee[2])
-                    # _pose[3:7] (orientation) intentionally kept at last value
+                # When guard does NOT trip: always publish (even on IK fail),
+                # trusting velocity_limits to saturate the partial solution and
+                # _pose drift-protection (track r["ee_xyz"]) to prevent base
+                # reference drift.  --success-gate restores legacy freeze.
+                #
+                # When guard trips: reject this whole step — don't update seed,
+                # don't update filter state, don't update _pose, don't publish.
+                if guard_hit:
+                    r["success"] = 0   # mark fail for CSV accounting
                     self._fail_streak += 1
                     if self._fail_streak % self._fail_warn_every == 0:
-                        print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
-                              f"streak={self._fail_streak} — publishing partial solve")
+                        print(f"\n  [guard] joint Δ={max_joint_delta_deg:.1f}° "
+                              f"rejected, streak={self._fail_streak}")
+                else:
+                    # Filter once (always — keeps LPF state continuous)
+                    joints_out = self._filter_joints(r["joints"])
+                    # Fix-6 (test3): seed next IK from filtered output, not raw
+                    with self._joints_lock:
+                        self._last_joints = list(joints_out)
 
-                publish_ok = r["success"] or not self._success_gate
-                joints_out = self._filter_joints(r["joints"])
-                if publish_ok and not self.args.dry_run:
-                    self._publish(joints_out)
+                    if r["success"]:
+                        self._pose = [new_x, new_y, new_z,
+                                      new_q[0], new_q[1], new_q[2], new_q[3]]
+                        self._fail_streak = 0
+                    else:
+                        # Set2-D: _pose tracks solver's actual EE (drift防護)
+                        ee = r["ee_xyz"]
+                        self._pose[0] = float(ee[0])
+                        self._pose[1] = float(ee[1])
+                        self._pose[2] = float(ee[2])
+                        # orientation held at previous (no r["ee_R"])
+                        self._fail_streak += 1
+                        if self._fail_streak % self._fail_warn_every == 0:
+                            print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
+                                  f"streak={self._fail_streak} — publishing partial solve")
+
+                    publish_ok = r["success"] or not self._success_gate
+                    if publish_ok and not self.args.dry_run:
+                        self._publish(joints_out)
+
                 self._latency_pub.publish(Float32(data=float(ik_ms)))
 
                 step_count += 1
@@ -682,7 +904,10 @@ class PlacoOnlineProfiler(Node):
                     "iterations": r["iterations"],
                     "iter_ms":    round(r["iter_ms"], 4),
                     "pos_err_mm": round(r["pos_err_mm"], 3),
+                    "ori_err_deg": round(r.get("ori_err_deg", 0.0), 3),
                     "track_err_mm": round(track_err, 3),
+                    "max_joint_delta_deg": round(max_joint_delta_deg, 3),
+                    "joint_jump_guard": int(guard_hit),
                     "success":    r["success"],
                     "deadline_missed": deadline_missed,
                     "mem_mb":     round(r["mem_kb"] / 1024.0, 1),
@@ -705,7 +930,10 @@ class PlacoOnlineProfiler(Node):
                     "iterations": r["iterations"],
                     "iter_ms":    round(r["iter_ms"], 5),
                     "pos_err_mm": round(r["pos_err_mm"], 4),
+                    "ori_err_deg": round(r.get("ori_err_deg", 0.0), 4),
                     "track_err_mm": round(track_err, 4),
+                    "max_joint_delta_deg": round(max_joint_delta_deg, 4),
+                    "joint_jump_guard": int(guard_hit),
                     "mem_kb":     r["mem_kb"],
                     "deadline_missed": deadline_missed,
                     "sigma_min":  round(r.get("sigma_min", 0.0), 6),
@@ -912,7 +1140,11 @@ class PlacoOnlineProfiler(Node):
         print(f"  arm={args.arm}  mode={'rebuild' if args.rebuild else 'CACHED+early_exit'}")
         print(f"  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms")
         print(f"  ee_delta : {cfg['ee_delta_topic']}")
-        print(f"  cmd      : {cfg['cmd_topic']}")
+        if self._fwd_pub is not None:
+            print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
+        else:
+            print(f"  cmd      : {cfg['traj_topic']}  (JointTrajectoryController)")
+        print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
         if self._ws_mesh is not None:
             s = self._ws_mesh.summary()
@@ -931,6 +1163,14 @@ class PlacoOnlineProfiler(Node):
             print(f"  stuck-rst: {self._stuck_reset_ms:.0f}ms outside → auto ref reset (Set2-F)")
         else:
             print(f"  stuck-rst: OFF")
+        if self._ori_lpf_active:
+            print(f"  ori_lpf  : α={self._ori_lpf_alpha:.2f}  (SLERP EMA on target quat, test3)")
+        else:
+            print(f"  ori_lpf  : OFF")
+        print(f"  rot_track: {'OFF' if self._no_rot_tracking else 'ON'}")
+        print(f"  guards   : jump>{self._joint_jump_guard_deg:.1f}°/step (post-IK reject)"
+              f"  +  wrist_vel_cap (pre-IK QP)"
+              f"  +  gap>{self._ee_delta_gap_sec:.2f}s")
         print(f"{'═'*65}")
         print(f"  1-9=scale  +/-=fine  t=mode  p=pause  r=reset  h=home  ?=help  Ctrl-C=quit")
         print(f"  KEYBOARD: w/s=±Y  a/d=±X  q/e=±Z  i/k=pitch  j/l=yaw  u/o=roll")
