@@ -98,6 +98,7 @@ CSV_FIELDS = [
     "iterations", "iter_ms",
     "pos_err_mm", "track_err_mm",
     "mem_kb", "deadline_missed",
+    "sigma_min", "lambda_dls",          # Adaptive DLS (方案 C)
 ]
 
 
@@ -657,6 +658,8 @@ class PlacoOnlineProfiler(Node):
                     "deadline_missed": deadline_missed,
                     "mem_mb":     round(r["mem_kb"] / 1024.0, 1),
                     "mode":       "rebuild" if self.args.rebuild else "cached",
+                    "sigma_min":  round(r.get("sigma_min", 0.0), 6),
+                    "lambda_dls": round(r.get("lambda_dls", 0.0), 8),
                 })))
 
                 # Fix-3: non-blocking enqueue — no disk I/O on hot path
@@ -676,6 +679,8 @@ class PlacoOnlineProfiler(Node):
                     "track_err_mm": round(track_err, 4),
                     "mem_kb":     r["mem_kb"],
                     "deadline_missed": deadline_missed,
+                    "sigma_min":  round(r.get("sigma_min", 0.0), 6),
+                    "lambda_dls": round(r.get("lambda_dls", 0.0), 8),
                 }
                 self._csv_writer.put(row)
                 self._records.append(row)
@@ -735,6 +740,8 @@ class PlacoOnlineProfiler(Node):
             ("iter_ms",      "ms/iter"),
             ("pos_err_mm",   "mm — IK residual"),
             ("track_err_mm", "mm — tracking error"),
+            ("sigma_min",    "— Jacobian min singular value"),
+            ("lambda_dls",   "— adaptive DLS damping"),
         ]:
             vals = [float(r.get(key, 0)) for r in rows]
             print(
@@ -771,7 +778,11 @@ class PlacoOnlineProfiler(Node):
         missed = [r["deadline_missed"] for r in rows]
         succ   = [r["success"] for r in rows]
 
-        fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+        sigma_ = [r.get("sigma_min",   0.0) for r in rows]
+        lam_   = [r.get("lambda_dls",  0.0) for r in rows]
+        from placo_ik_session import _DLS_SIGMA_THRESH, _DLS_LAMBDA_BASE, _DLS_LAMBDA_MAX
+
+        fig, axes = plt.subplots(4, 2, figsize=(14, 16))
         fig.suptitle(
             f"Placo Online Profiler  arm={self.args.arm}  "
             f"{'rebuild' if self.args.rebuild else 'cached'}\n"
@@ -823,6 +834,34 @@ class PlacoOnlineProfiler(Node):
         ax.plot(t, sr_roll, color="green", linewidth=0.8)
         ax.set_ylim(-5, 105)
         ax.set_title(f"Rolling success rate % (win={win})"); ax.grid(True, alpha=0.3)
+
+        # ── Row 4: Adaptive DLS — σ_min and λ_dls ────────────────────────
+        ax = axes[3, 0]
+        ax.plot(t, sigma_, color="royalblue", linewidth=0.8, label="σ_min")
+        ax.axhline(_DLS_SIGMA_THRESH, color="red", linestyle="--", linewidth=1.0,
+                   label=f"σ_thresh={_DLS_SIGMA_THRESH}")
+        _hm(ax, sigma_, color="navy", label=f"mean={float(np.mean(sigma_)):.4f}")
+        near_sing = sum(1 for s in sigma_ if s < _DLS_SIGMA_THRESH)
+        ax.set_title(
+            f"σ_min (Jacobian — Adaptive DLS)"
+            f"  near-singular: {near_sing}/{len(sigma_)} ({near_sing/max(len(sigma_),1)*100:.0f}%)",
+            fontsize=8,
+        )
+        ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+        ax.set_ylabel("σ_min"); ax.set_xlabel("step")
+
+        ax = axes[3, 1]
+        ax.plot(t, lam_, color="darkorchid", linewidth=0.8, label="λ_dls")
+        ax.axhline(_DLS_LAMBDA_BASE, color="gray",  linestyle="--", linewidth=0.8,
+                   label=f"λ_base={_DLS_LAMBDA_BASE:.0e}")
+        ax.axhline(_DLS_LAMBDA_BASE + _DLS_LAMBDA_MAX, color="red",
+                   linestyle="--", linewidth=0.8,
+                   label=f"λ_max={_DLS_LAMBDA_BASE + _DLS_LAMBDA_MAX:.0e}")
+        _hm(ax, lam_, color="purple", label=f"mean={float(np.mean(lam_)):.2e}")
+        ax.set_yscale("log")
+        ax.set_title("λ_dls (Adaptive DLS damping — log scale)", fontsize=8)
+        ax.legend(fontsize=7); ax.grid(True, alpha=0.3, which="both")
+        ax.set_ylabel("λ_dls"); ax.set_xlabel("step")
 
         plt.tight_layout()
         plt.savefig(plot_path, dpi=120)

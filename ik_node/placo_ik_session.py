@@ -25,10 +25,18 @@ from typing import Dict, List
 _POS_TOL   = 0.003    # m  — early-exit convergence threshold
 _POS_RELAX = 0.010    # m  — success acceptance threshold (relaxed)
 _W_POS     = 1.0      # position task weight
-_W_ORI     = 0.8      # orientation task weight
-_W_JOINTS  = 1e-4     # naturalness (joint preference) weight
-_W_REG     = 5e-5     # regularisation weight (DLS equivalent)
-_MAX_ITER  = 15      # solver iteration cap (left arm regularly needs 5+)
+_W_ORI     = 2.0      # orientation task weight
+_W_JOINTS  = 5e-4     # naturalness (joint preference) weight
+_W_REG     = 6e-5     # regularisation weight (DLS equivalent)
+_MAX_ITER  = 15       # solver iteration cap (left arm regularly needs 5+)
+
+# ── Adaptive DLS damping constants (方案 C — wrist wobble fix) ────────────────
+# λ = λ_base + λ_max × clamp((σ_thresh - σ_min) / σ_thresh, 0, 1)²
+# Far from singularity  (σ_min ≥ σ_thresh): λ ≈ λ_base  (~6e-5)
+# Near singularity      (σ_min → 0)        : λ → λ_base + λ_max  (~1e-2)
+_DLS_LAMBDA_BASE  = 6e-5   # baseline λ (= _W_REG, behaviour unchanged when non-singular)
+_DLS_LAMBDA_MAX   = 1e-2   # maximum λ boost at singularity
+_DLS_SIGMA_THRESH = 0.15   # σ_min threshold below which damping ramps up
 
 
 # ── Resource helper ───────────────────────────────────────────────────────────
@@ -95,6 +103,14 @@ class PlacoSession:
             self._robot = None
             print(f"[PlacoSession] rebuild mode  arm={arm}")
 
+        # Cache Jacobian column indices for Adaptive DLS (方案 C).
+        # v_offsets are URDF-fixed — compute once from any robot instance.
+        _probe = self._robot if self._robot is not None else \
+            placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+        self._jac_cols = [_probe.get_joint_v_offset(n) for n in self._joint_names]
+        print(f"[PlacoSession] adaptive-DLS  σ_thresh={_DLS_SIGMA_THRESH}  "
+              f"λ_max={_DLS_LAMBDA_MAX}  jac_cols={self._jac_cols}")
+
     # ── Solve one step ────────────────────────────────────────────────────────
     def solve_step(
         self,
@@ -136,6 +152,15 @@ class PlacoSession:
             robot.set_joint(name, val)
         robot.update_kinematics()
 
+        # ── Adaptive DLS (方案 C): Jacobian SVD → σ_min → λ ─────────────────
+        # frame_jacobian is a native placo call (~0.01 ms); SVD of 6×7 is trivial.
+        J_full    = robot.frame_jacobian(self._ee_link, "world")
+        J_arm     = J_full[:, self._jac_cols]              # 6 × n_joints
+        _svs      = np.linalg.svd(J_arm, compute_uv=False) # descending order
+        sigma_min = float(_svs[-1])
+        _ratio    = max(0.0, (_DLS_SIGMA_THRESH - sigma_min) / _DLS_SIGMA_THRESH)
+        lambda_dls = _DLS_LAMBDA_BASE + _DLS_LAMBDA_MAX * _ratio * _ratio
+
         pos_task = solver.add_position_task(self._ee_link, target_xyz)
         pos_task.configure("pos", "soft", _W_POS)
         if not no_rot:
@@ -144,7 +169,7 @@ class PlacoSession:
         jt = solver.add_joints_task()
         jt.set_joints(self._pref)
         jt.configure("naturalness", "soft", _W_JOINTS)
-        reg = solver.add_regularization_task(_W_REG)
+        reg = solver.add_regularization_task(lambda_dls)   # adaptive λ
         reg.configure("reg", "soft", 1.0)
         setup_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -184,4 +209,6 @@ class PlacoSession:
             "joints":           joints,
             "ee_xyz":           list(T_ee[:3, 3]),
             "robot_was_cached": cached,
+            "sigma_min":        sigma_min,
+            "lambda_dls":       lambda_dls,
         }
