@@ -10,6 +10,14 @@ Fix-2 applied
   * velocity limits enabled by default (prevents single-step joint jumps)
   * dt = 1/rate_hz  (matches actual control period, not a fixed 10 ms)
   * early-exit T_ee cached: avoids one extra FK call per converged step
+
+Anti-vibration patch
+--------------------
+  * _MAX_ITER 5 → 20  (sufficient for orientation convergence)
+  * _W_ORI   0.8 → 1.0 (equal priority with position for teleoperation)
+  * _W_REG   1e-5 → 1e-4 (stronger singularity damping)
+  * early-exit checks BOTH position AND orientation convergence
+  * returns ori_err_deg in profiling dict
 """
 
 import os as _os, sys as _sys
@@ -22,13 +30,28 @@ import numpy as np
 from typing import Dict, List
 
 # ── IK tuning constants ───────────────────────────────────────────────────────
-_POS_TOL   = 0.003    # m  — early-exit convergence threshold
-_POS_RELAX = 0.010    # m  — success acceptance threshold (relaxed)
-_W_POS     = 1.0      # position task weight
+_POS_TOL   = 0.003    # m   — early-exit position convergence threshold
+_POS_RELAX = 0.010    # m   — success acceptance threshold (relaxed)
+_ORI_TOL   = 0.050    # rad — early-exit orientation threshold (~2.9°)
+_ORI_RELAX = 0.200    # rad — success orientation threshold (~11.5°)
+_W_POS     = 1.0      # position task weight (baseline)
+
+# ── IK weight choice (merge note) ─────────────────────────────────────────────
+# Two tuning sets exist; we adopt the placo_ik branch values because they pair
+# with adaptive DLS (low baseline λ, dynamically boosted at singularities).
+#
+#   placo_ik (ACTIVE):       _W_ORI=2.0  _W_JOINTS=5e-4  _W_REG=6e-5  _MAX_ITER=15
+#   jitter_test3 (REFERENCE): _W_ORI=1.0  _W_JOINTS=1e-4  _W_REG=1e-4  _MAX_ITER=20
+#
+# Why placo_ik is picked:
+#   - _W_ORI=2.0 → aggressive orientation tracking; adaptive DLS prevents wobble
+#   - _W_REG=6e-5 baseline → DLS adapter boosts to ~1e-2 near singularity
+#   - _MAX_ITER=15 enough with adaptive λ; jitter_test3 needs 20 because λ is fixed
+# Switch by editing 4 lines below if the alternative is preferred (or A/B test).
 _W_ORI     = 2.0      # orientation task weight
 _W_JOINTS  = 5e-4     # naturalness (joint preference) weight
-_W_REG     = 6e-5     # regularisation weight (DLS equivalent)
-_MAX_ITER  = 15       # solver iteration cap (left arm regularly needs 5+)
+_W_REG     = 6e-5     # regularisation weight (DLS baseline, dynamically boosted)
+_MAX_ITER  = 15       # solver iteration cap
 
 # ── Adaptive DLS damping constants (方案 C — wrist wobble fix) ────────────────
 # λ = λ_base + λ_max × clamp((σ_thresh - σ_min) / σ_thresh, 0, 1)²
@@ -45,6 +68,14 @@ _DLS_SIGMA_THRESH = 0.15   # σ_min threshold below which damping ramps up
 # At 100Hz dt=10ms: 4.0 rad/s → 2.3°/step  (vs URDF: 12°/step).
 _WRIST_VEL_CAP    = 4.0    # rad/s; 0 or negative → disabled (use URDF default)
 _WRIST_JOINT_IDX  = (4, 5, 6)   # 0-based indices for joint 5, 6, 7
+
+
+def _rot_error_rad(current_R: np.ndarray, target_R: np.ndarray) -> float:
+    """Shortest geodesic angle (rad) between two 3×3 rotation matrices.
+    From jitter_test3 — used for orientation-aware early exit + reporting."""
+    R_err = current_R.T @ target_R
+    cos_angle = (float(np.trace(R_err)) - 1.0) * 0.5
+    return float(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
 
 
 # ── Resource helper ───────────────────────────────────────────────────────────
@@ -201,14 +232,21 @@ class PlacoSession:
         t0 = time.perf_counter()
         iters_used = 0
         T_ee = None
+        pos_err = float("inf")
+        ori_err = 0.0 if no_rot else float("inf")
         for _ in range(self._max_iter):
             solver.solve(True)
             robot.update_kinematics()
             iters_used += 1
             if not self._rebuild:
-                T_ee = robot.get_T_world_frame(self._ee_link)   # cached each iter
-                if float(np.linalg.norm(T_ee[:3, 3] - target_xyz)) < _POS_TOL:
-                    break   # converged — skip remaining iterations
+                T_ee = robot.get_T_world_frame(self._ee_link)
+                pos_err = float(np.linalg.norm(T_ee[:3, 3] - target_xyz))
+                if pos_err < _POS_TOL:
+                    if no_rot:
+                        break   # position-only: converged
+                    ori_err = _rot_error_rad(T_ee[:3, :3], target_R)
+                    if ori_err < _ORI_TOL:
+                        break   # both pos AND ori converged
         loop_ms = (time.perf_counter() - t0) * 1000.0
 
         # ── Final state (reuse T_ee already computed in last early-exit check) ─
@@ -217,6 +255,8 @@ class PlacoSession:
         joints  = [robot.get_joint(n) for n in self._joint_names]
         joints  = [max(l, min(h, q)) for q, l, h in zip(joints, self._lo, self._hi)]
         pos_err = float(np.linalg.norm(T_ee[:3, 3] - target_xyz))
+        ori_err = 0.0 if no_rot else _rot_error_rad(T_ee[:3, :3], target_R)
+        success = int(pos_err < _POS_RELAX and (no_rot or ori_err < _ORI_RELAX))
 
         solve_ms = robot_ms + setup_ms + loop_ms
         return {
@@ -229,7 +269,9 @@ class PlacoSession:
             "iter_ms":          loop_ms / iters_used if iters_used else 0.0,
             "mem_kb":           _mem_rss_kb(),
             "pos_err_mm":       pos_err * 1000.0,
-            "success":          int(pos_err < _POS_RELAX),
+            "ori_err_rad":      ori_err,
+            "ori_err_deg":      float(np.degrees(ori_err)),
+            "success":          success,
             "joints":           joints,
             "ee_xyz":           list(T_ee[:3, 3]),
             "robot_was_cached": cached,
