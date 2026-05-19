@@ -38,6 +38,14 @@ _DLS_LAMBDA_BASE  = 6e-5   # baseline λ (= _W_REG, behaviour unchanged when non
 _DLS_LAMBDA_MAX   = 1e-2   # maximum λ boost at singularity
 _DLS_SIGMA_THRESH = 0.15   # σ_min threshold below which damping ramps up
 
+# ── Wrist velocity cap (teleop smoothness) ────────────────────────────────────
+# URDF default wrist (j5/j6/j7) velocity = 20.94 rad/s ≈ 1200°/s — far too fast
+# for VR teleop, lets per-step IK noise pass straight through to the motors.
+# Override via RobotWrapper.set_velocity_limit() to a teleop-friendly value.
+# At 100Hz dt=10ms: 4.0 rad/s → 2.3°/step  (vs URDF: 12°/step).
+_WRIST_VEL_CAP    = 4.0    # rad/s; 0 or negative → disabled (use URDF default)
+_WRIST_JOINT_IDX  = (4, 5, 6)   # 0-based indices for joint 5, 6, 7
+
 
 # ── Resource helper ───────────────────────────────────────────────────────────
 def _mem_rss_kb() -> int:
@@ -68,12 +76,13 @@ class PlacoSession:
 
     def __init__(
         self,
-        urdf:       str,
-        arm:        str,
-        rebuild:    bool  = False,
-        max_iter:   int   = _MAX_ITER,
-        rate_hz:    float = 20.0,
-        vel_limits: bool  = True,
+        urdf:           str,
+        arm:            str,
+        rebuild:        bool  = False,
+        max_iter:       int   = _MAX_ITER,
+        rate_hz:        float = 20.0,
+        vel_limits:     bool  = True,
+        wrist_vel_cap:  float = _WRIST_VEL_CAP,
     ):
         import placo
         from placo_ik_solver import _HUMAN_RIGHT, _HUMAN_LEFT, _JOINT_NAMES
@@ -85,6 +94,7 @@ class PlacoSession:
         self._max_iter   = max_iter
         self._dt         = 1.0 / rate_hz   # Fix-2: actual control period
         self._vel_limits = vel_limits      # Fix-2
+        self._wrist_vel_cap = float(wrist_vel_cap)
 
         self._joint_names = _JOINT_NAMES[arm]
         human_cfg         = _HUMAN_RIGHT if arm == "right" else _HUMAN_LEFT
@@ -92,16 +102,21 @@ class PlacoSession:
         self._lo          = [human_cfg[n][1] for n in self._joint_names]
         self._hi          = [human_cfg[n][2] for n in self._joint_names]
         self._pref        = {n: human_cfg[n][0] for n in self._joint_names}
+        self._wrist_joint_names = [self._joint_names[i] for i in _WRIST_JOINT_IDX]
 
         if not rebuild:
             self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+            self._apply_velocity_caps(self._robot)
+            cap_str = (f"wrist≤{self._wrist_vel_cap:.1f}rad/s"
+                       if self._wrist_vel_cap > 0 else "wrist=URDF")
             print(
                 f"[PlacoSession] cached  arm={arm}  max_iter={max_iter}"
-                f"  dt={self._dt*1000:.1f}ms  vel_limits={vel_limits}"
+                f"  dt={self._dt*1000:.1f}ms  vel_limits={vel_limits}  {cap_str}"
             )
         else:
             self._robot = None
-            print(f"[PlacoSession] rebuild mode  arm={arm}")
+            print(f"[PlacoSession] rebuild mode  arm={arm}  "
+                  f"wrist_vel_cap={self._wrist_vel_cap:.1f}rad/s")
 
         # Cache Jacobian column indices for Adaptive DLS (方案 C).
         # v_offsets are URDF-fixed — compute once from any robot instance.
@@ -110,6 +125,14 @@ class PlacoSession:
         self._jac_cols = [_probe.get_joint_v_offset(n) for n in self._joint_names]
         print(f"[PlacoSession] adaptive-DLS  σ_thresh={_DLS_SIGMA_THRESH}  "
               f"λ_max={_DLS_LAMBDA_MAX}  jac_cols={self._jac_cols}")
+
+    # ── Wrist velocity cap (teleop smoothness) ────────────────────────────────
+    def _apply_velocity_caps(self, robot) -> None:
+        """Override URDF wrist velocity limits.  No-op if cap <= 0."""
+        if self._wrist_vel_cap <= 0.0:
+            return
+        for name in self._wrist_joint_names:
+            robot.set_velocity_limit(name, self._wrist_vel_cap)
 
     # ── Solve one step ────────────────────────────────────────────────────────
     def solve_step(
@@ -134,6 +157,7 @@ class PlacoSession:
         t0 = time.perf_counter()
         if self._rebuild or self._robot is None:
             robot  = placo.RobotWrapper(self._urdf, placo.Flags.ignore_collisions)
+            self._apply_velocity_caps(robot)
             cached = False
         else:
             robot  = self._robot
