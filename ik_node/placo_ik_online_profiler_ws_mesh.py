@@ -111,7 +111,7 @@ def _parse_args():
                         "comma list '0.3,0.3,0.3,0.3,0.6,0.6,0.6' = per-joint J1..J7. "
                         "Smaller α = heavier smoothing + more lag. "
                         "Default: 0.25,0.25,0.25,0.4,0.6,0.6,0.6")
-    p.add_argument("--ori-lpf-alpha", type=float, default=0.35, dest="ori_lpf_alpha",
+    p.add_argument("--ori-lpf-alpha", type=float, default=1.0, dest="ori_lpf_alpha",
                    help="Input-side SLERP EMA on target orientation. "
                         "0.35 = moderate smoothing (default). "
                         "1.0 = off. Smaller = heavier smoothing.")
