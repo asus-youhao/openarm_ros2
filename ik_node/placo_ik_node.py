@@ -32,6 +32,7 @@ _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, kbd
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze
+_sys.path.insert(0, _os.path.join(_ROOT, "config"))            # arm_config
 
 import csv
 import datetime
@@ -60,37 +61,7 @@ from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
 from ws_boundary import SoftClamp, BoundaryMonitor
 from paths import csv_path as _csv_path, png_for as _png_for
-
-
-# ── ARM config ────────────────────────────────────────────────────────────────
-ARM_CONFIG = {
-    "left": {
-        "joint_names":   [f"openarm_left_joint{i}"  for i in range(1, 8)],
-        "base_link":     "world",
-        "ee_link":       "openarm_left_link7",
-        "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
-        "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
-        "workspace":     {"x": (-0.20, 0.62), "y": (0.05, 0.65), "z": (0.15, 0.8)},
-        "traj_topic":    "/left_joint_trajectory_controller/joint_trajectory",
-        "fwd_cmd_topic": "/left_forward_position_controller/commands",
-        "latency_topic": "/left/delta_ik_latency_ms",
-        "profile_topic": "/left/placo_profile",
-        "ee_delta_topic": "/ee_delta/left",
-    },
-    "right": {
-        "joint_names":   [f"openarm_right_joint{i}" for i in range(1, 8)],
-        "base_link":     "world",
-        "ee_link":       "openarm_right_link7",
-        "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
-        "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
-        "workspace":     {"x": (-0.20, 0.62), "y": (-0.65, -0.05), "z": (0.15, 0.8)},
-        "traj_topic":    "/right_joint_trajectory_controller/joint_trajectory",
-        "fwd_cmd_topic": "/right_forward_position_controller/commands",
-        "latency_topic": "/right/delta_ik_latency_ms",
-        "profile_topic": "/right/placo_profile",
-        "ee_delta_topic": "/ee_delta/right",
-    },
-}
+from arm_config import ARM_CONFIG   # L2-A: single source of truth
 
 CSV_FIELDS = [
     "t", "x", "y", "z",
@@ -276,12 +247,33 @@ class PlacoOnlineProfiler(Node):
     def __init__(self, args):
         super().__init__("placo_ik_online_profiler_ws_mesh")
         self.args = args
-        cfg = ARM_CONFIG[args.arm]
-        self.cfg = cfg
-
+        self.cfg  = ARM_CONFIG[args.arm]
         self._cbg = ReentrantCallbackGroup()
 
-        # EE pose state [x, y, z, qx, qy, qz, qw]
+        # ── Timing (used by sub-inits, set first) ────────────────────────
+        self._rate_hz     = float(getattr(args, "rate", 20.0))
+        self._horizon_ms  = float(getattr(args, "horizon", 60.0))
+        self._deadline_ms = 1000.0 / self._rate_hz
+
+        self._init_pose_state()
+        self._init_ee_delta(args)
+        self._init_workspace(args)
+        self._init_ik_session(args)
+        self._init_motion_pipe(args)
+        self._init_ros(args)
+        self._init_telemetry(args)
+        self._init_keyboard(args)
+
+        # BoundaryMonitor needs ROS publishers → must be last
+        self._bdry_monitor = BoundaryMonitor(self, args.arm)
+
+        self._print_banner()
+
+    # ── Domain-grouped init methods (L2-B) ───────────────────────────────────
+
+    def _init_pose_state(self):
+        """Initialise EE pose and joint state tracking."""
+        cfg = self.cfg
         hx, hy, hz, hqx, hqy, hqz, hqw = cfg["home_pose"]
         self._pose        = [hx, hy, hz, hqx, hqy, hqz, hqw]
         self._last_joints = list(cfg["home_joints"])
@@ -289,39 +281,28 @@ class PlacoOnlineProfiler(Node):
         self._joint_states: dict = {}
         self._js_lock     = threading.Lock()
 
-        # ee_delta session reference
-        self._ee_delta_ref_xyz = None
-        self._ee_delta_ref_q   = None
-        self._ee_delta_last_t  = None
-        self._ee_delta_gap_sec = float(getattr(args, "ee_delta_gap_sec", 0.8))
+    def _init_ee_delta(self, args):
+        """Initialise EE-delta session reference, calibration and SLERP filter."""
+        self._ee_delta_ref_xyz  = None
+        self._ee_delta_ref_q    = None
+        self._ee_delta_last_t   = None
+        self._ee_delta_gap_sec  = float(getattr(args, "ee_delta_gap_sec", 0.8))
 
-        # Calibration quaternion (tracker → arm frame)
         crpy = getattr(args, "calib_rpy", None)
         if crpy:
             rr, rp, ry = [math.radians(float(v)) for v in crpy.split(",")]
         else:
             rr, rp = 0.0, 0.0
             ry = math.radians(getattr(args, "calib_yaw", 0.0))
-        self._calib_q = _qfrom_rpy(rr, rp, ry)
+        self._calib_q         = _qfrom_rpy(rr, rp, ry)
         self._no_rot_tracking = bool(getattr(args, "no_rot_tracking", False))
 
-        # Input-side orientation smoothing (Fix-1: SLERP EMA).
-        # alpha=1.0 disables smoothing.
-        self._ori_lpf_alpha = max(0.0, min(1.0, float(
-            getattr(args, "ori_lpf_alpha", 0.35))))
+        self._ori_lpf_alpha  = max(0.0, min(1.0, float(getattr(args, "ori_lpf_alpha", 0.35))))
         self._ori_lpf_active = self._ori_lpf_alpha < 0.999
         self._ori_filt_q: Optional[Tuple[float, float, float, float]] = None
 
-        # Hard guard against IK branch jumps (Fix-5).
-        self._joint_jump_guard_deg = float(
-            getattr(args, "joint_jump_guard_deg", 15.0))
-
-        # Rate / timing
-        self._rate_hz     = float(getattr(args, "rate", 20.0))
-        self._horizon_ms  = float(getattr(args, "horizon", 60.0))
-        self._deadline_ms = 1000.0 / self._rate_hz
-
-        # Workspace clamp
+    def _init_workspace(self, args):
+        """Initialise workspace mesh / box clamp and soft boundary."""
         self._ws_clamp = not getattr(args, "no_ws_clamp", False)
         self._ws_mesh: Optional[WorkspaceMesh] = None
         npz_path = getattr(args, "ws_mesh", None)
@@ -331,16 +312,18 @@ class PlacoOnlineProfiler(Node):
             self._ws_mesh  = WorkspaceMesh.load(npz_path)
             self._ws_clamp = True
 
-        # Soft boundary (方案 A + E)
         _soft_margin = float(getattr(args, "boundary_margin", 0.05))
-        self._soft_clamp    = SoftClamp(
+        # When no ws_mesh is provided, SoftClamp uses the rectangular box_ws
+        # defined in ARM_CONFIG (the "default box" fallback).
+        self._soft_clamp = SoftClamp(
             ws_mesh  = self._ws_mesh,
             margin_m = _soft_margin,
             box_ws   = self.cfg["workspace"] if not self._ws_mesh else None,
         )
-        self._bdry_monitor  = None   # created after super().__init__ publishes
+        self._bdry_monitor = None  # created after publishers are ready
 
-        # IK session — Fix-2: rate_hz → dt=1/rate_hz; vel_limits=True
+    def _init_ik_session(self, args):
+        """Build PlacoSession (cached RobotWrapper + KinematicsSolver)."""
         urdf = _find_urdf()
         self._placo_session = PlacoSession(
             urdf          = urdf,
@@ -352,44 +335,36 @@ class PlacoOnlineProfiler(Node):
             wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
         )
 
-        # Output-side LPF on joint commands  (Fix-D / Fix-3)
-        n_joints = len(cfg["joint_names"])
+    def _init_motion_pipe(self, args):
+        """Initialise output-side LPF, jump guard, and success-gate state."""
+        n_joints = len(self.cfg["joint_names"])
         self._lpf_alpha: List[float] = _parse_lpf_alpha(
-            getattr(args, "lpf_alpha", "1.0"), n_joints
-        )
+            getattr(args, "lpf_alpha", "1.0"), n_joints)
         self._lpf_active   = any(a < 0.999 for a in self._lpf_alpha)
         self._filt_joints: Optional[List[float]] = None
 
-        # Set2-D: success-gate behaviour
-        # False (default) → always publish (continuous approach, vel-limit saturates)
-        # True            → freeze on failure (legacy "stop on OOR" behaviour)
+        self._joint_jump_guard_deg = float(getattr(args, "joint_jump_guard_deg", 15.0))
         self._success_gate    = bool(getattr(args, "success_gate", False))
         self._fail_streak     = 0
-        self._fail_warn_every = 20    # print warning every N consecutive fails
+        self._fail_warn_every = 20
 
-
-        # TF2 + Fix-1 poller (started in run() after initial sync)
+    def _init_ros(self, args):
+        """Create TF poller, ROS publishers and subscribers."""
+        cfg = self.cfg
         self._tf_buffer   = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
         self._tf_poller   = TfPoller(
             self._tf_buffer, cfg["base_link"], cfg["ee_link"], poll_sec=0.05)
 
-        # Publishers
         # JointTrajectory publisher — used ONLY by send_home_confirmed()
-        self._traj_pub = self.create_publisher(
-            JointTrajectory, cfg["traj_topic"], 10)
-        # ForwardCommandController publisher — used for hot-loop streaming
-        self._use_traj = getattr(args, 'use_traj', False)
-        if self._use_traj:
-            # Legacy mode: use JointTrajectoryController for streaming
-            self._fwd_pub = None
-        else:
-            self._fwd_pub = self.create_publisher(
-                Float64MultiArray, cfg["fwd_cmd_topic"], 10)
+        self._traj_pub = self.create_publisher(JointTrajectory, cfg["traj_topic"], 10)
+        # ForwardCommandController — used for hot-loop streaming
+        self._use_traj = getattr(args, "use_traj", False)
+        self._fwd_pub  = (None if self._use_traj else
+                          self.create_publisher(Float64MultiArray, cfg["fwd_cmd_topic"], 10))
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
-        self._profile_pub = self.create_publisher(String, cfg["profile_topic"], 10)
+        self._profile_pub = self.create_publisher(String,  cfg["profile_topic"], 10)
 
-        # Subscribers
         self.create_subscription(
             JointState, "/joint_states",
             self._js_cb, 10, callback_group=self._cbg)
@@ -397,26 +372,22 @@ class PlacoOnlineProfiler(Node):
             PoseStamped, cfg["ee_delta_topic"],
             self._ee_delta_cb, 10, callback_group=self._cbg)
 
-        # Message queue
         self._pending    = None
         self._delta_lock = threading.Lock()
         self._msg_count  = 0
-        self._records:   List[Dict] = []
 
-        # Keyboard controller
-        self._kbd = KbdController(
-            init_mode="keyboard" if getattr(args, "keyboard", False) else "tracker")
-
-        # Fix-3: async CSV writer
-        mode = "cached" if not args.rebuild else "rebuild"
+    def _init_telemetry(self, args):
+        """Create async CSV writer and records list."""
+        self._records: List[Dict] = []
+        mode  = "cached" if not args.rebuild else "rebuild"
         csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
         self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
         self._csv_path   = csv_p
 
-        # BoundaryMonitor needs publisher → create after node is fully initialised
-        self._bdry_monitor = BoundaryMonitor(self, args.arm)
-
-        self._print_banner()
+    def _init_keyboard(self, args):
+        """Create KbdController (starts inactive until run() calls .start())."""
+        self._kbd = KbdController(
+            init_mode="keyboard" if getattr(args, "keyboard", False) else "tracker")
 
     # ── ROS callbacks ─────────────────────────────────────────────────────────
     def _js_cb(self, msg: JointState):
@@ -676,13 +647,10 @@ class PlacoOnlineProfiler(Node):
         ]
         return list(self._filt_joints)
 
-    # ── Main control loop ─────────────────────────────────────────────────────
-    def run(self):
-        """50/20 Hz IK loop. Starts TfPoller + AsyncCsvWriter background threads."""
-        dt_sec = 1.0 / self._rate_hz
-        self._kbd.start()
+    # ── run() helpers (L1-B) ─────────────────────────────────────────────────
 
-        # ── Startup sync (blocking is fine here — outside hot loop) ──────────
+    def _startup_sync(self):
+        """Sync EE pose from TF2 and joint positions from /joint_states."""
         print("\n  Syncing from TF2 and /joint_states...")
         time.sleep(0.5)
         tf = self._get_tf(2.0)
@@ -701,262 +669,312 @@ class PlacoOnlineProfiler(Node):
         else:
             print("  ⚠ /joint_states not ready — using home_joints")
 
-        # ── Start background services ─────────────────────────────────────────
+    def _handle_kbd_events(self) -> bool:
+        """Handle keyboard flags. Returns True if quit was requested."""
+        kbd = self._kbd
+        if kbd.request_quit:
+            print("\n  [kbd] quit — exiting")
+            return True
+        if kbd.request_home:
+            kbd.request_home = False
+            print("\n  [kbd] sending home...")
+            self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
+        if kbd.reset_ref:
+            kbd.reset_ref          = False
+            self._ee_delta_ref_xyz = None
+            self._ee_delta_ref_q   = None
+            self._ee_delta_last_t  = None
+            self._reset_orientation_filter()
+            print("\n  [kbd] session reference reset")
+        return False
+
+    def _fetch_pending(self):
+        """Drain the pending input slot. Returns (msg, kbd_mode)."""
+        kbd      = self._kbd
+        kbd_mode = kbd.mode
+        with self._delta_lock:
+            tracker_msg   = self._pending
+            self._pending = None
+        if kbd_mode == "keyboard":
+            xyz_d = kbd.pop_xyz()
+            rpy_d = kbd.pop_rpy()
+            msg   = (xyz_d, rpy_d) if (xyz_d is not None or rpy_d is not None) else None
+        else:
+            msg = tracker_msg
+        return msg, kbd_mode
+
+    def _print_idle(self, step_count: int, kbd_mode: str):
+        """Throttled idle-state console print (fires at most once per 2 s)."""
+        idle_s = time.time() - self._no_msg_t
+        if idle_s >= 2.0:
+            self._no_msg_t = time.time()
+            kbd = self._kbd
+            paused_str = "  [PAUSED]" if kbd.paused else ""
+            print(
+                f"\r  [WAIT] {kbd_mode}{paused_str}  cb={self._msg_count}"
+                f"  steps={step_count}  idle={idle_s:.0f}s  ×{kbd.scale:.2f}"
+                f"  [{self._pose[0]:.3f} {self._pose[1]:.3f} {self._pose[2]:.3f}]",
+                end="", flush=True,
+            )
+
+    def _build_target(self, msg, kbd_mode: str, t_wall: float):
+        """
+        Map tracker/keyboard input → IK target dict.
+
+        Handles session-ref reset, calibration rotation, workspace clamping,
+        and SLERP orientation filter.
+
+        Returns dict with keys:
+            target_xyz, target_R, new_q, dx, dy, dz, new_x, new_y, new_z
+        Returns None if message should be skipped.
+        """
+        kbd = self._kbd
+        if kbd.paused:
+            return None
+
+        # ── Build raw delta (dx, dy, dz) and orientation delta dq ────────────
+        if kbd_mode == "keyboard":
+            xyz_d, rpy_d = msg
+            dx, dy, dz = xyz_d if xyz_d is not None else (0., 0., 0.)
+            dq         = _qfrom_rpy(*rpy_d) if rpy_d is not None else (0., 0., 0., 1.)
+            base_xyz   = tuple(self._pose[:3])
+            base_q     = tuple(self._pose[3:7])
+            dx_arm     = (dx, dy, dz)   # already in robot base frame
+        else:
+            _s = kbd.scale
+            dx = msg.pose.position.x * _s
+            dy = msg.pose.position.y * _s
+            dz = msg.pose.position.z * _s
+            dq = (msg.pose.orientation.x, msg.pose.orientation.y,
+                  msg.pose.orientation.z, msg.pose.orientation.w)
+            if abs(dq[3]) < 0.01 and all(abs(v) < 0.01 for v in dq[:3]):
+                dq = (0., 0., 0., 1.)
+
+            gap    = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
+            is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
+            self._ee_delta_last_t = t_wall
+
+            if is_new:
+                # Fix-1: instant cache read (was blocking _get_tf(0.3) = 0–300 ms)
+                ref = self._tf_poller.get()
+                if ref is not None:
+                    self._ee_delta_ref_xyz = tuple(ref[:3])
+                    self._ee_delta_ref_q   = tuple(ref[3:7])
+                    self._pose             = list(ref)
+                    print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  (TF)")
+                else:
+                    self._ee_delta_ref_xyz = tuple(self._pose[:3])
+                    self._ee_delta_ref_q   = tuple(self._pose[3:7])
+                self._reset_orientation_filter()
+
+            base_xyz = self._ee_delta_ref_xyz or tuple(self._pose[:3])
+            base_q   = self._ee_delta_ref_q   or tuple(self._pose[3:7])
+            dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
+            dq       = _rotate_quat(dq, self._calib_q)   # Fix-8: calib on orientation
+
+        # ── Workspace clamp (SoftClamp: smooth damping instead of hard snap) ──
+        raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
+                                base_xyz[1] + dx_arm[1],
+                                base_xyz[2] + dx_arm[2]])
+        dx_arm_arr  = np.array(dx_arm)
+        if self._ws_clamp or self._ws_mesh is not None:
+            new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
+            new_x = float(new_xyz_arr[0])
+            new_y = float(new_xyz_arr[1])
+            new_z = float(new_xyz_arr[2])
+            self._bdry_monitor.publish(_bs)
+        else:
+            new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
+
+        # ── Orientation filter (input-side SLERP EMA) ─────────────────────────
+        new_q_raw  = _qnorm(_qmul(dq, base_q))
+        new_q      = base_q if self._no_rot_tracking else self._filter_orientation(new_q_raw)
+        target_xyz = np.array([new_x, new_y, new_z])
+        target_R   = _quat_to_rot(*new_q)
+
+        return {
+            "target_xyz": target_xyz, "target_R": target_R, "new_q": new_q,
+            "dx": dx, "dy": dy, "dz": dz,
+            "new_x": new_x, "new_y": new_y, "new_z": new_z,
+        }
+
+    def _run_ik_pipeline(self, target: dict, t_step: float) -> dict:
+        """
+        Run one IK step, apply jump guard, LPF filter, and publish.
+
+        Anti-jump strategy (two complementary methods):
+          Method 1 (proactive): wrist_vel_cap in PlacoSession caps Δq inside QP.
+          Method 2 (reactive) : joint_jump_guard rejects the whole step if any
+                                joint exceeds the per-step degree limit.
+
+        Set2-D (continuous approach): on IK failure, still publish the partial
+        solution; velocity_limits in the controller saturate safely.
+        --success-gate restores the legacy freeze-on-failure behaviour.
+
+        Returns merged dict: {r, ik_ms, total_ms, track_err, guard_hit,
+                               max_joint_delta_deg, deadline_missed}.
+        """
+        target_xyz = target["target_xyz"]
+        target_R   = target["target_R"]
+        new_q      = target["new_q"]
+
+        with self._joints_lock:
+            seed = list(self._filt_joints or self._last_joints)
+
+        t_total = time.perf_counter()
+        r = self._placo_session.solve_step(
+            target_xyz, target_R, seed, no_rot=self._no_rot_tracking)
+        ik_ms    = r["solve_ms"]
+        total_ms = (time.perf_counter() - t_total) * 1000.0
+
+        track_err       = float(np.linalg.norm(np.array(r["ee_xyz"]) - target_xyz)) * 1000.0
+        loop_wall_ms    = (time.perf_counter() - t_step) * 1000.0
+        deadline_missed = int(loop_wall_ms > self._deadline_ms)
+
+        guard_hit, max_joint_delta_deg = self._joint_jump_guard(seed, r["joints"])
+
+        if guard_hit:
+            r["success"] = 0
+            self._fail_streak += 1
+            if self._fail_streak % self._fail_warn_every == 0:
+                print(f"\n  [guard] joint Δ={max_joint_delta_deg:.1f}° "
+                      f"rejected, streak={self._fail_streak}")
+        else:
+            joints_out = self._filter_joints(r["joints"])
+            with self._joints_lock:
+                self._last_joints = list(joints_out)
+
+            if r["success"]:
+                nx, ny, nz = target["new_x"], target["new_y"], target["new_z"]
+                self._pose = [nx, ny, nz, new_q[0], new_q[1], new_q[2], new_q[3]]
+                self._fail_streak = 0
+            else:
+                ee = r["ee_xyz"]
+                self._pose[0] = float(ee[0])
+                self._pose[1] = float(ee[1])
+                self._pose[2] = float(ee[2])
+                self._fail_streak += 1
+                if self._fail_streak % self._fail_warn_every == 0:
+                    print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
+                          f"streak={self._fail_streak} — publishing partial solve")
+
+            if (r["success"] or not self._success_gate) and not self.args.dry_run:
+                self._publish(joints_out)
+
+        self._latency_pub.publish(Float32(data=float(ik_ms)))
+
+        return {
+            "r": r, "ik_ms": ik_ms, "total_ms": total_ms,
+            "track_err": track_err, "guard_hit": guard_hit,
+            "max_joint_delta_deg": max_joint_delta_deg,
+            "deadline_missed": deadline_missed,
+        }
+
+    def _write_step(self, target: dict, pipeline: dict, t_wall: float, step_count: int):
+        """Publish JSON profile, enqueue CSV row, and print console line."""
+        r                   = pipeline["r"]
+        ik_ms               = pipeline["ik_ms"]
+        total_ms            = pipeline["total_ms"]
+        track_err           = pipeline["track_err"]
+        guard_hit           = pipeline["guard_hit"]
+        max_joint_delta_deg = pipeline["max_joint_delta_deg"]
+        deadline_missed     = pipeline["deadline_missed"]
+        dx, dy, dz          = target["dx"], target["dy"], target["dz"]
+
+        self._profile_pub.publish(String(data=json.dumps({
+            "step":              step_count,
+            "ik_ms":             round(ik_ms, 3),
+            "robot_ms":          round(r["robot_ms"], 3),
+            "setup_ms":          round(r["setup_ms"], 3),
+            "loop_ms":           round(r["loop_ms"], 3),
+            "iterations":        r["iterations"],
+            "iter_ms":           round(r["iter_ms"], 4),
+            "pos_err_mm":        round(r["pos_err_mm"], 3),
+            "ori_err_deg":       round(r.get("ori_err_deg", 0.0), 3),
+            "track_err_mm":      round(track_err, 3),
+            "max_joint_delta_deg": round(max_joint_delta_deg, 3),
+            "joint_jump_guard":  int(guard_hit),
+            "success":           r["success"],
+            "deadline_missed":   deadline_missed,
+            "mem_mb":            round(r["mem_kb"] / 1024.0, 1),
+            "mode":              "rebuild" if self.args.rebuild else "cached",
+            "sigma_min":         round(r.get("sigma_min", 0.0), 6),
+            "lambda_dls":        round(r.get("lambda_dls", 0.0), 8),
+        })))
+
+        row = {
+            "t":                   round(t_wall, 6),
+            "x":                   round(self._pose[0], 6),
+            "y":                   round(self._pose[1], 6),
+            "z":                   round(self._pose[2], 6),
+            "success":             r["success"],
+            "ik_ms":               round(ik_ms, 4),
+            "total_ms":            round(total_ms, 4),
+            "dx":                  round(dx, 6), "dy": round(dy, 6), "dz": round(dz, 6),
+            "robot_ms":            round(r["robot_ms"], 4),
+            "setup_ms":            round(r["setup_ms"], 4),
+            "loop_ms":             round(r["loop_ms"], 4),
+            "iterations":          r["iterations"],
+            "iter_ms":             round(r["iter_ms"], 5),
+            "pos_err_mm":          round(r["pos_err_mm"], 4),
+            "ori_err_deg":         round(r.get("ori_err_deg", 0.0), 4),
+            "track_err_mm":        round(track_err, 4),
+            "max_joint_delta_deg": round(max_joint_delta_deg, 4),
+            "joint_jump_guard":    int(guard_hit),
+            "mem_kb":              r["mem_kb"],
+            "deadline_missed":     deadline_missed,
+            "sigma_min":           round(r.get("sigma_min", 0.0), 6),
+            "lambda_dls":          round(r.get("lambda_dls", 0.0), 8),
+        }
+        self._csv_writer.put(row)
+        self._records.append(row)
+
+        kbd = self._kbd
+        if step_count % 5 == 0 or kbd.verbose or self.args.verbose:
+            tag = "✓" if r["success"] else "✗"
+            dlm = "!" if deadline_missed else " "
+            print(
+                f"\r  {step_count:5d}"
+                f"  {ik_ms:7.2f}  {r['robot_ms']:6.2f}  {r['loop_ms']:6.2f}"
+                f"  {r['iterations']:5d}  {r['pos_err_mm']:6.2f}"
+                f"  {track_err:6.2f}  {r['mem_kb']/1024:6.1f}"
+                f"  ×{kbd.scale:.2f}  {dlm}{tag}",
+                end="", flush=True,
+            )
+
+    # ── Main control loop ─────────────────────────────────────────────────────
+    def run(self):
+        """50/20 Hz IK loop. Orchestrates startup, background services, hot loop."""
+        dt_sec = 1.0 / self._rate_hz
+        self._kbd.start()
+        self._startup_sync()
         self._tf_poller.start()     # Fix-1: background TF cache
         self._csv_writer.start()    # Fix-3: background CSV drain
 
         print(f"\n  Waiting for {self.cfg['ee_delta_topic']} ...\n")
-        _no_msg_t  = time.time()
-        step_count = 0
-        ws         = self.cfg["workspace"]
+        self._no_msg_t = time.time()
+        step_count     = 0
 
         while rclpy.ok():
             t_step = time.perf_counter()
-            kbd    = self._kbd
 
-            # ── Keyboard events (flags set by daemon thread) ──────────────
-            if kbd.request_quit:
-                print("\n  [kbd] quit — exiting")
+            if self._handle_kbd_events():
                 break
-            if kbd.request_home:
-                kbd.request_home = False
-                print("\n  [kbd] sending home...")
-                self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
-            if kbd.reset_ref:
-                kbd.reset_ref          = False
-                self._ee_delta_ref_xyz = None
-                self._ee_delta_ref_q   = None
-                self._ee_delta_last_t  = None
-                self._reset_orientation_filter()
-                print("\n  [kbd] session reference reset")
 
-            # ── Input routing: tracker topic vs keyboard ───────────────────
-            with self._delta_lock:
-                tracker_msg   = self._pending
-                self._pending = None
+            msg, kbd_mode = self._fetch_pending()
 
-            _kbd_mode = kbd.mode
-            if _kbd_mode == "keyboard":
-                tracker_msg = None
-                xyz_d = kbd.pop_xyz()
-                rpy_d = kbd.pop_rpy()
-                msg   = (xyz_d, rpy_d) if (xyz_d is not None or rpy_d is not None) else None
+            if msg is None or self._kbd.paused:
+                self._print_idle(step_count, kbd_mode)
             else:
-                xyz_d = rpy_d = None
-                msg   = tracker_msg
-
-            # ── Idle ──────────────────────────────────────────────────────
-            if msg is None:
-                idle_s = time.time() - _no_msg_t
-                if idle_s >= 2.0:
-                    _no_msg_t = time.time()
-                    paused_str = "  [PAUSED]" if kbd.paused else ""
-                    print(
-                        f"\r  [WAIT] {_kbd_mode}{paused_str}  cb={self._msg_count}"
-                        f"  steps={step_count}  idle={idle_s:.0f}s  ×{kbd.scale:.2f}"
-                        f"  [{self._pose[0]:.3f} {self._pose[1]:.3f} {self._pose[2]:.3f}]",
-                        end="", flush=True,
-                    )
-
-            elif isinstance(msg, (PoseStamped, tuple)) and not kbd.paused:
-                _no_msg_t = time.time()
-                t_wall    = time.time()
-
-                # ── Build dx/dy/dz + dq ───────────────────────────────────
-                if _kbd_mode == "keyboard":
-                    xyz_d, rpy_d = msg
-                    dx, dy, dz = xyz_d if xyz_d is not None else (0., 0., 0.)
-                    dq         = _qfrom_rpy(*rpy_d) if rpy_d is not None else (0., 0., 0., 1.)
-                    base_xyz   = tuple(self._pose[:3])
-                    base_q     = tuple(self._pose[3:7])
-                    dx_arm     = (dx, dy, dz)   # already in robot base frame
-                else:
-                    _s  = kbd.scale
-                    dx  = msg.pose.position.x * _s
-                    dy  = msg.pose.position.y * _s
-                    dz  = msg.pose.position.z * _s
-                    dq  = (msg.pose.orientation.x, msg.pose.orientation.y,
-                           msg.pose.orientation.z, msg.pose.orientation.w)
-                    if abs(dq[3]) < 0.01 and all(abs(v) < 0.01 for v in dq[:3]):
-                        dq = (0., 0., 0., 1.)
-
-                    gap    = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
-                    is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
-                    self._ee_delta_last_t = t_wall
-
-                    if is_new:
-                        # Fix-1: instant cache read — was self._get_tf(0.3) = 0–300 ms block
-                        ref = self._tf_poller.get()
-                        if ref is not None:
-                            self._ee_delta_ref_xyz = tuple(ref[:3])
-                            self._ee_delta_ref_q   = tuple(ref[3:7])
-                            self._pose             = list(ref)
-                            print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  (TF)")
-                        else:
-                            self._ee_delta_ref_xyz = tuple(self._pose[:3])
-                            self._ee_delta_ref_q   = tuple(self._pose[3:7])
-                        self._reset_orientation_filter()
-
-                    base_xyz = self._ee_delta_ref_xyz or tuple(self._pose[:3])
-                    base_q   = self._ee_delta_ref_q   or tuple(self._pose[3:7])
-                    dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
-                    # Fix-8: apply calibration to orientation delta (was missing)
-                    dq       = _rotate_quat(dq, self._calib_q)
-
-                # ── Workspace clamp (方案 A: SoftClamp 取代硬 snap) ─────────
-                raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
-                                        base_xyz[1] + dx_arm[1],
-                                        base_xyz[2] + dx_arm[2]])
-                dx_arm_arr  = np.array(dx_arm)
-                if self._ws_clamp or self._ws_mesh is not None:
-                    new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
-                    new_x, new_y, new_z = float(new_xyz_arr[0]), float(new_xyz_arr[1]), float(new_xyz_arr[2])
-                    self._bdry_monitor.publish(_bs)   # 方案 E: topic + console
-                else:
-                    new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
-
-                # Fix-1: compute target orientation, then SLERP-filter
-                new_q_raw  = _qnorm(_qmul(dq, base_q))
-                new_q      = base_q if self._no_rot_tracking else self._filter_orientation(new_q_raw)
-                target_xyz = np.array([new_x, new_y, new_z])
-                target_R   = _quat_to_rot(*new_q)
-
-                # Fix-6: seed from filtered joints (what the robot is actually tracking)
-                with self._joints_lock:
-                    seed = list(self._filt_joints or self._last_joints)
-
-                # ── IK solve ──────────────────────────────────────────────
-                t_total = time.perf_counter()
-                r = self._placo_session.solve_step(
-                    target_xyz, target_R, seed, no_rot=self._no_rot_tracking)
-                ik_ms    = r["solve_ms"]
-                total_ms = (time.perf_counter() - t_total) * 1000.0
-
-                track_err       = float(np.linalg.norm(
-                    np.array(r["ee_xyz"]) - target_xyz)) * 1000.0
-                loop_wall_ms    = (time.perf_counter() - t_step) * 1000.0
-                deadline_missed = int(loop_wall_ms > self._deadline_ms)
-                # Fix-5: reject IK solutions with large inter-step joint jumps
-                guard_hit, max_joint_delta_deg = self._joint_jump_guard(
-                    seed, r["joints"])
-
-                # ── Anti-jump: two complementary methods ──────────────────────
-                # Method 1 (proactive) : wrist_vel_cap in PlacoSession — QP hard
-                #                        constraint on j5-7; caps single-step Δq
-                #                        BEFORE the IK returns.
-                # Method 2 (reactive)  : joint_jump_guard above — detects post-IK
-                #                        any joint Δ > N°/step; rejects publish.
-                # Method 1 should catch most cases; Method 2 is the safety net
-                # for redundancy flips / large target leaps method 1 missed.
-                #
-                # ── Set2-D: continuous approach (no success-freeze) ───────────
-                # When guard does NOT trip: always publish (even on IK fail),
-                # trusting velocity_limits to saturate the partial solution and
-                # _pose drift-protection (track r["ee_xyz"]) to prevent base
-                # reference drift.  --success-gate restores legacy freeze.
-                #
-                # When guard trips: reject this whole step — don't update seed,
-                # don't update filter state, don't update _pose, don't publish.
-                if guard_hit:
-                    r["success"] = 0   # mark fail for CSV accounting
-                    self._fail_streak += 1
-                    if self._fail_streak % self._fail_warn_every == 0:
-                        print(f"\n  [guard] joint Δ={max_joint_delta_deg:.1f}° "
-                              f"rejected, streak={self._fail_streak}")
-                else:
-                    # Filter once (always — keeps LPF state continuous)
-                    joints_out = self._filter_joints(r["joints"])
-                    # Fix-6 (test3): seed next IK from filtered output, not raw
-                    with self._joints_lock:
-                        self._last_joints = list(joints_out)
-
-                    if r["success"]:
-                        self._pose = [new_x, new_y, new_z,
-                                      new_q[0], new_q[1], new_q[2], new_q[3]]
-                        self._fail_streak = 0
-                    else:
-                        # Set2-D: _pose tracks solver's actual EE (drift防護)
-                        ee = r["ee_xyz"]
-                        self._pose[0] = float(ee[0])
-                        self._pose[1] = float(ee[1])
-                        self._pose[2] = float(ee[2])
-                        # orientation held at previous (no r["ee_R"])
-                        self._fail_streak += 1
-                        if self._fail_streak % self._fail_warn_every == 0:
-                            print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
-                                  f"streak={self._fail_streak} — publishing partial solve")
-
-                    publish_ok = r["success"] or not self._success_gate
-                    if publish_ok and not self.args.dry_run:
-                        self._publish(joints_out)
-
-                self._latency_pub.publish(Float32(data=float(ik_ms)))
-
-                step_count += 1
-
-                # Publish profile JSON
-                self._profile_pub.publish(String(data=json.dumps({
-                    "step":       step_count,
-                    "ik_ms":      round(ik_ms, 3),
-                    "robot_ms":   round(r["robot_ms"], 3),
-                    "setup_ms":   round(r["setup_ms"], 3),
-                    "loop_ms":    round(r["loop_ms"], 3),
-                    "iterations": r["iterations"],
-                    "iter_ms":    round(r["iter_ms"], 4),
-                    "pos_err_mm": round(r["pos_err_mm"], 3),
-                    "ori_err_deg": round(r.get("ori_err_deg", 0.0), 3),
-                    "track_err_mm": round(track_err, 3),
-                    "max_joint_delta_deg": round(max_joint_delta_deg, 3),
-                    "joint_jump_guard": int(guard_hit),
-                    "success":    r["success"],
-                    "deadline_missed": deadline_missed,
-                    "mem_mb":     round(r["mem_kb"] / 1024.0, 1),
-                    "mode":       "rebuild" if self.args.rebuild else "cached",
-                    "sigma_min":  round(r.get("sigma_min", 0.0), 6),
-                    "lambda_dls": round(r.get("lambda_dls", 0.0), 8),
-                })))
-
-                # Fix-3: non-blocking enqueue — no disk I/O on hot path
-                row = {
-                    "t": round(t_wall, 6),
-                    "x": round(self._pose[0], 6), "y": round(self._pose[1], 6),
-                    "z": round(self._pose[2], 6),
-                    "success":  r["success"],
-                    "ik_ms":    round(ik_ms, 4),  "total_ms": round(total_ms, 4),
-                    "dx": round(dx, 6), "dy": round(dy, 6), "dz": round(dz, 6),
-                    "robot_ms":   round(r["robot_ms"], 4),
-                    "setup_ms":   round(r["setup_ms"], 4),
-                    "loop_ms":    round(r["loop_ms"], 4),
-                    "iterations": r["iterations"],
-                    "iter_ms":    round(r["iter_ms"], 5),
-                    "pos_err_mm": round(r["pos_err_mm"], 4),
-                    "ori_err_deg": round(r.get("ori_err_deg", 0.0), 4),
-                    "track_err_mm": round(track_err, 4),
-                    "max_joint_delta_deg": round(max_joint_delta_deg, 4),
-                    "joint_jump_guard": int(guard_hit),
-                    "mem_kb":     r["mem_kb"],
-                    "deadline_missed": deadline_missed,
-                    "sigma_min":  round(r.get("sigma_min", 0.0), 6),
-                    "lambda_dls": round(r.get("lambda_dls", 0.0), 8),
-                }
-                self._csv_writer.put(row)
-                self._records.append(row)
-
-                # Console print (every 5 steps or verbose)
-                if step_count % 5 == 0 or kbd.verbose or self.args.verbose:
-                    tag = "✓" if r["success"] else "✗"
-                    dlm = "!" if deadline_missed else " "
-                    print(
-                        f"\r  {step_count:5d}"
-                        f"  {ik_ms:7.2f}  {r['robot_ms']:6.2f}  {r['loop_ms']:6.2f}"
-                        f"  {r['iterations']:5d}  {r['pos_err_mm']:6.2f}"
-                        f"  {track_err:6.2f}  {r['mem_kb']/1024:6.1f}"
-                        f"  ×{kbd.scale:.2f}  {dlm}{tag}",
-                        end="", flush=True,
-                    )
-
-                if step_count % 50 == 0:
-                    self._print_partial_stats()
+                self._no_msg_t = time.time()
+                t_wall = time.time()
+                target = self._build_target(msg, kbd_mode, t_wall)
+                if target is not None:
+                    pipeline = self._run_ik_pipeline(target, t_step)
+                    step_count += 1
+                    self._write_step(target, pipeline, t_wall, step_count)
+                    if step_count % 50 == 0:
+                        self._print_partial_stats()
 
             sleep_sec = dt_sec - (time.perf_counter() - t_step)
             if sleep_sec > 0:
