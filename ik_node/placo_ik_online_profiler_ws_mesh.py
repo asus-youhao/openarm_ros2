@@ -189,6 +189,9 @@ def main():
 
     try:
         if args.home_first:
+            # Safety unfold sequence: joint3 0→90°, joint4 0→90°, joint3 90→0°
+            print("  Running pre-home unfold sequence...")
+            node.joint_unfold_sequence()
             if args.use_traj:
                 # Legacy: use JointTrajectoryController for homing
                 print("  Moving to home (JointTrajectory)...")

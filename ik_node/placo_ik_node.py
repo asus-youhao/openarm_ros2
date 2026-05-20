@@ -434,6 +434,174 @@ class PlacoOnlineProfiler(Node):
         limit = self._joint_jump_guard_deg
         return (limit > 0.0 and max_delta > limit), max_delta
 
+    # ── Pre-home unfold sequence ──────────────────────────────────────────────
+    def joint_unfold_sequence(
+        self,
+        ramp_hz:          float = 50.0,
+        deg_per_sec:      float = 30.0,
+        j4_skip_thresh_deg: float = 70.0,
+    ) -> None:
+        """
+        Sequential single-joint ramp sequence executed before homing to safely
+        unfold the arm from a potentially folded/collapsed posture.
+
+        Full sequence (joint4 <= 70 deg at start):
+          Step 1 — joint3 : current  → ±90 deg  (left arm -90, right arm +90)
+          Step 2 — joint4 : current  → +90 deg  (aligns with home_joints[3])
+          Step 3 — joint3 : ±90 deg  →   0 deg  (aligns with home_joints[2])
+
+        Short sequence (joint4 > 70 deg at start):
+          Elbow is already bent enough that the joint3 swing is unnecessary
+          and may risk collision. Instead, ramp ALL joints simultaneously
+          on a single cosine-smoothed timeline:
+            joint4         : current  → +90 deg
+            all others (6) : current  →   0 deg
+
+        Uses ForwardCommandController (Float64MultiArray) stream.
+        Skips if _fwd_pub is unavailable. Waits up to 3 s for joint states.
+
+        Note: called once only (before send_home_confirmed / send_home_fwd).
+        The max_tries=5 inside send_home_confirmed are TF arrival retries
+        and do NOT re-trigger this unfold sequence.
+        """
+        print("  [unfold] -- joint_unfold_sequence() start --")
+
+        # ── Guard: ForwardCommandController required ──────────────────────────
+        if self._fwd_pub is None:
+            print("  [unfold] x _fwd_pub is None (--use-traj mode?) "
+                  "-> skip unfold sequence")
+            return
+
+        jnames = self.cfg["joint_names"]
+        print(f"  [unfold] joint_names = {jnames}")
+
+        # ── Wait for joint states (up to 3 s) ────────────────────────────────
+        wait_deadline = time.time() + 3.0
+        while True:
+            with self._js_lock:
+                js = dict(self._joint_states)
+            missing = [n for n in jnames if n not in js]
+            if not missing:
+                break
+            if time.time() > wait_deadline:
+                print(f"  [unfold] x joint states still missing after 3 s: {missing}"
+                      " -> skip unfold sequence")
+                return
+            print(f"  [unfold]   waiting /joint_states ... missing: {missing}",
+                  end="\r", flush=True)
+            time.sleep(0.1)
+        print()
+
+        current = [js[n] for n in jnames]
+        print(f"  [unfold] joint states (rad): {[f'{v:.4f}' for v in current]}")
+        print(f"  [unfold] joint states (deg): {[f'{math.degrees(v):.1f}' for v in current]}")
+        dt = 1.0 / ramp_hz
+
+        # ── joint4 mode check ─────────────────────────────────────────────────
+        j4_deg = math.degrees(current[3])
+        short_mode = j4_deg > j4_skip_thresh_deg
+        if short_mode:
+            print(f"  [unfold] joint4={j4_deg:.1f} deg > {j4_skip_thresh_deg:.0f} deg "
+                  f"-> short mode (all joints ramp simultaneously)")
+        else:
+            print(f"  [unfold] joint4={j4_deg:.1f} deg <= {j4_skip_thresh_deg:.0f} deg "
+                  f"-> full 3-step sequence")
+
+        def _ramp_joint(positions: list, idx: int, target_rad: float, label: str) -> list:
+            """Ramp joint[idx] to target_rad with cosine smoothing."""
+            start_rad = positions[idx]
+            delta = abs(target_rad - start_rad)
+            print(f"  [unfold] {label}: start={math.degrees(start_rad):.1f} deg"
+                  f"  target={math.degrees(target_rad):.1f} deg"
+                  f"  delta={math.degrees(delta):.1f} deg")
+            if delta < math.radians(1.0):
+                print(f"  [unfold] {label}: already near target (delta < 1 deg) -> skip")
+                return positions[:]
+            ramp_sec = max(0.5, delta / math.radians(deg_per_sec))
+            n_steps  = int(ramp_sec * ramp_hz)
+            print(f"  [unfold] {label}: ramp start  {ramp_sec:.1f}s  {n_steps} steps  "
+                  f"ramp_hz={ramp_hz}  deg_per_sec={deg_per_sec}")
+            result = positions[:]
+            for step in range(n_steps + 1):
+                alpha        = step / max(1, n_steps)
+                alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
+                result[idx]  = start_rad + alpha_smooth * (target_rad - start_rad)
+                msg = Float64MultiArray()
+                msg.data = list(result)
+                self._fwd_pub.publish(msg)
+                if step % max(1, n_steps // 5) == 0:
+                    print(f"  [unfold]   {label}: {alpha * 100:.0f}%  "
+                          f"joint[{idx}]={math.degrees(result[idx]):.1f} deg",
+                          end="\r", flush=True)
+                time.sleep(dt)
+            print()
+            print(f"  [unfold] {label}: done  final={math.degrees(result[idx]):.1f} deg")
+            return result
+
+        def _ramp_all(start: list, target: list, label: str) -> list:
+            """Ramp all joints from start to target on a single cosine timeline.
+            Duration is sized by the largest per-joint delta and deg_per_sec."""
+            deltas = [abs(t - s) for s, t in zip(start, target)]
+            max_delta = max(deltas)
+            print(f"  [unfold] {label}: per-joint delta (deg) = "
+                  f"{[f'{math.degrees(d):.1f}' for d in deltas]}")
+            if max_delta < math.radians(1.0):
+                print(f"  [unfold] {label}: already near target (max delta < 1 deg) -> skip")
+                return start[:]
+            ramp_sec = max(0.5, max_delta / math.radians(deg_per_sec))
+            n_steps  = int(ramp_sec * ramp_hz)
+            print(f"  [unfold] {label}: ramp start  {ramp_sec:.1f}s  {n_steps} steps  "
+                  f"ramp_hz={ramp_hz}  deg_per_sec={deg_per_sec}")
+            result = start[:]
+            for step in range(n_steps + 1):
+                alpha        = step / max(1, n_steps)
+                alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
+                result = [s + alpha_smooth * (t - s) for s, t in zip(start, target)]
+                msg = Float64MultiArray()
+                msg.data = list(result)
+                self._fwd_pub.publish(msg)
+                if step % max(1, n_steps // 5) == 0:
+                    print(f"  [unfold]   {label}: {alpha * 100:.0f}%  "
+                          f"deg={[f'{math.degrees(v):.1f}' for v in result]}",
+                          end="\r", flush=True)
+                time.sleep(dt)
+            print()
+            print(f"  [unfold] {label}: done  "
+                  f"final={[f'{math.degrees(v):.1f}' for v in result]}")
+            return result
+
+        if short_mode:
+            # Short mode: ramp all joints simultaneously
+            #   joint4 -> 90 deg, all others -> 0 deg
+            target_all = [0.0] * len(current)
+            target_all[3] = math.pi / 2.0
+            print("\n  [unfold] === Short mode: all joints simultaneous "
+                  "(joint4 -> 90, others -> 0) ===")
+            current = _ramp_all(current, target_all, "all->home_layout")
+            time.sleep(0.3)
+        else:
+            j3_sign   = -1.0 if self.args.arm == "left" else 1.0
+            j3_target = j3_sign * math.pi / 2.0
+
+            # Step 1: joint3 -> +/-90 deg
+            print(f"\n  [unfold] === Step 1: joint3 -> {math.degrees(j3_target):+.0f} deg "
+                  f"(arm={self.args.arm}) ===")
+            current = _ramp_joint(current, 2, j3_target,
+                                  f"joint3->{math.degrees(j3_target):+.0f}deg")
+            time.sleep(0.3)
+
+            # Step 2: joint4 -> 90 deg
+            print("\n  [unfold] === Step 2: joint4 -> 90 deg ===")
+            current = _ramp_joint(current, 3, math.pi / 2.0, "joint4->90deg")
+            time.sleep(0.3)
+
+            # Step 3: joint3 -> 0 deg
+            print("\n  [unfold] === Step 3: joint3 -> 0 deg ===")
+            current = _ramp_joint(current, 2, 0.0, "joint3->0deg")
+            time.sleep(0.3)
+
+        print("  [unfold] unfold sequence complete")
+
     # ── Send home ─────────────────────────────────────────────────────────────
     def send_home_confirmed(
         self,
