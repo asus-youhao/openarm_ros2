@@ -1159,10 +1159,6 @@ class PlacoOnlineProfiler(Node):
         else:
             print(f"  lpf      : OFF")
         print(f"  publish  : {'success-gate (legacy freeze)' if self._success_gate else 'always (continuous approach, Set2-D)'}")
-        if self._stuck_reset_ms > 0:
-            print(f"  stuck-rst: {self._stuck_reset_ms:.0f}ms outside → auto ref reset (Set2-F)")
-        else:
-            print(f"  stuck-rst: OFF")
         if self._ori_lpf_active:
             print(f"  ori_lpf  : α={self._ori_lpf_alpha:.2f}  (SLERP EMA on target quat, test3)")
         else:
