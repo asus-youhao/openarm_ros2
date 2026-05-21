@@ -846,7 +846,10 @@ class PlacoOnlineProfiler(Node):
         if kbd.request_home:
             kbd.request_home = False
             print("\n  [kbd] sending home...")
-            self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
+            if self._use_traj:
+                self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
+            else:
+                self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         if kbd.reset_ref:
             kbd.reset_ref          = False
             self._ee_delta_ref_xyz = None
