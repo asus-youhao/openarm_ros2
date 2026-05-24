@@ -20,7 +20,7 @@ OpenArm_v10LPF_HW instead of OpenArm_v10HW.  This adds a Low-Pass Filter on
 the arm (and O6 hand) POSITION COMMANDS coming from the JointTrajectoryController,
 preventing jerk from discrete trajectory waypoints from reaching the motors.
 
-State-side LPF (50 Hz) is inherited from the base class and remains active.
+State-side LPF (100 Hz) is inherited from the base class and remains active.
 
 Extra launch argument:
   cmd_filter_cutoff_hz  — command LPF cutoff frequency in Hz (default: 10.0)

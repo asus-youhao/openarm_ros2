@@ -101,10 +101,10 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Write rate: Motor command frequency (Hz)
   static constexpr double CONTROL_WRITE_RATE_HZ = 500.0;  // 500Hz write-only (CAN-FD/Serial TX)
   // Read rate: Decoupled state read thread frequency (Hz) - separate from write loop
-  static constexpr double CONTROL_READ_RATE_HZ = 200.0;   // 200Hz decoupled state read thread
+  static constexpr double CONTROL_READ_RATE_HZ = 500.0;   // 500Hz decoupled state read thread
 
   // Low-pass filter cutoff frequency for state smoothing (Hz)
-  static constexpr double STATE_FILTER_CUTOFF_HZ = 50.0;  // Smooth states for VLA feedback
+  static constexpr double STATE_FILTER_CUTOFF_HZ = 100.0;  // Smooth states for VLA feedback
   
   // Health monitoring thresholds
   static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Max allowed communication latency

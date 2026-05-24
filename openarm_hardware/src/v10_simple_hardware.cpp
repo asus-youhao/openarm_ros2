@@ -1170,7 +1170,7 @@ void OpenArm_v10HW::arm_control_loop() {
       tau_cmd = arm_tau_cmd_buffer_;
     }
     
-    // Copy latest states from decoupled state_read_loop @ 200Hz (thread-safe).
+    // Copy latest states from decoupled state_read_loop @ 500Hz (thread-safe).
     // state_read_loop applies LPF and updates these buffers independently.
     {
       std::lock_guard<std::mutex> lock(arm_state_mutex_);
@@ -1449,7 +1449,7 @@ void OpenArm_v10HW::leap_control_loop() {
 }
 
 // Decoupled state read loop — reads both CAN arm and LEAP Hand serial, applies LPF.
-// Runs at CONTROL_READ_RATE_HZ (200Hz) independently of the 500Hz write loops.
+// Runs at CONTROL_READ_RATE_HZ (500Hz) independently of the 500Hz write loops.
 // This prevents RS-485 read latency from stalling CAN command sending.
 void OpenArm_v10HW::state_read_loop() {
   using namespace std::chrono;
@@ -1488,7 +1488,7 @@ void OpenArm_v10HW::state_read_loop() {
       }
     }
 
-    // Apply low-pass filter to arm position states (LPF cutoff=30Hz, sample=200Hz, alpha≈0.49)
+    // Apply low-pass filter to arm position states (LPF cutoff=100Hz, sample=500Hz, alpha≈0.56)
     arm_state_filter_.update(pos_state);
     const std::vector<double>& filtered_pos = arm_state_filter_.get();
 
