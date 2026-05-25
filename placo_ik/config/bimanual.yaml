@@ -1,0 +1,38 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# placo_ik/config/bimanual.yaml
+# Bimanual IK configuration — common defaults + per-arm overrides
+#
+# Priority when using --arm both:
+#   YAML common → YAML arm-specific → then any CLI flags you pass still apply
+#   to both arms (use this for quick experiment-level overrides)
+#
+# Usage:
+#   python3 placo_ik_online_profiler_ws_mesh.py --arm both --config bimanual.yaml
+#   python3 placo_ik_online_profiler_ws_mesh.py --arm both --config bimanual.yaml --rate 40
+# ──────────────────────────────────────────────────────────────────────────────
+
+common:
+  rate: 50.0
+  wrist_vel_cap: 4.0
+  lpf_alpha: "0.25,0.25,0.25,0.4,0.6,0.6,0.6"
+  ori_lpf_alpha: 1.0
+  joint_jump_guard_deg: 15.0
+  boundary_margin: 0.05
+  ee_delta_gap_sec: 0.8
+  home_first: false
+  dry_run: false
+  no_rot_tracking: false
+  success_gate: false
+  use_traj: false
+  keyboard: false
+
+right:
+  calib_yaw: 0.0
+  # tracker_side: right
+
+left:
+  calib_yaw: 180.0
+  # tracker_side: left
+  # Uncomment to give left arm more conservative filtering:
+  # lpf_alpha: "0.3,0.3,0.3,0.5,0.6,0.6,0.6"
+  # wrist_vel_cap: 3.0

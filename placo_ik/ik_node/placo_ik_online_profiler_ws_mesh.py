@@ -73,6 +73,7 @@ _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
 
 import argparse
+import copy
 import os
 import threading
 
@@ -89,7 +90,10 @@ def _parse_args():
         description="Placo IK online profiler with WorkspaceMesh clamp (ROS2)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--arm",       default="right", choices=["right", "left"])
+    p.add_argument("--arm",       default="right", choices=["right", "left", "both"])
+    p.add_argument("--config",    default=None,
+                   help="Path to bimanual YAML config (e.g. ../config/bimanual.yaml). "
+                        "Required when --arm both; optional for single-arm use.")
     p.add_argument("--rate",      type=float, default=50.0,
                    help="Control-loop Hz  (default: 50).  Also sets solver dt.")
     p.add_argument("--horizon",   type=float, default=None,
@@ -160,26 +164,120 @@ def _parse_args():
     return p.parse_args()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-def main():
-    args = _parse_args()
+# ── Helpers ──────────────────────────────────────────────────────────────────
+def _load_yaml_config(config_path):
+    """Load bimanual YAML. Returns dict (keys: 'common', 'right', 'left')."""
+    try:
+        import yaml
+    except ImportError:
+        raise SystemExit("pyyaml not installed — run: pip install pyyaml")
+    with open(config_path) as f:
+        return yaml.safe_load(f) or {}
 
-    # Auto-detect WorkspaceMesh if not specified
+
+def _apply_yaml_to_args(args, yaml_cfg, arm):
+    """Merge YAML common + arm-specific values onto an args Namespace copy."""
+    merged = dict(yaml_cfg.get("common", {}))
+    merged.update(yaml_cfg.get(arm, {}))
+    for key, val in merged.items():
+        dest = key.replace("-", "_")
+        if hasattr(args, dest):
+            setattr(args, dest, val)
+    return args
+
+
+def _prepare_args(args):
+    """Auto-detect ws_mesh and compute horizon in-place for one arm."""
     if not args.ws_mesh:
         _auto = _ws_mesh_path(args.arm)
         if os.path.isfile(_auto):
             args.ws_mesh = _auto
-            print(f"  [ws_mesh] auto-detected: {_auto}")
-
-    # Fix-7: Horizon auto-compute (must be ≥ control period)
+            print(f"  [{args.arm}][ws_mesh] auto-detected: {_auto}")
     period_ms = 1000.0 / args.rate
     if args.horizon is None:
         args.horizon = round(1.5 * period_ms, 1)
-        print(f"  [horizon] auto → {args.horizon:.1f}ms  (1.5× period @ {args.rate:.0f}Hz)")
+        print(f"  [{args.arm}][horizon] auto → {args.horizon:.1f}ms  (1.5× period @ {args.rate:.0f}Hz)")
     elif args.horizon < period_ms:
-        print(f"  ⚠ --horizon {args.horizon:.1f}ms < period {period_ms:.1f}ms "
+        print(f"  ⚠ [{args.arm}] --horizon {args.horizon:.1f}ms < period {period_ms:.1f}ms "
               f"→ clamped to {period_ms:.1f}ms")
         args.horizon = period_ms
+
+
+def _run_arm(node):
+    """Run one arm's home sequence + IK hot-loop. Designed to run in a thread."""
+    try:
+        if node.args.home_first:
+            arm = node.args.arm
+            print(f"  [{arm}] Running pre-home unfold sequence...")
+            node.joint_unfold_sequence()
+            if node.args.use_traj:
+                print(f"  [{arm}] Moving to home (JointTrajectory)...")
+                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
+            else:
+                print(f"  [{arm}] Moving to home (ForwardCommand ramp)...")
+                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+        node.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.print_final_stats()
+
+
+def _run_bimanual(args):
+    """Launch right + left IK nodes in one process with MultiThreadedExecutor."""
+    from rclpy.executors import MultiThreadedExecutor
+
+    yaml_cfg = {}
+    if args.config:
+        yaml_cfg = _load_yaml_config(args.config)
+        print(f"  [config] Loaded: {args.config}")
+    elif not args.config:
+        print("  ⚠  --arm both without --config: both arms use identical CLI defaults")
+
+    args_right = _apply_yaml_to_args(copy.deepcopy(args), yaml_cfg, "right")
+    args_right.arm = "right"
+    args_left  = _apply_yaml_to_args(copy.deepcopy(args), yaml_cfg, "left")
+    args_left.arm  = "left"
+
+    _prepare_args(args_right)
+    _prepare_args(args_left)
+
+    rclpy.init()
+    node_right = PlacoOnlineProfiler(args_right)
+    node_left  = PlacoOnlineProfiler(args_left)
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node_right)
+    executor.add_node(node_left)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+
+    t_right = threading.Thread(target=_run_arm, args=(node_right,), name="ik-right", daemon=True)
+    t_left  = threading.Thread(target=_run_arm, args=(node_left,),  name="ik-left",  daemon=True)
+    t_right.start()
+    t_left.start()
+
+    try:
+        t_right.join()
+        t_left.join()
+    except KeyboardInterrupt:
+        print("\n  Ctrl-C — stopping both arms...")
+    finally:
+        node_right.destroy_node()
+        node_left.destroy_node()
+        rclpy.shutdown()
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+def main():
+    args = _parse_args()
+
+    if args.arm == "both":
+        _run_bimanual(args)
+        return
+
+    # ── Single-arm path ──────────────────────────────────────────────────────
+    _prepare_args(args)
 
     rclpy.init()
     node = PlacoOnlineProfiler(args)
@@ -193,11 +291,9 @@ def main():
             print("  Running pre-home unfold sequence...")
             node.joint_unfold_sequence()
             if args.use_traj:
-                # Legacy: use JointTrajectoryController for homing
                 print("  Moving to home (JointTrajectory)...")
                 node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
             else:
-                # ForwardCmd: ramp to home via direct position streaming
                 print("  Moving to home (ForwardCommand ramp)...")
                 node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()

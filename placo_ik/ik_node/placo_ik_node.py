@@ -245,7 +245,7 @@ class PlacoOnlineProfiler(Node):
     """
 
     def __init__(self, args):
-        super().__init__("placo_ik_online_profiler_ws_mesh")
+        super().__init__(f"placo_ik_{args.arm}")
         self.args = args
         self.cfg  = ARM_CONFIG[args.arm]
         self._cbg = ReentrantCallbackGroup()
