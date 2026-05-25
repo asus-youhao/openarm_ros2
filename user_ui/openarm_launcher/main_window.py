@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
@@ -37,3 +38,10 @@ class MainWindow(QMainWindow):
 
         self.launcher_panel.log_line.connect(self.log.appendPlainText)
         self.analyzer_panel.log_line.connect(self.log.appendPlainText)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt API)
+        try:
+            self.launcher_panel.shutdown()
+        finally:
+            self.analyzer_panel.shutdown()
+        super().closeEvent(event)

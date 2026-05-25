@@ -1,4 +1,4 @@
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QSettings, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -104,7 +104,12 @@ class LauncherPanel(QGroupBox):
         self._detector.state.connect(self._on_state)
         # Defer the initial scan until the event loop runs so any consumer
         # (e.g. MainWindow log) has time to wire up our log_line signal.
-        QTimer.singleShot(0, self._detector.emit_current_state)
+        # The timer is parented to self so it is destroyed with us and
+        # can't fire on a half-destroyed CanDetector during teardown.
+        self._initial_scan = QTimer(self)
+        self._initial_scan.setSingleShot(True)
+        self._initial_scan.timeout.connect(self._detector.emit_current_state)
+        self._initial_scan.start(0)
 
         self._bringup = CanBringUp(self)
         self._bringup.line.connect(self.log_line)
@@ -114,6 +119,27 @@ class LauncherPanel(QGroupBox):
         self._launcher.line.connect(self.log_line)
         self._launcher.started.connect(self._on_launch_started)
         self._launcher.finished.connect(self._on_launch_finished)
+
+        self._settings = QSettings()
+        saved_ctrl = self._settings.value("launcher/controller", "")
+        if saved_ctrl:
+            idx = self._controller_combo.findText(str(saved_ctrl))
+            if idx >= 0:
+                self._controller_combo.setCurrentIndex(idx)
+        self._fake_chk.setChecked(
+            self._settings.value("launcher/use_fake_hardware", False, type=bool)
+        )
+        self._controller_combo.currentTextChanged.connect(
+            lambda v: self._settings.setValue("launcher/controller", v)
+        )
+        self._fake_chk.toggled.connect(
+            lambda v: self._settings.setValue("launcher/use_fake_hardware", v)
+        )
+
+    def shutdown(self) -> None:
+        """Stop any running ros2 launch — called from MainWindow.closeEvent."""
+        if self._launcher.is_running():
+            self._launcher.stop()
 
     def _on_bringup_clicked(self) -> None:
         if self._bringup.is_running():

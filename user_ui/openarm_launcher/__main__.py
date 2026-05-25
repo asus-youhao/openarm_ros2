@@ -8,6 +8,8 @@ from .main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
+    # Names are required for QSettings to find the persisted INI file.
+    app.setOrganizationName("openarm")
     app.setApplicationName("OpenArm Launcher")
     window = MainWindow()
     window.show()

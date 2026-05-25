@@ -1,7 +1,7 @@
 import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QUrl, Signal
+from PySide6.QtCore import QSettings, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QComboBox,
@@ -83,6 +83,31 @@ class AnalyzerPanel(QGroupBox):
         self._o6_runner: O6Runner | None = None
         self._o6_csv: ArmCsvWriter | None = None
         self._o6_plot: JointErrorPlot | None = None
+
+        self._settings = QSettings()
+        saved_arm = self._settings.value("analyzers/arm_side", "")
+        if saved_arm:
+            idx = self._arm_combo.findText(str(saved_arm))
+            if idx >= 0:
+                self._arm_combo.setCurrentIndex(idx)
+        saved_o6 = self._settings.value("analyzers/o6_side", "")
+        if saved_o6:
+            idx = self._o6_combo.findText(str(saved_o6))
+            if idx >= 0:
+                self._o6_combo.setCurrentIndex(idx)
+        self._arm_combo.currentTextChanged.connect(
+            lambda v: self._settings.setValue("analyzers/arm_side", v)
+        )
+        self._o6_combo.currentTextChanged.connect(
+            lambda v: self._settings.setValue("analyzers/o6_side", v)
+        )
+
+    def shutdown(self) -> None:
+        """Stop any running analyzers — called from MainWindow.closeEvent."""
+        if self._arm_runner is not None:
+            self._stop_arm()
+        if self._o6_runner is not None:
+            self._stop_o6()
 
     def _start_arm(self) -> None:
         if self._arm_runner is not None:
