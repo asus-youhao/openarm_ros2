@@ -73,6 +73,13 @@ CSV_FIELDS = [
     "max_joint_delta_deg", "joint_jump_guard",
     "mem_kb", "deadline_missed",
     "sigma_min", "lambda_dls",          # Adaptive DLS (方案 C)
+    # Set1-A complete: published joint command (post-LPF, post-guard).
+    # Empty when joint_jump_guard=1 (nothing actually published that step).
+    "q_cmd_0", "q_cmd_1", "q_cmd_2", "q_cmd_3", "q_cmd_4", "q_cmd_5", "q_cmd_6",
+    # Closed-loop EE measurement from TfPoller cache at log time.
+    "tf_x", "tf_y", "tf_z", "tf_qx", "tf_qy", "tf_qz", "tf_qw",
+    # Tracker timing: header.stamp (sender) and node-side recv wall clock.
+    "tracker_t_stamp", "tracker_t_recv",
 ]
 
 
@@ -372,9 +379,10 @@ class PlacoOnlineProfiler(Node):
             PoseStamped, cfg["ee_delta_topic"],
             self._ee_delta_cb, 10, callback_group=self._cbg)
 
-        self._pending    = None
-        self._delta_lock = threading.Lock()
-        self._msg_count  = 0
+        self._pending        = None
+        self._pending_t_recv = None     # wall-clock recv time of the pending tracker msg
+        self._delta_lock     = threading.Lock()
+        self._msg_count      = 0
 
     def _init_telemetry(self, args):
         """Create async CSV writer and records list."""
@@ -396,8 +404,10 @@ class PlacoOnlineProfiler(Node):
                 self._joint_states[n] = p
 
     def _ee_delta_cb(self, msg: PoseStamped):
+        t_recv = time.time()
         with self._delta_lock:
-            self._pending = msg
+            self._pending        = msg
+            self._pending_t_recv = t_recv
         self._msg_count += 1
 
     # ── TF helpers ────────────────────────────────────────────────────────────
@@ -860,19 +870,26 @@ class PlacoOnlineProfiler(Node):
         return False
 
     def _fetch_pending(self):
-        """Drain the pending input slot. Returns (msg, kbd_mode)."""
+        """Drain the pending input slot. Returns (msg, kbd_mode, tracker_t_recv).
+
+        tracker_t_recv is the wall-clock time the latest tracker PoseStamped
+        was received by _ee_delta_cb; None in keyboard mode or when no msg.
+        """
         kbd      = self._kbd
         kbd_mode = kbd.mode
         with self._delta_lock:
-            tracker_msg   = self._pending
-            self._pending = None
+            tracker_msg          = self._pending
+            tracker_t_recv       = self._pending_t_recv
+            self._pending        = None
+            self._pending_t_recv = None
         if kbd_mode == "keyboard":
             xyz_d = kbd.pop_xyz()
             rpy_d = kbd.pop_rpy()
             msg   = (xyz_d, rpy_d) if (xyz_d is not None or rpy_d is not None) else None
+            tracker_t_recv = None
         else:
             msg = tracker_msg
-        return msg, kbd_mode
+        return msg, kbd_mode, tracker_t_recv
 
     def _print_idle(self, step_count: int, kbd_mode: str):
         """Throttled idle-state console print (fires at most once per 2 s)."""
@@ -1004,6 +1021,7 @@ class PlacoOnlineProfiler(Node):
 
         guard_hit, max_joint_delta_deg = self._joint_jump_guard(seed, r["joints"])
 
+        joints_out: Optional[List[float]] = None    # set below if step was published
         if guard_hit:
             r["success"] = 0
             self._fail_streak += 1
@@ -1039,9 +1057,11 @@ class PlacoOnlineProfiler(Node):
             "track_err": track_err, "guard_hit": guard_hit,
             "max_joint_delta_deg": max_joint_delta_deg,
             "deadline_missed": deadline_missed,
+            "joints_out": joints_out,   # None when guard_hit (nothing published)
         }
 
-    def _write_step(self, target: dict, pipeline: dict, t_wall: float, step_count: int):
+    def _write_step(self, target: dict, pipeline: dict, t_wall: float, step_count: int,
+                    tracker_t_stamp: float = 0.0, tracker_t_recv: Optional[float] = None):
         """Publish JSON profile, enqueue CSV row, and print console line."""
         r                   = pipeline["r"]
         ik_ms               = pipeline["ik_ms"]
@@ -1050,7 +1070,10 @@ class PlacoOnlineProfiler(Node):
         guard_hit           = pipeline["guard_hit"]
         max_joint_delta_deg = pipeline["max_joint_delta_deg"]
         deadline_missed     = pipeline["deadline_missed"]
+        joints_out          = pipeline.get("joints_out")    # None when guard_hit
         dx, dy, dz          = target["dx"], target["dy"], target["dz"]
+
+        tf_pose = self._tf_poller.get()   # (x,y,z,qx,qy,qz,qw) or None
 
         self._profile_pub.publish(String(data=json.dumps({
             "step":              step_count,
@@ -1096,7 +1119,22 @@ class PlacoOnlineProfiler(Node):
             "deadline_missed":     deadline_missed,
             "sigma_min":           round(r.get("sigma_min", 0.0), 6),
             "lambda_dls":          round(r.get("lambda_dls", 0.0), 8),
+            "tracker_t_stamp":     round(tracker_t_stamp, 6) if tracker_t_stamp else "",
+            "tracker_t_recv":      round(tracker_t_recv, 6)  if tracker_t_recv  else "",
         }
+        # Published joint command (post-LPF). Empty when guard rejected the step.
+        if joints_out is not None:
+            for i, q in enumerate(joints_out[:7]):
+                row[f"q_cmd_{i}"] = round(float(q), 6)
+        # Closed-loop EE measurement from TF cache.
+        if tf_pose is not None:
+            row["tf_x"]  = round(tf_pose[0], 6)
+            row["tf_y"]  = round(tf_pose[1], 6)
+            row["tf_z"]  = round(tf_pose[2], 6)
+            row["tf_qx"] = round(tf_pose[3], 6)
+            row["tf_qy"] = round(tf_pose[4], 6)
+            row["tf_qz"] = round(tf_pose[5], 6)
+            row["tf_qw"] = round(tf_pose[6], 6)
         self._csv_writer.put(row)
         self._records.append(row)
 
@@ -1132,18 +1170,25 @@ class PlacoOnlineProfiler(Node):
             if self._handle_kbd_events():
                 break
 
-            msg, kbd_mode = self._fetch_pending()
+            msg, kbd_mode, tracker_t_recv = self._fetch_pending()
 
             if msg is None or self._kbd.paused:
                 self._print_idle(step_count, kbd_mode)
             else:
                 self._no_msg_t = time.time()
                 t_wall = time.time()
+                # Tracker sender timestamp (PoseStamped.header.stamp); 0 for keyboard.
+                if kbd_mode == "keyboard" or not hasattr(msg, "header"):
+                    tracker_t_stamp = 0.0
+                else:
+                    s = msg.header.stamp
+                    tracker_t_stamp = float(s.sec) + float(s.nanosec) * 1e-9
                 target = self._build_target(msg, kbd_mode, t_wall)
                 if target is not None:
                     pipeline = self._run_ik_pipeline(target, t_step)
                     step_count += 1
-                    self._write_step(target, pipeline, t_wall, step_count)
+                    self._write_step(target, pipeline, t_wall, step_count,
+                                     tracker_t_stamp, tracker_t_recv)
                     if step_count % 50 == 0:
                         self._print_partial_stats()
 
