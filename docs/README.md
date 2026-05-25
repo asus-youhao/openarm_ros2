@@ -4,6 +4,7 @@
 
 ## 總覽
 - [../README.md](../README.md) — 專案總覽（tracker_ee_delta_ik 控制器、Home 姿態、CLI 範例）
+- [READING_GUIDE.md](READING_GUIDE.md) — **文件導讀地圖**（閱讀順序 + 快速查閱索引）← 新手從這裡開始
 - [improvements_status.md](improvements_status.md) — 兩組 A–F 改進進度總表 + pipeline 全圖 + CLI flags 一覽
 
 ## Solver 設計
@@ -24,3 +25,6 @@
 ## 工具集
 - [ws_mesh_tools.md](ws_mesh_tools.md) — WorkspaceMesh 6 個工具（reachability / analyze / view3d / clamp benchmark / profiler ws_mesh 版）
 - [csv_analysis.md](csv_analysis.md) — IK Solver 成功率分析（results/*.csv）
+
+## 奇異點 & 權重問題深度分析
+- [j3_singularity_weight_issues.md](j3_singularity_weight_issues.md) — j3 內旋封死問題、IK 旋轉權重 6 個隱藏 Issue、分等級優化方案（P0/P1/P2）
