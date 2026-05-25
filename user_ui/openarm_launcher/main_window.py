@@ -21,9 +21,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
+        self.launcher_panel = LauncherPanel()
+        self.analyzer_panel = AnalyzerPanel()
+
         top = QSplitter(Qt.Horizontal, central)
-        top.addWidget(LauncherPanel())
-        top.addWidget(AnalyzerPanel())
+        top.addWidget(self.launcher_panel)
+        top.addWidget(self.analyzer_panel)
         top.setSizes([550, 550])
         root.addWidget(top, stretch=3)
 
@@ -31,3 +34,5 @@ class MainWindow(QMainWindow):
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("Log output will appear here.")
         root.addWidget(self.log, stretch=1)
+
+        self.launcher_panel.log_line.connect(self.log.appendPlainText)
