@@ -11,8 +11,15 @@ from PySide6.QtWidgets import (
 )
 
 from .can_detect import CAN_INTERFACES, CanDetector
-from .can_setup import CanBringUp
+from .can_setup import CanBringUp, STEPS_O6_LEFT, STEPS_O6_RIGHT, STEPS_OPENARM
 from .ros2_launcher import CONTROLLERS, Ros2Launcher
+
+
+_BRINGUP_SPECS: list[tuple[str, list[tuple[str, list[str]]]]] = [
+    ("Bring up can0 (O6 right)", STEPS_O6_RIGHT),
+    ("Bring up can1 (O6 left)", STEPS_O6_LEFT),
+    ("Bring up can2+can3 (OpenArm CAN-FD)", STEPS_OPENARM),
+]
 
 
 _LED_COLORS = {"off": "#444", "down": "#cc9900", "up": "#33cc66"}
@@ -69,9 +76,20 @@ class LauncherPanel(QGroupBox):
             self._leds[name] = led
             self._status_labels[name] = status_lbl
 
-        self._bringup_btn = QPushButton("Bring up CAN (can0..can3)")
-        self._bringup_btn.clicked.connect(self._on_bringup_clicked)
-        layout.addWidget(self._bringup_btn)
+        self._bringups: list[tuple[QPushButton, CanBringUp, str]] = []
+        for label, steps in _BRINGUP_SPECS:
+            btn = QPushButton(label)
+            bringup = CanBringUp(steps, self)
+            bringup.line.connect(self.log_line)
+            bringup.finished.connect(
+                lambda ok, b=btn, l=label: self._on_bringup_done(b, l, ok)
+            )
+            btn.clicked.connect(
+                lambda checked=False, b=btn, br=bringup, l=label:
+                    self._on_bringup_clicked(b, br, l)
+            )
+            layout.addWidget(btn)
+            self._bringups.append((btn, bringup, label))
 
         layout.addSpacing(8)
         layout.addWidget(QLabel("Launch:"))
@@ -111,10 +129,6 @@ class LauncherPanel(QGroupBox):
         self._initial_scan.timeout.connect(self._detector.emit_current_state)
         self._initial_scan.start(0)
 
-        self._bringup = CanBringUp(self)
-        self._bringup.line.connect(self.log_line)
-        self._bringup.finished.connect(self._on_bringup_done)
-
         self._launcher = Ros2Launcher(self)
         self._launcher.line.connect(self.log_line)
         self._launcher.started.connect(self._on_launch_started)
@@ -141,22 +155,22 @@ class LauncherPanel(QGroupBox):
         if self._launcher.is_running():
             self._launcher.stop()
 
-    def _on_bringup_clicked(self) -> None:
-        if self._bringup.is_running():
+    def _on_bringup_clicked(self, btn: QPushButton, bringup: CanBringUp, label: str) -> None:
+        if bringup.is_running():
             return
-        self._bringup_btn.setEnabled(False)
-        self._bringup_btn.setText("Bringing up CAN...")
-        self.log_line.emit("--- CAN bring-up start ---")
-        self._bringup.start()
+        btn.setEnabled(False)
+        btn.setText(f"{label} ...")
+        self.log_line.emit(f"--- {label} start ---")
+        bringup.start()
 
-    def _on_bringup_done(self, ok: bool) -> None:
-        self._bringup_btn.setEnabled(True)
-        self._bringup_btn.setText("Bring up CAN (can0..can3)")
+    def _on_bringup_done(self, btn: QPushButton, label: str, ok: bool) -> None:
+        btn.setEnabled(True)
+        btn.setText(label)
         if ok:
-            self.log_line.emit("--- CAN bring-up done ---")
+            self.log_line.emit(f"--- {label} done ---")
         else:
             self.log_line.emit(
-                "--- CAN bring-up FAILED. "
+                f"--- {label} FAILED. "
                 "If you see 'sudo: a password is required', run "
                 "`sudo ./install_sudoers.sh` once. ---"
             )
