@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -105,6 +107,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
 
   // Low-pass filter cutoff frequency for state smoothing (Hz)
   static constexpr double STATE_FILTER_CUTOFF_HZ = 100.0;  // Smooth states for VLA feedback
+
+  // Debug ring buffer span: keep the most recent N seconds of per-iteration motor data.
+  static constexpr double DEBUG_RING_SECONDS = 120.0;
   
   // Health monitoring thresholds
   static constexpr double MAX_COMM_LATENCY_MS = 5.0;      // Max allowed communication latency
@@ -213,9 +218,27 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   
   // Debug CSV logging (one file per arm instance for arm, one for LEAP Hand)
   std::ofstream debug_csv_;
-  bool csv_initialized_;
-  size_t csv_sample_count_;
-  
+
+  // ===== DEBUG RING BUFFER =====
+  // Per-iteration motor snapshot recorded in arm_control_loop at the full loop rate
+  // with zero file I/O; flushed to CSV once on deactivate.
+  struct ArmDebugSample {
+    int64_t timestamp_ms = 0;
+    std::array<double, ARM_DOF> pos_cmd{};
+    std::array<double, ARM_DOF> vel_cmd{};
+    std::array<double, ARM_DOF> tau_cmd{};
+    std::array<double, ARM_DOF> pos_state{};
+    std::array<double, ARM_DOF> vel_state{};
+    std::array<double, ARM_DOF> tau_state{};
+    std::array<double, ARM_DOF> gravity_comp{};
+    std::array<double, ARM_DOF> friction_comp{};
+    std::array<double, ARM_DOF> feedforward_tau{};
+  };
+  std::vector<ArmDebugSample> debug_ring_;
+  size_t debug_ring_capacity_ = 0;
+  size_t debug_ring_idx_ = 0;
+  bool debug_ring_wrapped_ = false;
+
   std::ofstream leap_debug_csv_;
   bool leap_csv_initialized_;
   size_t leap_csv_sample_count_;
@@ -284,6 +307,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   void arm_control_loop();        // Write-only loop @ 500Hz (CAN-FD MIT commands)
   void leap_control_loop();       // Write-only loop @ 500Hz (LEAP Hand serial TX)
   void state_read_loop();         // Read-only loop @ CONTROL_READ_RATE_HZ (CAN + serial + LPF)
+  void flush_debug_ring_to_csv(); // Batch-dump the debug ring buffer to CSV (on deactivate)
   
   // Health monitoring methods
   void check_health();
