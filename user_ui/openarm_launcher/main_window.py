@@ -36,3 +36,4 @@ class MainWindow(QMainWindow):
         root.addWidget(self.log, stretch=1)
 
         self.launcher_panel.log_line.connect(self.log.appendPlainText)
+        self.analyzer_panel.log_line.connect(self.log.appendPlainText)
