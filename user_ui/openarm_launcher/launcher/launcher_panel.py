@@ -4,10 +4,12 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QVBoxLayout,
 )
 
 from .can_detect import CAN_INTERFACES, CanDetector
+from .can_setup import CanBringUp
 
 
 _LED_COLORS = {"off": "#444", "down": "#cc9900", "up": "#33cc66"}
@@ -64,7 +66,11 @@ class LauncherPanel(QGroupBox):
             self._leds[name] = led
             self._status_labels[name] = status_lbl
 
-        layout.addWidget(QLabel("<i>Start button arrives in M4/M5.</i>"))
+        self._bringup_btn = QPushButton("Bring up CAN (can0..can3)")
+        self._bringup_btn.clicked.connect(self._on_bringup_clicked)
+        layout.addWidget(self._bringup_btn)
+
+        layout.addWidget(QLabel("<i>OpenArm launch button arrives in M5.</i>"))
         layout.addStretch()
 
         self._detector = CanDetector(self)
@@ -72,6 +78,30 @@ class LauncherPanel(QGroupBox):
         # Defer the initial scan until the event loop runs so any consumer
         # (e.g. MainWindow log) has time to wire up our log_line signal.
         QTimer.singleShot(0, self._detector.emit_current_state)
+
+        self._bringup = CanBringUp(self)
+        self._bringup.line.connect(self.log_line)
+        self._bringup.finished.connect(self._on_bringup_done)
+
+    def _on_bringup_clicked(self) -> None:
+        if self._bringup.is_running():
+            return
+        self._bringup_btn.setEnabled(False)
+        self._bringup_btn.setText("Bringing up CAN...")
+        self.log_line.emit("--- CAN bring-up start ---")
+        self._bringup.start()
+
+    def _on_bringup_done(self, ok: bool) -> None:
+        self._bringup_btn.setEnabled(True)
+        self._bringup_btn.setText("Bring up CAN (can0..can3)")
+        if ok:
+            self.log_line.emit("--- CAN bring-up done ---")
+        else:
+            self.log_line.emit(
+                "--- CAN bring-up FAILED. "
+                "If you see 'sudo: a password is required', run "
+                "`sudo ./install_sudoers.sh` once. ---"
+            )
 
     def _on_state(self, name: str, operstate) -> None:
         led = self._leds.get(name)
