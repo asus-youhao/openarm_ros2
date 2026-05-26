@@ -143,10 +143,9 @@ class LauncherPanel(QGroupBox):
         self._launch_btn = QPushButton("Launch OpenArm")
         self._launch_btn.clicked.connect(self._on_launch_clicked)
         btn_row.addWidget(self._launch_btn)
-        self._stop_btn = QPushButton("Stop")
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.clicked.connect(self._on_stop_clicked)
-        btn_row.addWidget(self._stop_btn)
+        hint = QLabel("(opens a terminal — press Ctrl+C inside it to stop)")
+        hint.setStyleSheet("color: #888; font-size: 10px;")
+        btn_row.addWidget(hint)
         layout.addLayout(btn_row)
 
         layout.addStretch()
@@ -190,9 +189,8 @@ class LauncherPanel(QGroupBox):
         return _CTRL_TO_MODE.get(self._controller_combo.currentText(), "action")
 
     def shutdown(self) -> None:
-        """Stop any running ros2 launch — called from MainWindow.closeEvent."""
-        if self._launcher.is_running():
-            self._launcher.stop()
+        """No-op: terminal is external, user controls its lifecycle."""
+        pass
 
     # ------------------------------------------------------------------ #
     # Password helpers
@@ -260,29 +258,20 @@ class LauncherPanel(QGroupBox):
         self.controller_mode_changed.emit(_CTRL_TO_MODE.get(label, "action"))
 
     def _on_launch_clicked(self) -> None:
-        if self._launcher.is_running():
-            return
         self._launch_btn.setEnabled(False)
-        self.log_line.emit("--- ros2 launch start ---")
+        self.log_line.emit("--- opening ros2 launch terminal ---")
         self._launcher.start(
             self._controller_combo.currentText(),
             self._fake_chk.isChecked(),
         )
 
     def _on_launch_started(self) -> None:
-        self._stop_btn.setEnabled(True)
+        pass  # terminal is external; button stays enabled for re-launch
 
     def _on_launch_finished(self, code: int) -> None:
         self._launch_btn.setEnabled(True)
-        self._stop_btn.setEnabled(False)
-        self.log_line.emit(f"--- ros2 launch ended (exit {code}) ---")
-
-    def _on_stop_clicked(self) -> None:
-        if not self._launcher.is_running():
-            return
-        self._stop_btn.setEnabled(False)
-        self.log_line.emit("--- requesting ros2 launch stop ---")
-        self._launcher.stop()
+        if code != 0:
+            self.log_line.emit(f"[warn] could not open terminal (exit {code})")  
 
     def _on_refresh_can(self) -> None:
         """Manually re-scan all CAN interfaces and update LEDs."""
