@@ -335,6 +335,9 @@ class BimanualPanel(QGroupBox):
         self._last_sent: dict[str, float] = {}
         self._saved: list[dict] = []
         self._presets: dict[str, dict[str, float]] = _load_hand_presets()
+        self._is_ramping = False
+        self._ramp_step = 0
+        self._ramp_start: dict[str, float] = {}
 
         self._build_ui()
 
@@ -492,7 +495,7 @@ class BimanualPanel(QGroupBox):
 
     def shutdown(self) -> None:
         if self._is_sending:
-            self._stop_sending()
+            self._finalize_stop()  # skip ramp on app close — go directly to stopped
         self._teardown_ros()
 
     # ------------------------------------------------------------------
@@ -539,8 +542,46 @@ class BimanualPanel(QGroupBox):
         self.log_line.emit(f"[bimanual] synced {synced} sliders from joint_states")
 
     def _stop_sending(self) -> None:
-        if not self._is_sending:
+        if not self._is_sending or self._is_ramping:
             return
+        # Begin ramp-to-zero: slider values interpolate to 0 over
+        # _RAMP_STEPS ticks (30 × 50 ms ≈ 1.5 s), mimicking powered-down
+        # back-EMF deceleration rather than an abrupt position cut.
+        self._is_ramping = True
+        self._ramp_step = 0
+        self._ramp_start = {j: self._sliders[j].get_value() for j in self._sliders}
+        self._stop_btn.setEnabled(False)
+        self._status_lbl.setText("● RAMPING TO ZERO")
+        self._status_lbl.setStyleSheet("color: #FF9800; font-weight: bold;")
+        self.log_line.emit("[bimanual] ramping to zero ...")
+
+    _RAMP_STEPS = 30  # 30 × 50 ms ≈ 1.5 s
+
+    def _ramp_tick(self) -> None:
+        """One interpolation step toward zero."""
+        self._ramp_step += 1
+        alpha = max(0.0, 1.0 - self._ramp_step / self._RAMP_STEPS)
+        for j, start_val in self._ramp_start.items():
+            self._sliders[j].set_value(start_val * alpha)
+        # Force-publish every group (skip change detection during ramp).
+        if self._ros_node is not None:
+            for ctrl, joints in [
+                ("left_arm",   LEFT_ARM_JOINTS),
+                ("right_arm",  RIGHT_ARM_JOINTS),
+                ("right_hand", RIGHT_HAND_JOINTS),
+                ("left_hand",  LEFT_HAND_JOINTS),
+            ]:
+                positions = [self._sliders[j].get_value() for j in joints]
+                try:
+                    self._ros_node.publish(ctrl, joints, positions)
+                except Exception:  # noqa: BLE001
+                    pass
+        if self._ramp_step >= self._RAMP_STEPS:
+            self._finalize_stop()
+
+    def _finalize_stop(self) -> None:
+        """Called after ramp completes (or immediately on shutdown)."""
+        self._is_ramping = False
         self._is_sending = False
         self._send_timer.stop()
         self._start_btn.setEnabled(True)
@@ -548,7 +589,6 @@ class BimanualPanel(QGroupBox):
         self._mode_combo.setEnabled(True)
         self._status_lbl.setText("● STOPPED")
         self._status_lbl.setStyleSheet("color: #f44336; font-weight: bold;")
-        # Dim the slider body again to signal "not controlling the robot".
         _eff = QGraphicsOpacityEffect(self._body)
         _eff.setOpacity(0.35)
         self._body.setGraphicsEffect(_eff)
@@ -561,6 +601,9 @@ class BimanualPanel(QGroupBox):
 
     def _send_tick(self) -> None:
         if not self._is_sending or self._ros_node is None:
+            return
+        if self._is_ramping:
+            self._ramp_tick()
             return
         for ctrl, joints in [
             ("left_arm",   LEFT_ARM_JOINTS),

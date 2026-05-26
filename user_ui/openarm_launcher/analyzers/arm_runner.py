@@ -26,6 +26,9 @@ def joints_for(side: str) -> list[str]:
 _rclpy_lock = threading.Lock()
 _rclpy_inited = False
 
+# Serialises concurrent destroy_node() calls from multiple cleanup threads.
+_node_cleanup_lock = threading.Lock()
+
 
 def ensure_rclpy() -> None:
     """Initialise rclpy at most once per process."""
@@ -169,11 +172,12 @@ class ArmRunner(QObject):
             except Exception:  # noqa: BLE001
                 pass
             _t.join(timeout=2.0)
-            try:
-                if _node is not None:
-                    _node.destroy_node()
-            except Exception:  # noqa: BLE001
-                pass
+            with _node_cleanup_lock:  # serialise across concurrent runner teardowns
+                try:
+                    if _node is not None:
+                        _node.destroy_node()
+                except Exception:  # noqa: BLE001
+                    pass
             self.stopped.emit()  # cross-thread — Qt auto-connection marshals to GUI thread
 
         threading.Thread(target=_do_cleanup, daemon=True).start()

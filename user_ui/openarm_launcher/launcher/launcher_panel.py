@@ -86,6 +86,12 @@ class LauncherPanel(QGroupBox):
             self._leds[name] = led
             self._status_labels[name] = status_lbl
 
+        refresh_btn = QPushButton("⟳ Refresh CAN status")
+        refresh_btn.setFixedHeight(22)
+        refresh_btn.setStyleSheet("font-size: 11px; padding: 0 6px;")
+        refresh_btn.clicked.connect(self._on_refresh_can)
+        layout.addWidget(refresh_btn)
+
         # ---- sudo password cache row ----
         self._sudo_password: str = ""
         pw_row = QHBoxLayout()
@@ -277,6 +283,10 @@ class LauncherPanel(QGroupBox):
         self._stop_btn.setEnabled(False)
         self.log_line.emit("--- requesting ros2 launch stop ---")
         self._launcher.stop()
+
+    def _on_refresh_can(self) -> None:
+        """Manually re-scan all CAN interfaces and update LEDs."""
+        self._detector.emit_current_state()
 
     def _on_state(self, name: str, operstate) -> None:
         led = self._leds.get(name)

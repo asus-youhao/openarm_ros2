@@ -11,6 +11,10 @@ from PySide6.QtCore import QObject, Signal
 
 from .arm_runner import ensure_rclpy
 
+# Re-use the same serialisation lock as arm_runner so arm+O6 cleanups
+# are also mutually-exclusive when running together.
+from .arm_runner import _node_cleanup_lock
+
 
 O6_RIGHT_JOINTS: list[str] = [
     "R_thumb_cmc_pitch", "R_thumb_cmc_yaw",
@@ -147,11 +151,12 @@ class O6Runner(QObject):
             except Exception:  # noqa: BLE001
                 pass
             _t.join(timeout=2.0)
-            try:
-                if _node is not None:
-                    _node.destroy_node()
-            except Exception:  # noqa: BLE001
-                pass
+            with _node_cleanup_lock:  # serialise across concurrent runner teardowns
+                try:
+                    if _node is not None:
+                        _node.destroy_node()
+                except Exception:  # noqa: BLE001
+                    pass
             self.stopped.emit()  # cross-thread — Qt auto-connection marshals to GUI thread
 
         threading.Thread(target=_do_cleanup, daemon=True).start()
