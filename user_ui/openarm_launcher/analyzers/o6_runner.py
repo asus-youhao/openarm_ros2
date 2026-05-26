@@ -33,27 +33,37 @@ def o6_joints_for(side: str) -> list[str]:
 
 
 class _O6Node(Node):
-    """Subscribes to /<side>_hand_controller/controller_state and /joint_states."""
+    """Subscribes to /<side>_hand_controller/controller_state and /joint_states.
+
+    mode="action": waits for controller_state (cmd) before emitting.
+    mode="topic":  no controller-state subscription; cmd stays zeros;
+                   emits on joint_states alone (plots position).
+    """
 
     def __init__(
         self,
         side: str,
         on_sample: Callable[[float, list[float], list[float]], None],
         rate_hz: float = 20.0,
+        mode: str = "action",
     ) -> None:
         super().__init__(f"o6_analyzer_{side}")
         self._joint_names = o6_joints_for(side)
         self._on_sample = on_sample
         self._cmd = [0.0] * len(self._joint_names)
         self._actual = [0.0] * len(self._joint_names)
-        self._have_cmd = False
         self._have_actual = False
         self._t0 = time.monotonic()
 
-        ctrl_topic = f"/{side}_hand_controller/controller_state"
-        self.create_subscription(
-            JointTrajectoryControllerState, ctrl_topic, self._on_ctrl, 10
-        )
+        if mode == "action":
+            self._have_cmd = False
+            ctrl_topic = f"/{side}_hand_controller/controller_state"
+            self.create_subscription(
+                JointTrajectoryControllerState, ctrl_topic, self._on_ctrl, 10
+            )
+        else:
+            self._have_cmd = True
+
         self.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self.create_timer(1.0 / rate_hz, self._emit)
 
@@ -89,9 +99,12 @@ class O6Runner(QObject):
     started = Signal()
     stopped = Signal()
 
-    def __init__(self, side: str, parent: QObject | None = None) -> None:
+    def __init__(
+        self, side: str, parent: QObject | None = None, mode: str = "action"
+    ) -> None:
         super().__init__(parent)
         self._side = side
+        self._mode = mode
         self._node: _O6Node | None = None
         self._executor: SingleThreadedExecutor | None = None
         self._thread: threading.Thread | None = None
@@ -109,7 +122,7 @@ class O6Runner(QObject):
         if self._thread is not None:
             return
         ensure_rclpy()
-        self._node = _O6Node(self._side, self._on_sample)
+        self._node = _O6Node(self._side, self._on_sample, mode=self._mode)
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._stop_evt.clear()
@@ -118,22 +131,33 @@ class O6Runner(QObject):
         self.started.emit()
 
     def stop(self) -> None:
+        """Non-blocking: signal the spin thread to exit and let a daemon thread
+        handle the join + node teardown so the Qt main thread is never stalled.
+        """
         if self._thread is None:
             return
         self._stop_evt.set()
-        self._thread.join(timeout=2.0)
-        if self._executor is not None and self._node is not None:
-            self._executor.remove_node(self._node)
-            self._node.destroy_node()
+        _t, _node, _exec = self._thread, self._node, self._executor
+        self._thread = None
         self._node = None
         self._executor = None
-        self._thread = None
-        self.stopped.emit()
+
+        def _do_cleanup() -> None:
+            _t.join(timeout=1.0)
+            try:
+                if _exec is not None and _node is not None:
+                    _exec.remove_node(_node)
+                    _node.destroy_node()
+            except Exception:  # noqa: BLE001
+                pass
+            self.stopped.emit()  # cross-thread — Qt auto-connection marshals to GUI thread
+
+        threading.Thread(target=_do_cleanup, daemon=True).start()
 
     def _spin(self) -> None:
         assert self._executor is not None
         while not self._stop_evt.is_set():
-            self._executor.spin_once(timeout_sec=0.1)
+            self._executor.spin_once(timeout_sec=0.05)
 
     def _on_sample(self, t: float, cmd: list[float], actual: list[float]) -> None:
         self.sample.emit(t, cmd, actual)
