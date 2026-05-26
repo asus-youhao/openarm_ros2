@@ -21,6 +21,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -378,6 +379,16 @@ class BimanualPanel(QGroupBox):
         ctrl.addStretch()
         layout.addLayout(ctrl)
 
+        # --- body (preset + tabs + recording) — dimmed until START ---
+        self._body = QWidget()
+        _eff = QGraphicsOpacityEffect(self._body)
+        _eff.setOpacity(0.35)
+        self._body.setGraphicsEffect(_eff)
+        self._body.setEnabled(False)
+        body_layout = QVBoxLayout(self._body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(4)
+
         # --- preset row ---
         pre = QHBoxLayout()
         for text, fn in [
@@ -390,7 +401,7 @@ class BimanualPanel(QGroupBox):
             btn.clicked.connect(fn)
             pre.addWidget(btn)
         pre.addStretch()
-        layout.addLayout(pre)
+        body_layout.addLayout(pre)
 
         # --- tabs ---
         tabs = QTabWidget()
@@ -403,7 +414,7 @@ class BimanualPanel(QGroupBox):
             scroll, sliders = _make_tab(joints)
             self._sliders.update(sliders)
             tabs.addTab(scroll, tab_label)
-        layout.addWidget(tabs)
+        body_layout.addWidget(tabs)
 
         # --- recording row ---
         rec = QHBoxLayout()
@@ -432,7 +443,8 @@ class BimanualPanel(QGroupBox):
             rec.addWidget(btn)
 
         rec.addStretch()
-        layout.addLayout(rec)
+        body_layout.addLayout(rec)
+        layout.addWidget(self._body)
 
     # ------------------------------------------------------------------
     # ROS lifecycle
@@ -501,6 +513,9 @@ class BimanualPanel(QGroupBox):
         self._mode_combo.setEnabled(False)
         self._status_lbl.setText("● ACTIVE")
         self._status_lbl.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        # Reveal the slider body now that we're connected to the robot.
+        self._body.setEnabled(True)
+        self._body.setGraphicsEffect(None)
         self.log_line.emit(
             f"[bimanual] sending started ({self._mode_combo.currentText()} mode)"
         )
@@ -533,6 +548,11 @@ class BimanualPanel(QGroupBox):
         self._mode_combo.setEnabled(True)
         self._status_lbl.setText("● STOPPED")
         self._status_lbl.setStyleSheet("color: #f44336; font-weight: bold;")
+        # Dim the slider body again to signal "not controlling the robot".
+        _eff = QGraphicsOpacityEffect(self._body)
+        _eff.setOpacity(0.35)
+        self._body.setGraphicsEffect(_eff)
+        self._body.setEnabled(False)
         self.log_line.emit("[bimanual] sending stopped")
 
     # ------------------------------------------------------------------
