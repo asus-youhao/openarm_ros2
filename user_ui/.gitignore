@@ -1,5 +1,7 @@
-# Runtime data
+# Runtime data (CSVs, images) — but keep config presets
 data/
+!data/presets/
+!data/presets/**
 
 # Python
 __pycache__/

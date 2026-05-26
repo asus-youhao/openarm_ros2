@@ -26,10 +26,11 @@ STEPS_OPENARM: list[tuple[str, list[str]]] = [
 
 
 class CanBringUp(QObject):
-    """Sequentially run a recipe of `sudo -n ip link ...` steps.
+    """Sequentially run a recipe of `sudo -S ip link ...` steps.
 
-    `sudo -n` is non-interactive: if NOPASSWD isn't configured the call
-    fails immediately with a clear error (no hang waiting for password).
+    The caller supplies the sudo password; it is written to the process
+    stdin (-S flag) so no terminal interaction or sudoers NOPASSWD entry
+    is needed.
     """
 
     line = Signal(str)
@@ -44,33 +45,48 @@ class CanBringUp(QObject):
         super().__init__(parent)
         self._steps = list(steps)
         self._proc = ManagedProcess(self)
-        self._proc.line.connect(self.line)
+        self._proc.line.connect(self._on_line)
         self._proc.finished.connect(self._step_done)
         self._idx = 0
         self._ok = True
         self._running = False
+        self._password: str = ""
+        self.last_error: str = ""  # last non-empty output line from the failed step
 
     def is_running(self) -> bool:
         return self._running
 
-    def start(self) -> None:
+    def start(self, password: str) -> None:
         if self._running:
             return
+        self._password = password
         self._running = True
         self._idx = 0
         self._ok = True
         self._run_current()
 
+    def _on_line(self, text: str) -> None:
+        self.line.emit(text)
+        stripped = text.strip()
+        if stripped:
+            self.last_error = stripped
+
     def _run_current(self) -> None:
         label, args = self._steps[self._idx]
         self.progress.emit(label)
-        self.line.emit(f"$ sudo -n {IP} {' '.join(args)}")
-        self._proc.start("sudo", ["-n", IP] + args)
+        self.line.emit(f"$ sudo {IP} {' '.join(args)}")
+        self.last_error = ""
+        # -S: read password from stdin; -p "": suppress the prompt line
+        self._proc.start(
+            "sudo", ["-S", "-p", "", IP] + args,
+            stdin_data=(self._password + "\n").encode(),
+        )
 
     def _step_done(self, code: int) -> None:
         label, _ = self._steps[self._idx]
         if code != 0:
             self._ok = False
+            self._password = ""  # clear immediately on failure
             self.line.emit(f"[error] step '{label}' exited {code}")
             self._running = False
             self.finished.emit(False)
@@ -78,6 +94,7 @@ class CanBringUp(QObject):
 
         self._idx += 1
         if self._idx >= len(self._steps):
+            self._password = ""  # clear after all steps succeed
             self._running = False
             self.finished.emit(self._ok)
             return

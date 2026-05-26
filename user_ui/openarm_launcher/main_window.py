@@ -3,6 +3,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QMainWindow,
     QPlainTextEdit,
+    QScrollArea,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -10,38 +11,66 @@ from PySide6.QtWidgets import (
 
 from .launcher.launcher_panel import LauncherPanel
 from .analyzers.analyzer_panel import AnalyzerPanel
+from .analyzers.bimanual_panel import BimanualPanel
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("OpenArm Launcher")
-        self.resize(1100, 720)
+        self.resize(1200, 900)
 
         central = QWidget(self)
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
+        # Outer vertical splitter: top panels / bimanual controller / log
+        vsplit = QSplitter(Qt.Vertical, central)
+
+        top = QSplitter(Qt.Horizontal)
         self.launcher_panel = LauncherPanel()
         self.analyzer_panel = AnalyzerPanel()
-
-        top = QSplitter(Qt.Horizontal, central)
         top.addWidget(self.launcher_panel)
         top.addWidget(self.analyzer_panel)
         top.setSizes([550, 550])
-        root.addWidget(top, stretch=3)
+        vsplit.addWidget(top)
+
+        self.bimanual_panel = BimanualPanel()
+        bm_scroll = QScrollArea()
+        bm_scroll.setWidgetResizable(True)
+        bm_scroll.setWidget(self.bimanual_panel)
+        vsplit.addWidget(bm_scroll)
 
         self.log = QPlainTextEdit(central)
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("Log output will appear here.")
-        root.addWidget(self.log, stretch=1)
+        vsplit.addWidget(self.log)
+
+        vsplit.setSizes([300, 420, 130])
+        root.addWidget(vsplit)
 
         self.launcher_panel.log_line.connect(self.log.appendPlainText)
         self.analyzer_panel.log_line.connect(self.log.appendPlainText)
+        self.bimanual_panel.log_line.connect(self.log.appendPlainText)
+
+        # Auto-sync analyzer + bimanual mode when controller selection changes.
+        self.launcher_panel.controller_mode_changed.connect(
+            self.analyzer_panel.set_analyzer_mode
+        )
+        self.launcher_panel.controller_mode_changed.connect(
+            self.bimanual_panel.set_mode
+        )
+        # Apply the initial controller's mode immediately.
+        initial_mode = self.launcher_panel.current_analyzer_mode()
+        self.analyzer_panel.set_analyzer_mode(initial_mode)
+        self.bimanual_panel.set_mode(initial_mode)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt API)
         try:
             self.launcher_panel.shutdown()
         finally:
-            self.analyzer_panel.shutdown()
+            try:
+                self.analyzer_panel.shutdown()
+            finally:
+                self.bimanual_panel.shutdown()
         super().closeEvent(event)
