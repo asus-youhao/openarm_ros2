@@ -1,0 +1,31 @@
+{
+  "_comment": "O6 hand preset positions in radians. Edit freely — reloaded by 'Reload presets' button.",
+  "grasp": {
+    "R_thumb_cmc_pitch":  0.26,
+    "R_thumb_cmc_yaw":    1.05,
+    "R_index_mcp_pitch":  0.96,
+    "R_middle_mcp_pitch": 0.96,
+    "R_ring_mcp_pitch":   0.87,
+    "R_pinky_mcp_pitch":  0.87,
+    "L_thumb_cmc_pitch":  0.26,
+    "L_thumb_cmc_yaw":    1.05,
+    "L_index_mcp_pitch":  0.96,
+    "L_middle_mcp_pitch": 0.96,
+    "L_ring_mcp_pitch":   0.87,
+    "L_pinky_mcp_pitch":  0.87
+  },
+  "open": {
+    "R_thumb_cmc_pitch":  0.0,
+    "R_thumb_cmc_yaw":    0.0,
+    "R_index_mcp_pitch":  0.0,
+    "R_middle_mcp_pitch": 0.0,
+    "R_ring_mcp_pitch":   0.0,
+    "R_pinky_mcp_pitch":  0.0,
+    "L_thumb_cmc_pitch":  0.0,
+    "L_thumb_cmc_yaw":    0.0,
+    "L_index_mcp_pitch":  0.0,
+    "L_middle_mcp_pitch": 0.0,
+    "L_ring_mcp_pitch":   0.0,
+    "L_pinky_mcp_pitch":  0.0
+  }
+}
