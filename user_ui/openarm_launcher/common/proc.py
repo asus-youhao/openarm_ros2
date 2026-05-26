@@ -38,11 +38,18 @@ class ManagedProcess(QObject):
 
         self._buf = bytearray()
 
-    def start(self, program: str, args: list[str] | None = None) -> None:
+    def start(
+        self,
+        program: str,
+        args: list[str] | None = None,
+        stdin_data: bytes | None = None,
+    ) -> None:
         if self.is_running():
             raise RuntimeError(f"process already running (pid={self._proc.processId()})")
         self._buf.clear()
         self._proc.start(program, args or [])
+        if stdin_data:
+            self._proc.write(stdin_data)
 
     def stop(self, sigint_timeout_ms: int = 5000, sigterm_timeout_ms: int = 2000) -> None:
         """Shut the child tree down: SIGINT (Ctrl-C) → SIGTERM → SIGKILL.

@@ -5,7 +5,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
 )
@@ -20,6 +22,12 @@ _BRINGUP_SPECS: list[tuple[str, list[tuple[str, list[str]]]]] = [
     ("Bring up can1 (O6 left)", STEPS_O6_LEFT),
     ("Bring up can2+can3 (OpenArm CAN-FD)", STEPS_OPENARM),
 ]
+
+# Map controller display-label → analyzer/bimanual mode string
+_CTRL_TO_MODE: dict[str, str] = {
+    "Forward Position": "topic",
+    "Joint Trajectory": "action",
+}
 
 
 _LED_COLORS = {"off": "#444", "down": "#cc9900", "up": "#33cc66"}
@@ -47,6 +55,8 @@ class StatusLed(QFrame):
 
 class LauncherPanel(QGroupBox):
     log_line = Signal(str)
+    # Emits "action" or "topic" whenever the controller combo changes.
+    controller_mode_changed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__("Launcher")
@@ -76,13 +86,30 @@ class LauncherPanel(QGroupBox):
             self._leds[name] = led
             self._status_labels[name] = status_lbl
 
+        # ---- sudo password cache row ----
+        self._sudo_password: str = ""
+        pw_row = QHBoxLayout()
+        self._pw_lbl = QLabel("\u25cf sudo password: <i>not set</i>")
+        self._pw_lbl.setStyleSheet("color: #888;")
+        pw_row.addWidget(self._pw_lbl)
+        set_pw_btn = QPushButton("Set password")
+        set_pw_btn.setFixedWidth(100)
+        set_pw_btn.clicked.connect(self._on_set_pw)
+        pw_row.addWidget(set_pw_btn)
+        clr_pw_btn = QPushButton("Clear")
+        clr_pw_btn.setFixedWidth(50)
+        clr_pw_btn.clicked.connect(self._on_clear_pw)
+        pw_row.addWidget(clr_pw_btn)
+        pw_row.addStretch()
+        layout.addLayout(pw_row)
+
         self._bringups: list[tuple[QPushButton, CanBringUp, str]] = []
         for label, steps in _BRINGUP_SPECS:
             btn = QPushButton(label)
             bringup = CanBringUp(steps, self)
             bringup.line.connect(self.log_line)
             bringup.finished.connect(
-                lambda ok, b=btn, l=label: self._on_bringup_done(b, l, ok)
+                lambda ok, b=btn, br=bringup, l=label: self._on_bringup_done(b, br, l, ok)
             )
             btn.clicked.connect(
                 lambda checked=False, b=btn, br=bringup, l=label:
@@ -143,37 +170,88 @@ class LauncherPanel(QGroupBox):
         self._fake_chk.setChecked(
             self._settings.value("launcher/use_fake_hardware", False, type=bool)
         )
-        self._controller_combo.currentTextChanged.connect(
-            lambda v: self._settings.setValue("launcher/controller", v)
-        )
+        self._controller_combo.currentTextChanged.connect(self._on_controller_changed)
         self._fake_chk.toggled.connect(
             lambda v: self._settings.setValue("launcher/use_fake_hardware", v)
         )
+
+    # ------------------------------------------------------------------ #
+    # Public helpers
+    # ------------------------------------------------------------------ #
+
+    def current_analyzer_mode(self) -> str:
+        """Return the analyzer mode matching the current controller selection."""
+        return _CTRL_TO_MODE.get(self._controller_combo.currentText(), "action")
 
     def shutdown(self) -> None:
         """Stop any running ros2 launch — called from MainWindow.closeEvent."""
         if self._launcher.is_running():
             self._launcher.stop()
 
+    # ------------------------------------------------------------------ #
+    # Password helpers
+    # ------------------------------------------------------------------ #
+
+    def _on_set_pw(self) -> None:
+        pw, ok = QInputDialog.getText(
+            self,
+            "sudo password",
+            "Enter sudo password (cached for the whole session):",
+            QLineEdit.Password,
+        )
+        if ok:
+            self._sudo_password = pw
+            self._pw_lbl.setText("\u25cf sudo password: <b>set</b>")
+            self._pw_lbl.setStyleSheet("color: #33cc66;")
+
+    def _on_clear_pw(self) -> None:
+        self._sudo_password = ""
+        self._pw_lbl.setText("\u25cf sudo password: <i>not set</i>")
+        self._pw_lbl.setStyleSheet("color: #888;")
+
     def _on_bringup_clicked(self, btn: QPushButton, bringup: CanBringUp, label: str) -> None:
         if bringup.is_running():
             return
+        # Use cached password; prompt once if not yet set.
+        if not self._sudo_password:
+            pw, ok = QInputDialog.getText(
+                self,
+                "sudo password",
+                "Enter sudo password (will be cached for this session):",
+                QLineEdit.Password,
+            )
+            if not ok:
+                return
+            self._sudo_password = pw
+            self._pw_lbl.setText("\u25cf sudo password: <b>set</b>")
+            self._pw_lbl.setStyleSheet("color: #33cc66;")
         btn.setEnabled(False)
         btn.setText(f"{label} ...")
         self.log_line.emit(f"--- {label} start ---")
-        bringup.start()
+        bringup.start(self._sudo_password)
 
-    def _on_bringup_done(self, btn: QPushButton, label: str, ok: bool) -> None:
+    def _on_bringup_done(
+        self, btn: QPushButton, bringup: CanBringUp, label: str, ok: bool
+    ) -> None:
         btn.setEnabled(True)
         btn.setText(label)
         if ok:
             self.log_line.emit(f"--- {label} done ---")
         else:
-            self.log_line.emit(
-                f"--- {label} FAILED. "
-                "If you see 'sudo: a password is required', run "
-                "`sudo ./install_sudoers.sh` once. ---"
-            )
+            hint = bringup.last_error
+            if "Cannot find device" in hint:
+                detail = f"{hint}  →  adapter not detected; plug it in first."
+            elif "incorrect password" in hint.lower() or "wrong password" in hint.lower():
+                detail = "Wrong sudo password."
+            elif hint:
+                detail = hint
+            else:
+                detail = "check sudo password and user sudo rights."
+            self.log_line.emit(f"--- {label} FAILED: {detail} ---")
+
+    def _on_controller_changed(self, label: str) -> None:
+        self._settings.setValue("launcher/controller", label)
+        self.controller_mode_changed.emit(_CTRL_TO_MODE.get(label, "action"))
 
     def _on_launch_clicked(self) -> None:
         if self._launcher.is_running():
