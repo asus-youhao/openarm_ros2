@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from .arm_runner import ArmRunner, joints_for
 from .csv_writer import ArmCsvWriter, MergedCsvWriter
-from .live_plot import JointErrorPlot
+from .live_plot import JointDualPlotWindow
 from .o6_runner import O6Runner, o6_joints_for
 
 
@@ -107,11 +107,11 @@ class AnalyzerPanel(QGroupBox):
         # List-based state: one entry per active side (len=1 for single, len=2 for both).
         self._arm_runners: list[ArmRunner] = []
         self._arm_csvs: list[ArmCsvWriter] = []
-        self._arm_plots: list[JointErrorPlot] = []
+        self._arm_plots: list[JointDualPlotWindow] = []
 
         self._o6_runners: list[O6Runner] = []
         self._o6_csvs: list[ArmCsvWriter] = []
-        self._o6_plots: list[JointErrorPlot] = []
+        self._o6_plots: list[JointDualPlotWindow] = []
         self._merged_csv: MergedCsvWriter | None = None
 
         self._settings = QSettings()
@@ -186,19 +186,17 @@ class AnalyzerPanel(QGroupBox):
             joint_names = joints_for(side)
             mode = self._arm_mode_combo.currentText()
             is_topic = mode == "topic"
-            y_label = "position (rad)" if is_topic else "error (rad)"
-            plot_title = (
-                f"OpenArm {side} \u2014 joint position"
-                if is_topic
-                else f"OpenArm {side} \u2014 joint error"
-            )
             try:
                 csv_w = ArmCsvWriter(ARM_DATA_ROOT, side, joint_names)
-                plot = JointErrorPlot(
-                    joint_names, title=plot_title, y_label=y_label
+                plot = JointDualPlotWindow(
+                    joint_names,
+                    pos_title=f"OpenArm {side} \u2014 joint {'position' if is_topic else 'action & state'}",
+                    err_title=f"OpenArm {side} \u2014 {'position' if is_topic else 'position error'}",
+                    y_label_pos="position (rad)",
+                    y_label_err="position (rad)" if is_topic else "error (rad)",
                 )
-                plot.resize(900, 500)
-                plot.setWindowTitle(f"Arm {side} {'pos' if is_topic else 'error'}")
+                plot.resize(900, 800)
+                plot.setWindowTitle(f"Arm {side}")
                 plot.closed_by_user.connect(self._stop_arm)
                 plot.show()
 
@@ -239,13 +237,12 @@ class AnalyzerPanel(QGroupBox):
         t: float,
         cmd: list,
         actual: list,
-        plot: JointErrorPlot,
+        plot: JointDualPlotWindow,
         csv_w: ArmCsvWriter,
     ) -> None:
         if not plot.isVisible():  # discard late signals after stop
             return
-        errors = [a - c for a, c in zip(actual, cmd)]
-        plot.add_sample(t, errors)
+        plot.add_sample(t, cmd, actual)
         csv_w.write(t, cmd, actual)
 
     def _on_arm_sample_merge(
@@ -253,13 +250,12 @@ class AnalyzerPanel(QGroupBox):
         t: float,
         cmd: list,
         actual: list,
-        plot: JointErrorPlot,
+        plot: JointDualPlotWindow,
         tag: str,
     ) -> None:
         if not plot.isVisible():
             return
-        errors = [a - c for a, c in zip(actual, cmd)]
-        plot.add_sample(t, errors)
+        plot.add_sample(t, cmd, actual)
         if self._merged_csv is not None:
             self._merged_csv.update(tag, t, cmd, actual)
 
@@ -328,19 +324,17 @@ class AnalyzerPanel(QGroupBox):
             joint_names = o6_joints_for(side)
             mode = self._o6_mode_combo.currentText()
             is_topic = mode == "topic"
-            y_label = "position (rad)" if is_topic else "error (rad)"
-            plot_title = (
-                f"O6 {side} hand \u2014 joint position"
-                if is_topic
-                else f"O6 {side} hand \u2014 joint error"
-            )
             try:
                 csv_w = ArmCsvWriter(O6_DATA_ROOT, side, joint_names)
-                plot = JointErrorPlot(
-                    joint_names, title=plot_title, y_label=y_label
+                plot = JointDualPlotWindow(
+                    joint_names,
+                    pos_title=f"O6 {side} hand \u2014 joint {'position' if is_topic else 'action & state'}",
+                    err_title=f"O6 {side} hand \u2014 {'position' if is_topic else 'position error'}",
+                    y_label_pos="position (rad)",
+                    y_label_err="position (rad)" if is_topic else "error (rad)",
                 )
-                plot.resize(900, 500)
-                plot.setWindowTitle(f"O6 {side} {'pos' if is_topic else 'error'}")
+                plot.resize(900, 800)
+                plot.setWindowTitle(f"O6 {side}")
                 plot.closed_by_user.connect(self._stop_o6)
                 plot.show()
 
@@ -381,13 +375,12 @@ class AnalyzerPanel(QGroupBox):
         t: float,
         cmd: list,
         actual: list,
-        plot: JointErrorPlot,
+        plot: JointDualPlotWindow,
         csv_w: ArmCsvWriter,
     ) -> None:
         if not plot.isVisible():  # discard late signals after stop
             return
-        errors = [a - c for a, c in zip(actual, cmd)]
-        plot.add_sample(t, errors)
+        plot.add_sample(t, cmd, actual)
         csv_w.write(t, cmd, actual)
 
     def _on_o6_sample_merge(
@@ -395,13 +388,12 @@ class AnalyzerPanel(QGroupBox):
         t: float,
         cmd: list,
         actual: list,
-        plot: JointErrorPlot,
+        plot: JointDualPlotWindow,
         tag: str,
     ) -> None:
         if not plot.isVisible():
             return
-        errors = [a - c for a, c in zip(actual, cmd)]
-        plot.add_sample(t, errors)
+        plot.add_sample(t, cmd, actual)
         if self._merged_csv is not None:
             self._merged_csv.update(tag, t, cmd, actual)
 
@@ -491,13 +483,15 @@ class AnalyzerPanel(QGroupBox):
         for side in arm_sides:
             joint_names = joints_for(side)
             is_topic = arm_mode == "topic"
-            y_label = "position (rad)" if is_topic else "error (rad)"
-            title = (
-                f"OpenArm {side} \u2014 {'joint position' if is_topic else 'joint error'}"
-            )
             try:
-                plot = JointErrorPlot(joint_names, title=title, y_label=y_label)
-                plot.resize(900, 500)
+                plot = JointDualPlotWindow(
+                    joint_names,
+                    pos_title=f"OpenArm {side} \u2014 joint {'position' if is_topic else 'action & state'}",
+                    err_title=f"OpenArm {side} \u2014 {'position' if is_topic else 'position error'}",
+                    y_label_pos="position (rad)",
+                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                )
+                plot.resize(900, 800)
                 plot.setWindowTitle(f"Arm {side} [merged]")
                 plot.closed_by_user.connect(self._stop_arm)
                 plot.show()
@@ -527,13 +521,15 @@ class AnalyzerPanel(QGroupBox):
         for side in o6_sides:
             joint_names = o6_joints_for(side)
             is_topic = o6_mode == "topic"
-            y_label = "position (rad)" if is_topic else "error (rad)"
-            title = (
-                f"O6 {side} hand \u2014 {'joint position' if is_topic else 'joint error'}"
-            )
             try:
-                plot = JointErrorPlot(joint_names, title=title, y_label=y_label)
-                plot.resize(900, 500)
+                plot = JointDualPlotWindow(
+                    joint_names,
+                    pos_title=f"O6 {side} hand \u2014 joint {'position' if is_topic else 'action & state'}",
+                    err_title=f"O6 {side} hand \u2014 {'position' if is_topic else 'position error'}",
+                    y_label_pos="position (rad)",
+                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                )
+                plot.resize(900, 800)
                 plot.setWindowTitle(f"O6 {side} [merged]")
                 plot.closed_by_user.connect(self._stop_o6)
                 plot.show()
