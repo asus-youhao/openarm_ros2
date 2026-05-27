@@ -1,6 +1,7 @@
-from PySide6.QtCore import QObject, Signal
+import shutil
+import subprocess
 
-from ..common.proc import ManagedProcess
+from PySide6.QtCore import QObject, Signal
 
 
 LAUNCH_PKG = "openarm_bringup"
@@ -12,13 +13,42 @@ CONTROLLERS: dict[str, str] = {
     "Joint Trajectory": "joint_trajectory_controller",
 }
 
+# Preference order for terminal emulators.
+_TERMINALS = [
+    "gnome-terminal",
+    "xterm",
+    "xfce4-terminal",
+    "konsole",
+    "tilix",
+]
+
+
+def _find_terminal() -> str | None:
+    for t in _TERMINALS:
+        if shutil.which(t):
+            return t
+    return None
+
+
+def _terminal_argv(terminal: str, title: str, cmd: str) -> list[str]:
+    """Return argument list to open *terminal* with *title* and run *cmd*."""
+    if terminal == "gnome-terminal":
+        return [terminal, f"--title={title}", "--", "bash", "-c", cmd]
+    if terminal == "konsole":
+        return [terminal, "-p", f"tabtitle={title}", "-e", "bash", "-c", cmd]
+    if terminal in ("xfce4-terminal", "tilix"):
+        return [terminal, f"--title={title}", "-e", f"bash -c '{cmd}'"]
+    # xterm fallback
+    return [terminal, "-title", title, "-e", "bash", "-c", cmd]
+
 
 class Ros2Launcher(QObject):
-    """Runs `ros2 launch openarm_bringup openarm_o6_bimanual.launch.py ...`.
+    """Opens a terminal window running ros2 launch.
 
-    CAN-interface mapping is fixed to match the user's existing aliases:
-      right arm   = can2     left arm   = can3
-      right O6    = can0     left O6    = can1
+    The terminal is independent — the user closes it (Ctrl+C / close button).
+    `started` emits when the terminal process is spawned.
+    `finished` emits with code 0 immediately after spawn (we don't track the
+    terminal's lifetime, so the launcher panel re-enables Launch right away).
     """
 
     line = Signal(str)
@@ -27,19 +57,18 @@ class Ros2Launcher(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._proc = ManagedProcess(self)
-        self._proc.line.connect(self.line)
-        self._proc.started.connect(self.started)
-        self._proc.finished.connect(self.finished)
+        self._terminal: str | None = _find_terminal()
 
     def is_running(self) -> bool:
-        return self._proc.is_running()
+        """Always False — we don't track the external terminal."""
+        return False
 
     def start(self, controller_label: str, use_fake_hardware: bool) -> None:
         if controller_label not in CONTROLLERS:
             raise ValueError(f"unknown controller '{controller_label}'")
-        args = [
-            "launch", LAUNCH_PKG, LAUNCH_FILE,
+
+        ros2_args = [
+            "ros2", "launch", LAUNCH_PKG, LAUNCH_FILE,
             "right_can_interface:=can2",
             "left_can_interface:=can3",
             "right_o6_can_interface:=can0",
@@ -47,9 +76,30 @@ class Ros2Launcher(QObject):
             f"robot_controller:={CONTROLLERS[controller_label]}",
         ]
         if use_fake_hardware:
-            args.append("use_fake_hardware:=true")
-        self.line.emit("$ ros2 " + " ".join(args))
-        self._proc.start("ros2", args)
+            ros2_args.append("use_fake_hardware:=true")
+
+        cmd_str = " ".join(ros2_args)
+        self.line.emit("$ " + cmd_str)
+
+        if self._terminal is None:
+            self.line.emit("[error] no terminal emulator found; tried: " + ", ".join(_TERMINALS))
+            self.finished.emit(1)
+            return
+
+        title = f"ros2 launch — {controller_label}"
+        argv = _terminal_argv(self._terminal, title, cmd_str)
+        try:
+            subprocess.Popen(argv, start_new_session=True)
+        except Exception as exc:  # noqa: BLE001
+            self.line.emit(f"[error] could not open terminal: {exc}")
+            self.finished.emit(1)
+            return
+
+        self.started.emit()
+        # Terminal is detached — report done immediately so the button
+        # re-enables (user can re-launch; they close the terminal themselves).
+        self.finished.emit(0)
 
     def stop(self) -> None:
-        self._proc.stop()
+        """No-op: the terminal is independent; user stops it with Ctrl+C."""
+        self.line.emit("[info] terminal is independent — use Ctrl+C inside it to stop.")

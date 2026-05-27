@@ -11,6 +11,10 @@ from PySide6.QtCore import QObject, Signal
 
 from .arm_runner import ensure_rclpy
 
+# Re-use the same serialisation lock as arm_runner so arm+O6 cleanups
+# are also mutually-exclusive when running together.
+from .arm_runner import _node_cleanup_lock
+
 
 O6_RIGHT_JOINTS: list[str] = [
     "R_thumb_cmc_pitch", "R_thumb_cmc_yaw",
@@ -108,7 +112,6 @@ class O6Runner(QObject):
         self._node: _O6Node | None = None
         self._executor: SingleThreadedExecutor | None = None
         self._thread: threading.Thread | None = None
-        self._stop_evt = threading.Event()
 
     @property
     def side(self) -> str:
@@ -125,39 +128,46 @@ class O6Runner(QObject):
         self._node = _O6Node(self._side, self._on_sample, mode=self._mode)
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
-        self._stop_evt.clear()
         self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
         self.started.emit()
 
     def stop(self) -> None:
-        """Non-blocking: signal the spin thread to exit and let a daemon thread
-        handle the join + node teardown so the Qt main thread is never stalled.
+        """Non-blocking: call executor.shutdown() which sends a SIGINT-like
+        signal to the spin loop, then join + destroy in a daemon thread so
+        the Qt main thread is never stalled.
         """
         if self._thread is None:
             return
-        self._stop_evt.set()
         _t, _node, _exec = self._thread, self._node, self._executor
         self._thread = None
         self._node = None
         self._executor = None
 
         def _do_cleanup() -> None:
-            _t.join(timeout=1.0)
             try:
-                if _exec is not None and _node is not None:
-                    _exec.remove_node(_node)
-                    _node.destroy_node()
+                if _exec is not None:
+                    _exec.shutdown(timeout_sec=1.0)  # wakes spin() gracefully
             except Exception:  # noqa: BLE001
                 pass
+            _t.join(timeout=2.0)
+            with _node_cleanup_lock:  # serialise across concurrent runner teardowns
+                try:
+                    if _node is not None:
+                        _node.destroy_node()
+                except Exception:  # noqa: BLE001
+                    pass
             self.stopped.emit()  # cross-thread — Qt auto-connection marshals to GUI thread
 
         threading.Thread(target=_do_cleanup, daemon=True).start()
 
     def _spin(self) -> None:
+        """Block on executor.spin(); returns when executor.shutdown() is called."""
         assert self._executor is not None
-        while not self._stop_evt.is_set():
-            self._executor.spin_once(timeout_sec=0.05)
+        try:
+            self._executor.spin()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _on_sample(self, t: float, cmd: list[float], actual: list[float]) -> None:
         self.sample.emit(t, cmd, actual)
