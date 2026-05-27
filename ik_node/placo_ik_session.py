@@ -51,7 +51,7 @@ _W_POS     = 1.0      # position task weight (baseline)
 _W_ORI     = 2.0      # orientation task weight
 _W_JOINTS  = 5e-4     # naturalness (joint preference) weight
 _W_REG     = 6e-5     # regularisation weight (DLS baseline, dynamically boosted)
-_MAX_ITER  = 15       # solver iteration cap
+_MAX_ITER  = 5       # solver iteration cap
 
 # ── Adaptive DLS damping constants (方案 C — wrist wobble fix) ────────────────
 # λ = λ_base + λ_max × clamp((σ_thresh - σ_min) / σ_thresh, 0, 1)²
