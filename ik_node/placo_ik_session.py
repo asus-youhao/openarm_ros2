@@ -69,6 +69,27 @@ _DLS_SIGMA_THRESH = 0.15   # σ_min threshold below which damping ramps up
 _WRIST_VEL_CAP    = 4.0    # rad/s; 0 or negative → disabled (use URDF default)
 _WRIST_JOINT_IDX  = (4, 5, 6)   # 0-based indices for joint 5, 6, 7
 
+# ── j3/j4 elbow-torso coupled safety ─────────────────────────────────────────
+# When j3 internally rotates (j3>0 right / j3<0 left), the bent elbow (j4≥90°)
+# swings toward the torso.  We apply two layers of protection:
+#   1. Soft: extra JointsTask pulls j4 toward a safe pref during the QP solve.
+#   2. Hard: post-solve clip enforces a dynamic j4 upper limit.
+#
+# Coupling rule:
+#   j4_safe_hi = j4_nominal_hi - _J3_J4_COUPLE_RATE × max(0, j3_inward)
+#   j3=0.00 → j4_hi = 2.20  (no restriction)
+#   j3=0.15 → j4_hi = 2.20 - 0.225 = 1.975 (~113°)
+#   j3=0.25 → j4_hi = 2.20 - 0.375 = 1.825 (~105°)
+#   j3=0.35 → j4_hi = 2.20 - 0.525 = 1.675 (~96°)  ← max inward allowed
+#
+# Tune _J3_J4_COUPLE_RATE on hardware: larger = stricter j4 restriction.
+# Set 0.0 to disable coupling entirely.
+_J3_J4_COUPLE_RATE  = 1.5    # rad reduction in j4_hi per rad of j3 inward rotation
+_J4_ELBOW_SAFE_MIN  = 1.30   # floor: j4_hi never clamped below ~74° (always keep some flex)
+_J3_J4_COUPLE_START = 0.02   # dead-band: coupling inactive below this j3 inward angle
+_J3_INWARD_IDX      = 2      # 0-based index: joint3
+_J4_ELBOW_IDX       = 3      # 0-based index: joint4
+
 
 def _rot_error_rad(current_R: np.ndarray, target_R: np.ndarray) -> float:
     """Shortest geodesic angle (rad) between two 3×3 rotation matrices.
@@ -134,6 +155,8 @@ class PlacoSession:
         self._hi          = [human_cfg[n][2] for n in self._joint_names]
         self._pref        = {n: human_cfg[n][0] for n in self._joint_names}
         self._wrist_joint_names = [self._joint_names[i] for i in _WRIST_JOINT_IDX]
+        # j3 inward sign: +1 for right (j3>0=inward), -1 for left (j3<0=inward)
+        self._j3_inward_sign = 1.0 if arm == "right" else -1.0
 
         if not rebuild:
             self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
@@ -224,6 +247,20 @@ class PlacoSession:
         jt = solver.add_joints_task()
         jt.set_joints(self._pref)
         jt.configure("naturalness", "soft", _W_JOINTS)
+
+        # ── j3/j4 elbow-torso safety coupling (soft guidance in QP) ──────────
+        # Use seed j3 so the QP already targets a safe j4 pref during this step.
+        j3_seed    = float(seed[_J3_INWARD_IDX]) * self._j3_inward_sign
+        if _J3_J4_COUPLE_RATE > 0.0 and j3_seed > _J3_J4_COUPLE_START:
+            j4_name      = self._joint_names[_J4_ELBOW_IDX]
+            j4_safe_hi   = max(_J4_ELBOW_SAFE_MIN,
+                               self._hi[_J4_ELBOW_IDX] - _J3_J4_COUPLE_RATE * j3_seed)
+            # Pull j4 pref down to the safe ceiling (never raises pref above nominal)
+            j4_safe_pref = min(self._pref[j4_name], j4_safe_hi)
+            jt_j4 = solver.add_joints_task()
+            jt_j4.set_joints({j4_name: j4_safe_pref})
+            jt_j4.configure("j4_elbow_safety", "soft", 2e-3)  # 4× stronger than naturalness
+
         reg = solver.add_regularization_task(lambda_dls)   # adaptive λ
         reg.configure("reg", "soft", 1.0)
         setup_ms = (time.perf_counter() - t0) * 1000.0
@@ -253,7 +290,19 @@ class PlacoSession:
         if T_ee is None:
             T_ee = robot.get_T_world_frame(self._ee_link)
         joints  = [robot.get_joint(n) for n in self._joint_names]
-        joints  = [max(l, min(h, q)) for q, l, h in zip(joints, self._lo, self._hi)]
+
+        # ── j3/j4 elbow-torso safety coupling (hard post-clip guarantee) ─────
+        # Recompute using the SOLVED j3 value (may differ from seed after QP).
+        j3_solved  = joints[_J3_INWARD_IDX] * self._j3_inward_sign
+        j3_inward  = max(0.0, j3_solved - _J3_J4_COUPLE_START)
+        if _J3_J4_COUPLE_RATE > 0.0 and j3_inward > 0.0:
+            j4_clip_hi = max(_J4_ELBOW_SAFE_MIN,
+                             self._hi[_J4_ELBOW_IDX] - _J3_J4_COUPLE_RATE * j3_inward)
+            dynamic_hi = list(self._hi)
+            dynamic_hi[_J4_ELBOW_IDX] = j4_clip_hi
+        else:
+            dynamic_hi = self._hi
+        joints  = [max(l, min(h, q)) for q, l, h in zip(joints, self._lo, dynamic_hi)]
         pos_err = float(np.linalg.norm(T_ee[:3, 3] - target_xyz))
         ori_err = 0.0 if no_rot else _rot_error_rad(T_ee[:3, :3], target_R)
         success = int(pos_err < _POS_RELAX and (no_rot or ori_err < _ORI_RELAX))
