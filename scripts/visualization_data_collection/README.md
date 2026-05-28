@@ -111,11 +111,17 @@ python3 plot_joint_actions_realtime.py
 ## 關節順序（26 joints for o6_both）
 
 ```
-0-6   : openarm_left_joint1-7    (左臂)
-7-13  : openarm_right_joint1-7   (右臂)
-14-19 : L_thumb/index/middle/ring/pinky (左手 O6)
-20-25 : R_thumb/index/middle/ring/pinky (右手 O6)
+0-6   : openarm_left_joint1-7 (左臂)
+7-13  : openarm_right_joint1-7 (右臂)
+14-19 : L_index/middle/pinky/ring/thumb_cmc_pitch/thumb_cmc_yaw (左手 O6)
+20-25 : R_index/middle/pinky/ring/thumb_cmc_pitch/thumb_cmc_yaw (右手 O6)
 ```
+
+**詳細關節名稱：**
+- **左手** [14-19]: `L_index_mcp_pitch`, `L_middle_mcp_pitch`, `L_pinky_mcp_pitch`, `L_ring_mcp_pitch`, `L_thumb_cmc_pitch`, `L_thumb_cmc_yaw`
+- **右手** [20-25]: `R_index_mcp_pitch`, `R_middle_mcp_pitch`, `R_pinky_mcp_pitch`, `R_ring_mcp_pitch`, `R_thumb_cmc_pitch`, `R_thumb_cmc_yaw`
+
+**注意**：順序與 `{left|right}_hand_forward_position_controller` YAML 配置一致。
 
 ## 快速診斷
 

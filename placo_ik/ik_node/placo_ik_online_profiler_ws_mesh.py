@@ -71,6 +71,7 @@ _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, node
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_ROOT), "scripts"))  # joint_actions_aggregator
 
 import argparse
 import copy
@@ -82,6 +83,13 @@ import rclpy
 from paths import ws_mesh_path as _ws_mesh_path
 from placo_ik_session import _MAX_ITER
 from placo_ik_node import PlacoOnlineProfiler
+
+try:
+    from data_collection import JointActionsAggregator
+    _AGGREGATOR_AVAILABLE = True
+except ImportError:
+    _AGGREGATOR_AVAILABLE = False
+    print("  ⚠  joint_actions_aggregator not available — /joint_actions will not be published")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -224,7 +232,11 @@ def _run_arm(node):
 
 
 def _run_bimanual(args):
-    """Launch right + left IK nodes in one process with MultiThreadedExecutor."""
+    """Launch right + left IK nodes in one process with MultiThreadedExecutor.
+    
+    If aggregator is available, also starts joint_actions_aggregator to combine
+    arm commands into /joint_actions topic for data collection.
+    """
     from rclpy.executors import MultiThreadedExecutor
 
     yaml_cfg = {}
@@ -249,6 +261,18 @@ def _run_bimanual(args):
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node_right)
     executor.add_node(node_left)
+    
+    # Start joint_actions_aggregator if available (default: o6_both)
+    aggregator_node = None
+    if _AGGREGATOR_AVAILABLE:
+        try:
+            aggregator_node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0)
+            executor.add_node(aggregator_node)
+            print("  [✓] joint_actions_aggregator started (o6_both, 50Hz)")
+        except Exception as e:
+            print(f"  ⚠  Failed to start aggregator: {e}")
+            aggregator_node = None
+    
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -265,6 +289,8 @@ def _run_bimanual(args):
     finally:
         node_right.destroy_node()
         node_left.destroy_node()
+        if aggregator_node:
+            aggregator_node.destroy_node()
         rclpy.shutdown()
 
 
