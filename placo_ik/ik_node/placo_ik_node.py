@@ -293,7 +293,15 @@ class PlacoOnlineProfiler(Node):
         self._ee_delta_ref_xyz  = None
         self._ee_delta_ref_q    = None
         self._ee_delta_last_t   = None
-        self._ee_delta_gap_sec  = float(getattr(args, "ee_delta_gap_sec", 0.8))
+        self._ee_delta_gap_sec  = float(getattr(args, "ee_delta_gap_sec", 0.05))
+        # Explicit re-anchor signal from publisher (PoseStamped with
+        # header.frame_id == "reanchor"). Set by _ee_delta_cb, consumed by
+        # _build_target. Survives _pending overwrites — gap timing is fallback.
+        self._reanchor_pending  = False
+        # 0.10 s default: at 40 Hz tracker (25 ms/msg), needs 4+ consecutive dropped
+        # messages to trigger accidental re-anchor.  Any intentional dead-man button
+        # release (typically ≥ 100–200 ms) will always trigger re-anchor, preventing
+        # the arm from snapping back to the old ref on the next button press.
 
         crpy = getattr(args, "calib_rpy", None)
         if crpy:
@@ -352,6 +360,12 @@ class PlacoOnlineProfiler(Node):
 
         self._joint_jump_guard_deg = float(getattr(args, "joint_jump_guard_deg", 15.0))
         self._success_gate    = bool(getattr(args, "success_gate", False))
+        # guard-clamp mode: instead of rejecting the whole step when a joint jump
+        # is detected, clamp each joint's delta to the guard threshold and publish
+        # the clamped solution.  This lets the arm crawl toward the target instead
+        # of freezing, which is safer near singularities during teleop.
+        # Default: True (clamp).  --no-guard-clamp restores the legacy reject mode.
+        self._guard_clamp     = not bool(getattr(args, "no_guard_clamp", False))
         self._fail_streak     = 0
         self._fail_warn_every = 20
 
@@ -371,6 +385,9 @@ class PlacoOnlineProfiler(Node):
                           self.create_publisher(Float64MultiArray, cfg["fwd_cmd_topic"], 10))
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
         self._profile_pub = self.create_publisher(String,  cfg["profile_topic"], 10)
+        # JointState publisher for arm-specific IK commands (intermediate topic for aggregator)
+        ik_cmd_topic = f"/{self.args.arm}_arm_ik_commands"
+        self._ik_cmd_pub = self.create_publisher(JointState, ik_cmd_topic, 10)
 
         self.create_subscription(
             JointState, "/joint_states",
@@ -405,6 +422,13 @@ class PlacoOnlineProfiler(Node):
 
     def _ee_delta_cb(self, msg: PoseStamped):
         t_recv = time.time()
+        # Sentinel: trigger-press session-start signal. Latches a flag instead
+        # of going into _pending, so a same-tick delta msg can't overwrite it.
+        if msg.header.frame_id == "reanchor":
+            with self._delta_lock:
+                self._reanchor_pending = True
+            self._msg_count += 1
+            return
         with self._delta_lock:
             self._pending        = msg
             self._pending_t_recv = t_recv
@@ -808,6 +832,13 @@ class PlacoOnlineProfiler(Node):
             pt.time_from_start.nanosec = int((hs % 1.0) * 1e9)
             msg.points = [pt]
             self._traj_pub.publish(msg)
+        
+        # Publish to arm-specific IK command topic (for aggregator to combine)
+        ik_cmd_msg = JointState()
+        ik_cmd_msg.header.stamp = self.get_clock().now().to_msg()
+        ik_cmd_msg.name = list(self.cfg["joint_names"])
+        ik_cmd_msg.position = list(joints)
+        self._ik_cmd_pub.publish(ik_cmd_msg)
 
     # ── Output LPF on joint command (Fix-D) ───────────────────────────────────
     def _filter_joints(self, raw: List[float]) -> List[float]:
@@ -939,21 +970,32 @@ class PlacoOnlineProfiler(Node):
                 dq = (0., 0., 0., 1.)
 
             gap    = (t_wall - self._ee_delta_last_t) if self._ee_delta_last_t else 999.
-            is_new = self._ee_delta_ref_xyz is None or gap > self._ee_delta_gap_sec
+            with self._delta_lock:
+                reanchor = self._reanchor_pending
+                self._reanchor_pending = False
+            is_new = (self._ee_delta_ref_xyz is None
+                      or reanchor
+                      or gap > self._ee_delta_gap_sec)
             self._ee_delta_last_t = t_wall
 
             if is_new:
                 # Fix-1: instant cache read (was blocking _get_tf(0.3) = 0–300 ms)
                 ref = self._tf_poller.get()
+                src = "sentinel" if reanchor else "TF"
                 if ref is not None:
                     self._ee_delta_ref_xyz = tuple(ref[:3])
                     self._ee_delta_ref_q   = tuple(ref[3:7])
                     self._pose             = list(ref)
-                    print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  (TF)")
+                    print(f"\n  [EE-δ] NEW ref={[f'{v:.4f}' for v in ref[:3]]}  ({src})")
                 else:
                     self._ee_delta_ref_xyz = tuple(self._pose[:3])
                     self._ee_delta_ref_q   = tuple(self._pose[3:7])
                 self._reset_orientation_filter()
+                # Discard the first message's delta entirely: the tracker app may
+                # have accumulated movement during the dead-man button release, so
+                # dx/dq of this first frame is unreliable.  Re-anchor only; arm
+                # stays put.  Normal delta accumulation starts from the next frame.
+                return None
 
             base_xyz = self._ee_delta_ref_xyz or tuple(self._pose[:3])
             base_q   = self._ee_delta_ref_q   or tuple(self._pose[3:7])
@@ -992,8 +1034,14 @@ class PlacoOnlineProfiler(Node):
 
         Anti-jump strategy (two complementary methods):
           Method 1 (proactive): wrist_vel_cap in PlacoSession caps Δq inside QP.
-          Method 2 (reactive) : joint_jump_guard rejects the whole step if any
-                                joint exceeds the per-step degree limit.
+          Method 2 (reactive) : joint_jump_guard — two sub-modes:
+            clamp mode (default, --no-guard-clamp to disable):
+              Clip each joint delta to the guard threshold and publish the
+              clamped solution.  Arm crawls toward target instead of freezing.
+              _last_joints is updated so the seed advances each step.
+            reject mode (legacy, --no-guard-clamp flag):
+              Whole step rejected, _last_joints unchanged → arm freezes until
+              IK finds a within-limit solution.
 
         Set2-D (continuous approach): on IK failure, still publish the partial
         solution; velocity_limits in the controller saturate safely.
@@ -1023,11 +1071,32 @@ class PlacoOnlineProfiler(Node):
 
         joints_out: Optional[List[float]] = None    # set below if step was published
         if guard_hit:
-            r["success"] = 0
-            self._fail_streak += 1
-            if self._fail_streak % self._fail_warn_every == 0:
-                print(f"\n  [guard] joint Δ={max_joint_delta_deg:.1f}° "
-                      f"rejected, streak={self._fail_streak}")
+            if self._guard_clamp:
+                # Clamp mode: clip each joint delta to the guard threshold so the
+                # arm slowly crawls toward the IK solution instead of freezing.
+                guard_rad = math.radians(self._joint_jump_guard_deg)
+                joints_clamped = [
+                    max(s - guard_rad, min(s + guard_rad, j))
+                    for s, j in zip(seed, r["joints"])
+                ]
+                joints_out = self._filter_joints(joints_clamped)
+                with self._joints_lock:
+                    self._last_joints = list(joints_out)   # advance seed each step
+                r["success"] = 0   # still mark as not perfectly solved
+                self._fail_streak += 1
+                if self._fail_streak % self._fail_warn_every == 0:
+                    print(f"\n  [guard-clamp] joint Δ={max_joint_delta_deg:.1f}° "
+                          f"clamped to {self._joint_jump_guard_deg:.0f}°, "
+                          f"streak={self._fail_streak}")
+                if not self.args.dry_run:
+                    self._publish(joints_out)
+            else:
+                # Reject mode (legacy): whole step discarded, arm freezes.
+                r["success"] = 0
+                self._fail_streak += 1
+                if self._fail_streak % self._fail_warn_every == 0:
+                    print(f"\n  [guard-reject] joint Δ={max_joint_delta_deg:.1f}° "
+                          f"rejected, streak={self._fail_streak}")
         else:
             joints_out = self._filter_joints(r["joints"])
             with self._joints_lock:
@@ -1378,6 +1447,7 @@ class PlacoOnlineProfiler(Node):
             print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
         else:
             print(f"  cmd      : {cfg['traj_topic']}  (JointTrajectoryController)")
+        print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (for aggregator)")
         print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
         if self._ws_mesh is not None:
