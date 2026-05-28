@@ -98,7 +98,7 @@ def _parse_args():
         description="Placo IK online profiler with WorkspaceMesh clamp (ROS2)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--arm",       default="right", choices=["right", "left", "both"])
+    p.add_argument("--arm",       default="both", choices=["right", "left", "both"])
     p.add_argument("--config",    default=None,
                    help="Path to bimanual YAML config (e.g. ../config/bimanual.yaml). "
                         "Required when --arm both; optional for single-arm use.")
@@ -145,10 +145,14 @@ def _parse_args():
     p.add_argument("--plot",      default="", help="Output plot PNG path")
     p.add_argument("--dry-run",   action="store_true", dest="dry_run",
                    help="Compute IK but do not publish trajectory")
-    p.add_argument("--home-first", action="store_true", dest="home_first",
-                   help="Send arm to home (with TF confirmation) before starting")
-    p.add_argument("--no-ws-clamp", action="store_true", dest="no_ws_clamp",
-                   help="Disable workspace XYZ clamping")
+    p.add_argument("--home-first", action="store_true", default=True, dest="home_first",
+                   help="Send arm to home (with TF confirmation) before starting (default: on)")
+    p.add_argument("--no-home-first", action="store_false", dest="home_first",
+                   help="Skip homing before starting")
+    p.add_argument("--no-ws-clamp", action="store_true", default=True, dest="no_ws_clamp",
+                   help="Disable workspace XYZ clamping (default: on)")
+    p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
+                   help="Enable workspace XYZ clamping")
     p.add_argument("--ws-mesh",   default=None, dest="ws_mesh",
                    help="WorkspaceMesh .npz path (from placo_ws_analyze.py)")
     p.add_argument("--verbose",   action="store_true",
@@ -159,6 +163,12 @@ def _parse_args():
                    dest="boundary_margin",
                    help="Soft-clamp margin in metres  (default: 0.05 = 5 cm). "
                         "Distance from workspace boundary where damping begins.")
+    p.add_argument("--no-j3j4-couple", action="store_true", default=True, dest="no_j3j4_couple",
+                   help="Disable j3/j4 elbow-torso safety coupling (both soft QP guidance "
+                        "and hard post-solve clip). Use when testing chest-reach without "
+                        "elbow restriction, or to diagnose coupling behaviour. (default: on)")
+    p.add_argument("--j3j4-couple", action="store_false", dest="no_j3j4_couple",
+                   help="Enable j3/j4 elbow-torso safety coupling")
     p.add_argument("--success-gate", action="store_true", dest="success_gate",
                    help="Restore legacy 'freeze on IK failure' behaviour. "
                         "Default (off) = Set2-D continuous approach: always publish, "
