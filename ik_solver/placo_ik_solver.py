@@ -81,7 +81,7 @@ def _find_urdf() -> str:
 _HUMAN_RIGHT = {
     "openarm_right_joint1": (0.000,  -1.396,  1.500, 0.15),  # shoulder yaw  大馬達
     "openarm_right_joint2": (0.700,   0.000,  1.600, 0.25),  # shoulder pitch  大馬達
-    "openarm_right_joint3": (0.000,  -1.571,  0.000, 0.80),  # upperarm yaw j3=0=forward  大馬達
+    "openarm_right_joint3": (-0.10,  -1.571,  0.350, 0.80),  # upperarm yaw; pref=-0.1 (away from boundary); hi=0.35 (~20°) allows chest-reach
     "openarm_right_joint4": (1.5708,  0.250,  2.200, 0.08),  # elbow flex 90°
     "openarm_right_joint5": (0.000,  -1.571,  1.571, 0.03),  # forearm roll
     "openarm_right_joint6": (0.000,  -0.785,  0.785, 0.03),  # wrist yaw
@@ -93,7 +93,7 @@ _HUMAN_LEFT = {
     # Format: (pref, hard_lo, hard_hi, joints_weight)
     "openarm_left_joint1": (0.000,   -1.500,  1.396, 0.15),  # mirror RIGHT [-1.396,+1.500]
     "openarm_left_joint2": (-0.700,  -1.600,  0.000, 0.25),  # mirror RIGHT [0.000,+1.600]
-    "openarm_left_joint3": (0.000,    0.000,  1.571, 0.80),  # mirror RIGHT [-1.571,0.000]
+    "openarm_left_joint3": (0.100,   -0.350,  1.571, 0.80),  # mirror RIGHT; pref=+0.1 (away from boundary); lo=-0.35 (~-20°) allows chest-reach
     "openarm_left_joint4": (1.5708,   0.250,  2.200, 0.08),  # same as right
     "openarm_left_joint5": (0.000,   -1.571,  1.571, 0.03),  # j5
     "openarm_left_joint6": (0.000,   -0.785,  0.785, 0.03),  # j6
@@ -114,6 +114,9 @@ _SEEDS_RIGHT = [
     [-0.20,  0.70, -0.20,  1.5708,  0.00,  0.00,  0.00],
     [ 0.00,  0.80,  0.00,  2.0000,  0.00,  0.00,  0.00],
     [ 0.00,  0.60,  0.00,  1.2000,  0.00,  0.30,  0.00],
+    # chest-near seeds (j3 internal rotation + elbow more bent)
+    [-0.30,  1.00,  0.25,  1.90,  0.00,  0.00,  0.00],  # chest-near left
+    [-0.15,  1.10,  0.20,  1.80,  0.00,  0.00,  0.00],  # chest-center
 ]
 _SEEDS_LEFT = [
     # j2 must be NEGATIVE for left arm (URDF mirror: j2_left=-j2_right)
@@ -124,6 +127,9 @@ _SEEDS_LEFT = [
     [ 0.20, -0.70,  0.20,  1.5708,  0.00,  0.00,  0.00],  # j1 outward
     [ 0.00, -0.80,  0.00,  2.0000,  0.00,  0.00,  0.00],  # elbow ~115°
     [ 0.00, -0.60,  0.00,  1.2000,  0.00,  0.30,  0.00],  # forearm roll
+    # chest-near seeds (j3 internal rotation + elbow more bent)
+    [ 0.30, -1.00, -0.25,  1.90,  0.00,  0.00,  0.00],  # chest-near right
+    [ 0.15, -1.10, -0.20,  1.80,  0.00,  0.00,  0.00],  # chest-center
 ]
 _ARM_SEEDS = {"right": _SEEDS_RIGHT, "left": _SEEDS_LEFT}
 
@@ -160,17 +166,22 @@ class PlacoIKSolver:
                                       verbose=False, no_rot=False)
     """
 
-    POS_TOL   = 0.003
-    ORI_TOL   = 0.15
-    POS_RELAX = 0.010
-    MAX_ITER  = 250       # iterations per SEED (dt=0.01 → 250 steps is enough)
-    PLACO_DT  = 0.01      # placo solver.dt (velocity-level integration step)
-    W_POS     = 1.0       # position task weight
-    W_ORI     = 0.3       # orientation task weight
+    POS_TOL        = 0.003
+    ORI_TOL        = 0.15
+    POS_RELAX      = 0.010
+    MAX_ITER       = 250       # iterations per SEED (dt=0.01 → 250 steps is enough)
+    PLACO_DT       = 0.01      # placo solver.dt (velocity-level integration step)
+    W_POS          = 1.0       # position task weight
+    W_ORI          = 0.3       # orientation task weight
     # Joint naturalness weight — must be << W_POS so position task dominates.
     # Using a SINGLE JointsTask for all joints (verified working in tests).
     # W_J must be ~1e-4 or less; larger values create equilibria before task is solved.
-    W_JOINTS  = 1e-4      # naturalness weight (single combined JointsTask)
+    W_JOINTS       = 1e-4      # naturalness weight (single combined JointsTask)
+    # Jump guard: seeds from a different configuration family can cause large joint
+    # deltas when the solver falls back past attempt-0 (last_joints).
+    # Solutions within JUMP_GUARD_DEG of last_joints are preferred; those beyond
+    # are only used as a fallback (same behaviour as joint_jump_guard in the node).
+    JUMP_GUARD_DEG = 20.0      # max allowed per-joint delta (deg) for preferred path
 
     def __init__(self, arm: str = "right"):
         import placo
@@ -284,8 +295,15 @@ class PlacoIKSolver:
         tR    = _quat_to_rot(*target_quat)
         seeds = [list(last_joints)] + self._seeds
 
-        best_q     = None
-        best_pos_e = 1e9
+        jump_thresh = math.radians(self.JUMP_GUARD_DEG)
+
+        # Two-level result tracking:
+        #   best_q_close — valid (pos<POS_TOL) AND within jump limit  ← preferred
+        #   best_q       — valid (pos<POS_RELAX) regardless of jump   ← fallback
+        best_q_close   = None
+        best_pos_close = 1e9
+        best_q         = None
+        best_pos_e     = 1e9
 
         for attempt, seed in enumerate(seeds):
             try:
@@ -295,19 +313,31 @@ class PlacoIKSolver:
                     print(f"  [PlacoIK] attempt {attempt} error: {ex}")
                 continue
 
+            max_delta = max(abs(a - b) for a, b in zip(joints, last_joints))
+            close     = max_delta <= jump_thresh
+
             if verbose:
                 j3d = math.degrees(joints[2])
                 print(
                     f"  [PlacoIK] attempt={attempt} "
                     f"pos={pos_e*1000:.1f}mm  "
-                    f"j3={j3d:+.1f}° {'✓' if pos_e < self.POS_TOL else '·'}"
+                    f"j3={j3d:+.1f}°  Δ={math.degrees(max_delta):.1f}°"
+                    f" {'✓' if pos_e < self.POS_TOL else '·'}"
+                    f"{'' if close else ' JUMP'}"
                 )
 
+            # Track best fallback (any valid solution)
             if pos_e < best_pos_e:
                 best_pos_e = pos_e
                 best_q     = joints
 
-            if pos_e < self.POS_TOL:
+            # Track best preferred solution (close to last_joints)
+            if close and pos_e < best_pos_close:
+                best_pos_close = pos_e
+                best_q_close   = joints
+
+            # Early-exit only for close solutions — avoid locking in a jump
+            if close and pos_e < self.POS_TOL:
                 ms = (time.time() - t0) * 1000
                 if attempt == 0:
                     self._stats["ok_first"] += 1
@@ -316,6 +346,11 @@ class PlacoIKSolver:
                 return True, joints, ms
 
         ms = (time.time() - t0) * 1000
+
+        # Prefer close solution; fall back to any valid solution
+        if best_q_close is not None and best_pos_close < self.POS_RELAX:
+            self._stats["ok_retry"] += 1
+            return True, best_q_close, ms
         if best_q is not None and best_pos_e < self.POS_RELAX:
             self._stats["ok_retry"] += 1
             return True, best_q, ms
