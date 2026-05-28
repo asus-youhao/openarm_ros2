@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from .launcher.launcher_panel import LauncherPanel
 from .analyzers.analyzer_panel import AnalyzerPanel
 from .analyzers.bimanual_panel import BimanualPanel
+from .analyzers.record_replay_panel import RecordReplayPanel
 
 
 class MainWindow(QMainWindow):
@@ -30,8 +31,16 @@ class MainWindow(QMainWindow):
         top = QSplitter(Qt.Horizontal)
         self.launcher_panel = LauncherPanel()
         self.analyzer_panel = AnalyzerPanel()
+        self.record_replay_panel = RecordReplayPanel()
+
+        # Right column: Analyzer on top, Record & Replay below
+        right_col = QSplitter(Qt.Vertical)
+        right_col.addWidget(self.analyzer_panel)
+        right_col.addWidget(self.record_replay_panel)
+        right_col.setSizes([300, 200])
+
         top.addWidget(self.launcher_panel)
-        top.addWidget(self.analyzer_panel)
+        top.addWidget(right_col)
         top.setSizes([550, 550])
         vsplit.addWidget(top)
 
@@ -52,6 +61,7 @@ class MainWindow(QMainWindow):
         self.launcher_panel.log_line.connect(self.log.appendPlainText)
         self.analyzer_panel.log_line.connect(self.log.appendPlainText)
         self.bimanual_panel.log_line.connect(self.log.appendPlainText)
+        self.record_replay_panel.log_line.connect(self.log.appendPlainText)
 
         # Auto-sync analyzer + bimanual mode when controller selection changes.
         self.launcher_panel.controller_mode_changed.connect(
@@ -60,10 +70,14 @@ class MainWindow(QMainWindow):
         self.launcher_panel.controller_mode_changed.connect(
             self.bimanual_panel.set_mode
         )
+        self.launcher_panel.controller_mode_changed.connect(
+            self.record_replay_panel.set_replay_mode
+        )
         # Apply the initial controller's mode immediately.
         initial_mode = self.launcher_panel.current_analyzer_mode()
         self.analyzer_panel.set_analyzer_mode(initial_mode)
         self.bimanual_panel.set_mode(initial_mode)
+        self.record_replay_panel.set_replay_mode(initial_mode)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt API)
         try:
@@ -72,5 +86,8 @@ class MainWindow(QMainWindow):
             try:
                 self.analyzer_panel.shutdown()
             finally:
-                self.bimanual_panel.shutdown()
+                try:
+                    self.bimanual_panel.shutdown()
+                finally:
+                    self.record_replay_panel.shutdown()
         super().closeEvent(event)
