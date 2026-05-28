@@ -348,6 +348,7 @@ class PlacoOnlineProfiler(Node):
             rate_hz       = self._rate_hz,
             vel_limits    = not getattr(args, "no_vel_limits", False),
             wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
+            j3j4_couple   = not getattr(args, "no_j3j4_couple", False),
         )
 
     def _init_motion_pipe(self, args):

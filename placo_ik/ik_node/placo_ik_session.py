@@ -135,6 +135,7 @@ class PlacoSession:
         rate_hz:        float = 20.0,
         vel_limits:     bool  = True,
         wrist_vel_cap:  float = _WRIST_VEL_CAP,
+        j3j4_couple:    bool  = True,
     ):
         import placo
         from placo_ik_solver import _HUMAN_RIGHT, _HUMAN_LEFT, _JOINT_NAMES
@@ -157,6 +158,7 @@ class PlacoSession:
         self._wrist_joint_names = [self._joint_names[i] for i in _WRIST_JOINT_IDX]
         # j3 inward sign: +1 for right (j3>0=inward), -1 for left (j3<0=inward)
         self._j3_inward_sign = 1.0 if arm == "right" else -1.0
+        self._j3j4_couple    = j3j4_couple and (_J3_J4_COUPLE_RATE > 0.0)
 
         if not rebuild:
             self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
@@ -251,7 +253,7 @@ class PlacoSession:
         # ── j3/j4 elbow-torso safety coupling (soft guidance in QP) ──────────
         # Use seed j3 so the QP already targets a safe j4 pref during this step.
         j3_seed    = float(seed[_J3_INWARD_IDX]) * self._j3_inward_sign
-        if _J3_J4_COUPLE_RATE > 0.0 and j3_seed > _J3_J4_COUPLE_START:
+        if self._j3j4_couple and j3_seed > _J3_J4_COUPLE_START:
             j4_name      = self._joint_names[_J4_ELBOW_IDX]
             j4_safe_hi   = max(_J4_ELBOW_SAFE_MIN,
                                self._hi[_J4_ELBOW_IDX] - _J3_J4_COUPLE_RATE * j3_seed)
@@ -295,7 +297,7 @@ class PlacoSession:
         # Recompute using the SOLVED j3 value (may differ from seed after QP).
         j3_solved  = joints[_J3_INWARD_IDX] * self._j3_inward_sign
         j3_inward  = max(0.0, j3_solved - _J3_J4_COUPLE_START)
-        if _J3_J4_COUPLE_RATE > 0.0 and j3_inward > 0.0:
+        if self._j3j4_couple and j3_inward > 0.0:
             j4_clip_hi = max(_J4_ELBOW_SAFE_MIN,
                              self._hi[_J4_ELBOW_IDX] - _J3_J4_COUPLE_RATE * j3_inward)
             dynamic_hi = list(self._hi)
