@@ -191,9 +191,9 @@ class AnalyzerPanel(QGroupBox):
                 plot = JointDualPlotWindow(
                     joint_names,
                     pos_title=f"OpenArm {side} \u2014 joint {'position' if is_topic else 'action & state'}",
-                    err_title=f"OpenArm {side} \u2014 {'position' if is_topic else 'position error'}",
+                    err_title=f"OpenArm {side} \u2014 position error",
                     y_label_pos="position (rad)",
-                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                    y_label_err="error (rad)",
                 )
                 plot.resize(900, 800)
                 plot.setWindowTitle(f"Arm {side}")
@@ -329,9 +329,9 @@ class AnalyzerPanel(QGroupBox):
                 plot = JointDualPlotWindow(
                     joint_names,
                     pos_title=f"O6 {side} hand \u2014 joint {'position' if is_topic else 'action & state'}",
-                    err_title=f"O6 {side} hand \u2014 {'position' if is_topic else 'position error'}",
+                    err_title=f"O6 {side} hand \u2014 position error",
                     y_label_pos="position (rad)",
-                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                    y_label_err="error (rad)",
                 )
                 plot.resize(900, 800)
                 plot.setWindowTitle(f"O6 {side}")
@@ -487,9 +487,9 @@ class AnalyzerPanel(QGroupBox):
                 plot = JointDualPlotWindow(
                     joint_names,
                     pos_title=f"OpenArm {side} \u2014 joint {'position' if is_topic else 'action & state'}",
-                    err_title=f"OpenArm {side} \u2014 {'position' if is_topic else 'position error'}",
+                    err_title=f"OpenArm {side} \u2014 position error",
                     y_label_pos="position (rad)",
-                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                    y_label_err="error (rad)",
                 )
                 plot.resize(900, 800)
                 plot.setWindowTitle(f"Arm {side} [merged]")
@@ -525,9 +525,9 @@ class AnalyzerPanel(QGroupBox):
                 plot = JointDualPlotWindow(
                     joint_names,
                     pos_title=f"O6 {side} hand \u2014 joint {'position' if is_topic else 'action & state'}",
-                    err_title=f"O6 {side} hand \u2014 {'position' if is_topic else 'position error'}",
+                    err_title=f"O6 {side} hand \u2014 position error",
                     y_label_pos="position (rad)",
-                    y_label_err="position (rad)" if is_topic else "error (rad)",
+                    y_label_err="error (rad)",
                 )
                 plot.resize(900, 800)
                 plot.setWindowTitle(f"O6 {side} [merged]")

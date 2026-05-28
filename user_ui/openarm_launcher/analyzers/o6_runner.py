@@ -6,6 +6,7 @@ from control_msgs.msg import JointTrajectoryControllerState
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64MultiArray
 
 from PySide6.QtCore import QObject, Signal
 
@@ -66,7 +67,12 @@ class _O6Node(Node):
                 JointTrajectoryControllerState, ctrl_topic, self._on_ctrl, 10
             )
         else:
-            self._have_cmd = True
+            # topic mode: subscribe to hand_forward_position_controller/commands
+            self._have_cmd = False
+            cmd_topic = f"/{side}_hand_forward_position_controller/commands"
+            self.create_subscription(
+                Float64MultiArray, cmd_topic, self._on_cmd_topic, 10
+            )
 
         self.create_subscription(JointState, "/joint_states", self._on_js, 10)
         self.create_timer(1.0 / rate_hz, self._emit)
@@ -83,6 +89,12 @@ class _O6Node(Node):
         if ref is None:
             return
         self._absorb(list(msg.joint_names), list(ref.positions), self._cmd)
+        self._have_cmd = True
+
+    def _on_cmd_topic(self, msg: Float64MultiArray) -> None:
+        data = list(msg.data)
+        for i in range(min(len(self._cmd), len(data))):
+            self._cmd[i] = data[i]
         self._have_cmd = True
 
     def _on_js(self, msg: JointState) -> None:

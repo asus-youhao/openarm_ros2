@@ -331,6 +331,7 @@ class JointDualPlotWindow(QWidget):
         y_label_pos: str = "position (rad)",
         y_label_err: str = "error (rad)",
         trend_n: int = 30,
+        show_error_plot: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -342,24 +343,28 @@ class JointDualPlotWindow(QWidget):
             window_sec=window_sec,
             y_label=y_label_pos,
         )
-        self._err_plot = JointErrorPlot(
-            joint_names,
-            title=err_title,
-            window_sec=window_sec,
-            y_label=y_label_err,
-            trend_n=trend_n,
-        )
+        self._err_plot: JointErrorPlot | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
         layout.addWidget(self._pos_plot)
-        layout.addWidget(self._err_plot)
+
+        if show_error_plot:
+            self._err_plot = JointErrorPlot(
+                joint_names,
+                title=err_title,
+                window_sec=window_sec,
+                y_label=y_label_err,
+                trend_n=trend_n,
+            )
+            layout.addWidget(self._err_plot)
 
     def add_sample(self, t: float, cmd: list[float], actual: list[float]) -> None:
         self._pos_plot.add_sample(t, cmd, actual)
-        errors = [a - c for a, c in zip(actual, cmd)]
-        self._err_plot.add_sample(t, errors)
+        if self._err_plot is not None:
+            errors = [a - c for a, c in zip(actual, cmd)]
+            self._err_plot.add_sample(t, errors)
 
     def close_programmatically(self) -> None:
         self._programmatic_close = True
