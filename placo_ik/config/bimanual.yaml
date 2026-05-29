@@ -16,7 +16,7 @@ common:
   wrist_vel_cap: 4.0
   lpf_alpha: "0.25,0.25,0.25,0.4,0.6,0.6,0.6"
   ori_lpf_alpha: 1.0
-  joint_jump_guard_deg: 15.0
+  joint_jump_guard_deg: 10.0
   boundary_margin: 0.05
   ee_delta_gap_sec: 0.8
   home_first: false

@@ -116,7 +116,7 @@ def _parse_args():
                    help="Wrist (joint5-7) velocity cap in rad/s for teleop smoothness. "
                         "URDF default = 20.94 rad/s (1200°/s) lets IK noise pass through. "
                         "Default 4.0 rad/s ≈ 230°/s.  0 or negative = use URDF default.")
-    p.add_argument("--lpf-alpha", default="0.25,0.25,0.25,0.4,0.6,0.6,0.6",
+    p.add_argument("--lpf-alpha", default="0.25,0.25,0.25,0.25,0.25,0.25,0.25",
                    dest="lpf_alpha",
                    help="Output-side 1st-order LPF on joint cmd. "
                         "Single value '0.5' = uniform; "
@@ -129,10 +129,10 @@ def _parse_args():
                         "1.0 = off. Smaller = heavier smoothing.")
     p.add_argument("--ee-delta-gap-sec", type=float, default=0.8, dest="ee_delta_gap_sec",
                    help="Seconds without tracker msg before resetting session ref (default: 0.8)")
-    p.add_argument("--joint-jump-guard-deg", type=float, default=15.0,
+    p.add_argument("--joint-jump-guard-deg", type=float, default=10.0,
                    dest="joint_jump_guard_deg",
                    help="Max single-joint delta per step in degrees. "
-                        "IK output exceeding this is rejected. 0 = off. (default: 15)")
+                        "IK output exceeding this is rejected. 0 = off. (default: 10)")
     p.add_argument("--no-rot-tracking", action="store_true", dest="no_rot_tracking",
                    help="Disable orientation tracking (position-only IK)")
     p.add_argument("--calib-yaw", type=float, default=0.0, dest="calib_yaw",
