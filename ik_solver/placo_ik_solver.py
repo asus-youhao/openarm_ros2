@@ -80,8 +80,8 @@ def _find_urdf() -> str:
 #   — placo JointsTask weight = naturalness stiffness
 _HUMAN_RIGHT = {
     "openarm_right_joint1": (0.000,  -1.396,  1.500, 0.15),  # shoulder yaw  大馬達
-    "openarm_right_joint2": (0.700,   0.000,  1.600, 0.25),  # shoulder pitch  大馬達
-    "openarm_right_joint3": (-0.10,  -1.571,  0.350, 0.80),  # upperarm yaw; pref=-0.1 (away from boundary); hi=0.35 (~20°) allows chest-reach
+    "openarm_right_joint2": (0.700,   0.000,  2.000, 0.25),  # shoulder pitch  大馬達
+    "openarm_right_joint3": (-0.10,  -1.000,  1.000, 0.80),  # upperarm yaw; pref=-0.1 (away from boundary); hi=0.35 (~20°) allows chest-reach
     "openarm_right_joint4": (1.5708,  0.250,  2.200, 0.08),  # elbow flex 90°
     "openarm_right_joint5": (0.000,  -1.571,  1.571, 0.03),  # forearm roll
     "openarm_right_joint6": (0.000,  -0.785,  0.785, 0.03),  # wrist yaw
@@ -92,8 +92,8 @@ _HUMAN_LEFT = {
     # Safety limits mirrored from RIGHT: j1[-1.500,+1.396] j2[-1.600,0.000] j3[0.000,+1.571] j4 same
     # Format: (pref, hard_lo, hard_hi, joints_weight)
     "openarm_left_joint1": (0.000,   -1.500,  1.396, 0.15),  # mirror RIGHT [-1.396,+1.500]
-    "openarm_left_joint2": (-0.700,  -1.600,  0.000, 0.25),  # mirror RIGHT [0.000,+1.600]
-    "openarm_left_joint3": (0.100,   -0.350,  1.571, 0.80),  # mirror RIGHT; pref=+0.1 (away from boundary); lo=-0.35 (~-20°) allows chest-reach
+    "openarm_left_joint2": (-0.700,  -2.000,  0.000, 0.25),  # mirror RIGHT [0.000,+1.600]
+    "openarm_left_joint3": (0.100,   -1.000,  1.000, 0.80),  # mirror RIGHT; pref=+0.1 (away from boundary); lo=-0.35 (~-20°) allows chest-reach
     "openarm_left_joint4": (1.5708,   0.250,  2.200, 0.08),  # same as right
     "openarm_left_joint5": (0.000,   -1.571,  1.571, 0.03),  # j5
     "openarm_left_joint6": (0.000,   -0.785,  0.785, 0.03),  # j6

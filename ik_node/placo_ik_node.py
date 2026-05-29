@@ -860,24 +860,61 @@ class PlacoOnlineProfiler(Node):
     # ── run() helpers (L1-B) ─────────────────────────────────────────────────
 
     def _startup_sync(self):
-        """Sync EE pose from TF2 and joint positions from /joint_states."""
+        """Sync EE pose + joint positions; use FK as fallback when TF is absent.
+
+        Priority:
+          1. /joint_states   → _last_joints (seed for first IK step)
+          2. TF2             → _pose         (best EE reference)
+          3. FK from joints  → _pose         (if TF absent but joints known)
+          4. home_pose       → _pose         (last resort, internal ≠ real state)
+
+        Retries /joint_states for up to 3 s so that a briefly-late driver
+        does not force the first IK step to use home_joints as seed (which
+        causes the guard-clamp crawl symptom).
+        """
         print("\n  Syncing from TF2 and /joint_states...")
-        time.sleep(0.5)
-        tf = self._get_tf(2.0)
+        jnames = self.cfg["joint_names"]
+
+        # ── Step 1: wait for /joint_states (up to 3 s) ────────────────────────
+        deadline = time.time() + 3.0
+        js: dict = {}
+        while time.time() < deadline:
+            with self._js_lock:
+                js = dict(self._joint_states)
+            if all(n in js for n in jnames):
+                break
+            time.sleep(0.1)
+
+        js_ok = all(n in js for n in jnames)
+        if js_ok:
+            real_joints = [js[n] for n in jnames]
+            with self._joints_lock:
+                self._last_joints = real_joints
+            print(f"  joints synced: {[f'{v:.3f}' for v in real_joints]}")
+        else:
+            real_joints = None
+            print("  ⚠ /joint_states not ready after 3 s — using home_joints as seed "
+                  "(first IK step may guard-clamp until arm syncs)")
+
+        # ── Step 2: TF lookup ──────────────────────────────────────────────────
+        tf = self._get_tf(1.0)
         if tf:
             self._pose = list(tf)
             print(f"  TF EE: {[f'{v:.4f}' for v in tf[:3]]}")
-        else:
-            print("  ⚠ TF unavailable — using home_pose")
-        with self._js_lock:
-            js = dict(self._joint_states)
-        jnames = self.cfg["joint_names"]
-        if all(n in js for n in jnames):
-            with self._joints_lock:
-                self._last_joints = [js[n] for n in jnames]
-            print(f"  joints synced: {[f'{v:.3f}' for v in self._last_joints]}")
-        else:
-            print("  ⚠ /joint_states not ready — using home_joints")
+            return
+
+        # ── Step 3: TF absent — recover pose via FK from real joint positions ──
+        if real_joints is not None:
+            fk_pose = self._placo_session.fk(real_joints)
+            if fk_pose is not None:
+                self._pose = fk_pose
+                print(f"  ⚠ TF unavailable — pose recovered via FK: "
+                      f"{[f'{v:.4f}' for v in fk_pose[:3]]}")
+                return
+
+        # ── Step 4: all sources failed — stay with home ────────────────────────
+        print("  ⚠ TF & FK unavailable — using home_pose "
+              "(internal EE reference ≠ real arm state)")
 
     def _handle_kbd_events(self) -> bool:
         """Handle keyboard flags. Returns True if quit was requested."""

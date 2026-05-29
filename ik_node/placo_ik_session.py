@@ -27,7 +27,7 @@ _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
 import time
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # ── IK tuning constants ───────────────────────────────────────────────────────
 _POS_TOL   = 0.003    # m   — early-exit position convergence threshold
@@ -40,34 +40,55 @@ _W_POS     = 1.0      # position task weight (baseline)
 # Two tuning sets exist; we adopt the placo_ik branch values because they pair
 # with adaptive DLS (low baseline λ, dynamically boosted at singularities).
 #
-#   placo_ik (ACTIVE):       _W_ORI=2.0  _W_JOINTS=5e-4  _W_REG=6e-5  _MAX_ITER=15
-#   jitter_test3 (REFERENCE): _W_ORI=1.0  _W_JOINTS=1e-4  _W_REG=1e-4  _MAX_ITER=20
+#   placo_ik (ACTIVE):       _W_ORI=2.0  _W_JOINTS=5e-4  _W_REG=6e-5
+#   jitter_test3 (REFERENCE): _W_ORI=1.0  _W_JOINTS=1e-4  _W_REG=1e-4
 #
 # Why placo_ik is picked:
 #   - _W_ORI=2.0 → aggressive orientation tracking; adaptive DLS prevents wobble
-#   - _W_REG=6e-5 baseline → DLS adapter boosts to ~1e-2 near singularity
-#   - _MAX_ITER=15 enough with adaptive λ; jitter_test3 needs 20 because λ is fixed
-# Switch by editing 4 lines below if the alternative is preferred (or A/B test).
+#   - _W_REG=6e-5 baseline → DLS adapter boosts near singularity
+# Switch by editing the lines below if the alternative is preferred (or A/B test).
 _W_ORI     = 2.0      # orientation task weight
 _W_JOINTS  = 5e-4     # naturalness (joint preference) weight
 _W_REG     = 6e-5     # regularisation weight (DLS baseline, dynamically boosted)
-_MAX_ITER  = 5       # solver iteration cap
+# Iteration budget: a small baseline keeps latency low on the common
+# (non-singular) case — ~91% of frames converge in ≤4 iters.  Near a singularity
+# we BOTH raise λ (_DLS_LAMBDA_MAX) and grant more iters (_SINGULAR_ITER_BOOST),
+# so the stronger damping has enough steps to converge instead of exiting with a
+# 10-30 mm residual (the "arm sticks near singularity" symptom).
+_MAX_ITER  = 5        # baseline solver iteration cap (non-singular region)
 
 # ── Adaptive DLS damping constants (方案 C — wrist wobble fix) ────────────────
 # λ = λ_base + λ_max × clamp((σ_thresh - σ_min) / σ_thresh, 0, 1)²
 # Far from singularity  (σ_min ≥ σ_thresh): λ ≈ λ_base  (~6e-5)
-# Near singularity      (σ_min → 0)        : λ → λ_base + λ_max  (~1e-2)
+# Near singularity      (σ_min → 0)        : λ → λ_base + λ_max  (~5e-2)
 _DLS_LAMBDA_BASE  = 6e-5   # baseline λ (= _W_REG, behaviour unchanged when non-singular)
-_DLS_LAMBDA_MAX   = 1e-2   # maximum λ boost at singularity
+_DLS_LAMBDA_MAX   = 5e-2   # maximum λ boost at singularity (DEBUG_REPORT_20260525)
 _DLS_SIGMA_THRESH = 0.15   # σ_min threshold below which damping ramps up
+
+# Adaptive iteration budget: when σ_min < _DLS_SIGMA_THRESH the larger λ above
+# shrinks each integration step, so the same pose error needs more steps to
+# clear.  Grant _MAX_ITER × _SINGULAR_ITER_BOOST iters in that region only.
+# Cost: singular-frame loop_ms rises ~0.5ms→~2ms — still far under 20ms deadline.
+_SINGULAR_ITER_BOOST = 4   # near-singularity iteration multiplier (5 → 20)
 
 # ── Wrist velocity cap (teleop smoothness) ────────────────────────────────────
 # URDF default wrist (j5/j6/j7) velocity = 20.94 rad/s ≈ 1200°/s — far too fast
 # for VR teleop, lets per-step IK noise pass straight through to the motors.
 # Override via RobotWrapper.set_velocity_limit() to a teleop-friendly value.
 # At 100Hz dt=10ms: 4.0 rad/s → 2.3°/step  (vs URDF: 12°/step).
-_WRIST_VEL_CAP    = 4.0    # rad/s; 0 or negative → disabled (use URDF default)
+_WRIST_VEL_CAP    = 1.0    # rad/s; 0 or negative → disabled (use URDF default)
 _WRIST_JOINT_IDX  = (4, 5, 6)   # 0-based indices for joint 5, 6, 7
+
+# ── Arm (j1-j4) velocity cap (teleop smoothness) ──────────────────────────────
+# Cap the large/medium joints so each solver sub-iteration moves ≤ N degrees,
+# mirroring the wrist treatment.  Unlike a joint-space LPF this constraint lives
+# inside the QP, so the joints stay coordinated and the EE path is preserved
+# (motion just slows, it does not bend).  Specified in deg/iter and converted to
+# rad/s at runtime via the actual dt: cap_rad_s = radians(N) / dt — so the
+# per-iteration angle stays N° regardless of control rate.
+# URDF baselines: j1/j2 16.75 rad/s, j3/j4 5.45 rad/s.  Set 0 to disable (URDF).
+_ARM_VEL_CAP_DEG_PER_ITER = 1.0          # per-iteration cap for j1/j2/j3/j4 (deg)
+_ARM_JOINT_IDX            = (0, 1, 2, 3)  # 0-based indices for joint 1-4
 
 # ── j3/j4 elbow-torso coupled safety ─────────────────────────────────────────
 # When j3 internally rotates (j3>0 right / j3<0 left), the bent elbow (j4≥90°)
@@ -156,6 +177,8 @@ class PlacoSession:
         self._hi          = [human_cfg[n][2] for n in self._joint_names]
         self._pref        = {n: human_cfg[n][0] for n in self._joint_names}
         self._wrist_joint_names = [self._joint_names[i] for i in _WRIST_JOINT_IDX]
+        self._arm_joint_names   = [self._joint_names[i] for i in _ARM_JOINT_IDX]
+        self._arm_vel_cap_deg   = _ARM_VEL_CAP_DEG_PER_ITER
         # j3 inward sign: +1 for right (j3>0=inward), -1 for left (j3<0=inward)
         self._j3_inward_sign = 1.0 if arm == "right" else -1.0
         self._j3j4_couple    = j3j4_couple and (_J3_J4_COUPLE_RATE > 0.0)
@@ -165,6 +188,10 @@ class PlacoSession:
             self._apply_velocity_caps(self._robot)
             cap_str = (f"wrist≤{self._wrist_vel_cap:.1f}rad/s"
                        if self._wrist_vel_cap > 0 else "wrist=URDF")
+            if self._arm_vel_cap_deg > 0:
+                _arm_cap_rad = np.radians(self._arm_vel_cap_deg) / self._dt
+                cap_str += (f"  arm(j1-4)≤{self._arm_vel_cap_deg:.1f}°/it"
+                            f"={_arm_cap_rad:.2f}rad/s")
             print(
                 f"[PlacoSession] cached  arm={arm}  max_iter={max_iter}"
                 f"  dt={self._dt*1000:.1f}ms  vel_limits={vel_limits}  {cap_str}"
@@ -182,13 +209,21 @@ class PlacoSession:
         print(f"[PlacoSession] adaptive-DLS  σ_thresh={_DLS_SIGMA_THRESH}  "
               f"λ_max={_DLS_LAMBDA_MAX}  jac_cols={self._jac_cols}")
 
-    # ── Wrist velocity cap (teleop smoothness) ────────────────────────────────
+    # ── Velocity caps (teleop smoothness) ─────────────────────────────────────
     def _apply_velocity_caps(self, robot) -> None:
-        """Override URDF wrist velocity limits.  No-op if cap <= 0."""
-        if self._wrist_vel_cap <= 0.0:
-            return
-        for name in self._wrist_joint_names:
-            robot.set_velocity_limit(name, self._wrist_vel_cap)
+        """Override URDF velocity limits for teleop smoothness.
+
+        Wrist (j5-7) → fixed rad/s cap (_wrist_vel_cap).
+        Arm   (j1-4) → per-iteration degree cap, converted to rad/s via dt.
+        Each is a no-op if its cap is <= 0 (keeps URDF defaults).
+        """
+        if self._wrist_vel_cap > 0.0:
+            for name in self._wrist_joint_names:
+                robot.set_velocity_limit(name, self._wrist_vel_cap)
+        if self._arm_vel_cap_deg > 0.0:
+            cap = float(np.radians(self._arm_vel_cap_deg) / self._dt)
+            for name in self._arm_joint_names:
+                robot.set_velocity_limit(name, cap)
 
     # ── Solve one step ────────────────────────────────────────────────────────
     def solve_step(
@@ -273,7 +308,10 @@ class PlacoSession:
         T_ee = None
         pos_err = float("inf")
         ori_err = 0.0 if no_rot else float("inf")
-        for _ in range(self._max_iter):
+        # Near a singularity the boosted λ shrinks each step → grant more iters.
+        max_iter_dyn = (self._max_iter if sigma_min >= _DLS_SIGMA_THRESH
+                        else self._max_iter * _SINGULAR_ITER_BOOST)
+        for _ in range(max_iter_dyn):
             solver.solve(True)
             robot.update_kinematics()
             iters_used += 1
@@ -329,3 +367,54 @@ class PlacoSession:
             "sigma_min":        sigma_min,
             "lambda_dls":       lambda_dls,
         }
+
+    # ── Forward kinematics helper ─────────────────────────────────────────────
+    def fk(self, joints: List[float]) -> Optional[List[float]]:
+        """
+        Compute FK from joint angles.
+
+        Returns [x, y, z, qx, qy, qz, qw] for the EE, or None on error.
+        Uses the cached RobotWrapper (rebuild=False) or builds a temp one.
+        Calling fk() before solve_step() is safe — solve_step() resets joint
+        state from its seed parameter on every call.
+        """
+        try:
+            placo = self._placo
+            robot = (self._robot if self._robot is not None
+                     else placo.RobotWrapper(self._urdf, placo.Flags.ignore_collisions))
+            for name, val in zip(self._joint_names, joints):
+                robot.set_joint(name, val)
+            robot.update_kinematics()
+            T   = robot.get_T_world_frame(self._ee_link)
+            xyz = T[:3, 3]
+            R   = T[:3, :3]
+            # Shepperd's numerically-stable R → quaternion (4-branch)
+            tr = R[0, 0] + R[1, 1] + R[2, 2]
+            if tr > 0:
+                s  = 0.5 / np.sqrt(tr + 1.0)
+                qw = 0.25 / s
+                qx = (R[2, 1] - R[1, 2]) * s
+                qy = (R[0, 2] - R[2, 0]) * s
+                qz = (R[1, 0] - R[0, 1]) * s
+            elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+                s  = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+                qw = (R[2, 1] - R[1, 2]) / s
+                qx = 0.25 * s
+                qy = (R[0, 1] + R[1, 0]) / s
+                qz = (R[0, 2] + R[2, 0]) / s
+            elif R[1, 1] > R[2, 2]:
+                s  = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+                qw = (R[0, 2] - R[2, 0]) / s
+                qx = (R[0, 1] + R[1, 0]) / s
+                qy = 0.25 * s
+                qz = (R[1, 2] + R[2, 1]) / s
+            else:
+                s  = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+                qw = (R[1, 0] - R[0, 1]) / s
+                qx = (R[0, 2] + R[2, 0]) / s
+                qy = (R[1, 2] + R[2, 1]) / s
+                qz = 0.25 * s
+            return [float(xyz[0]), float(xyz[1]), float(xyz[2]),
+                    float(qx), float(qy), float(qz), float(qw)]
+        except Exception:
+            return None
