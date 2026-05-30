@@ -281,8 +281,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   }
   
   // Initialize CSV logging variables
-  csv_initialized_ = false;
-  csv_sample_count_ = 0;
+  // Pre-allocate the debug ring buffer up-front so the control loop never allocates.
+  debug_ring_capacity_ = static_cast<size_t>(CONTROL_WRITE_RATE_HZ * DEBUG_RING_SECONDS);
+  debug_ring_.assign(debug_ring_capacity_, ArmDebugSample{});
+  debug_ring_idx_ = 0;
+  debug_ring_wrapped_ = false;
   leap_csv_initialized_ = false;
   leap_csv_sample_count_ = 0;
   
@@ -621,6 +624,78 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   return CallbackReturn::SUCCESS;
 }
 
+// Batch-dump the in-memory debug ring buffer to one CSV per arm. Called on deactivate
+// after the arm control thread is joined, so no locking is needed.
+void OpenArm_v10HW::flush_debug_ring_to_csv() {
+  using namespace std::chrono;
+  const size_t n = debug_ring_wrapped_ ? debug_ring_capacity_ : debug_ring_idx_;
+  if (n == 0 || debug_ring_capacity_ == 0) {
+    return;
+  }
+
+  std::string package_share_dir;
+  try {
+    package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
+  } catch (const std::exception&) {
+    package_share_dir = "/tmp";
+  }
+
+  auto now = system_clock::now();
+  auto time_t_now = system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  std::ostringstream date_ss;
+  date_ss << std::put_time(&tm_now, "%Y%m%d");
+  std::string arm_name = arm_prefix_.empty() ? "arm" : arm_prefix_;
+  if (!arm_name.empty() && arm_name.back() == '_') {
+    arm_name.pop_back();
+  }
+
+  std::filesystem::path dir_path =
+      std::filesystem::path(package_share_dir) / "debug_csvs" / date_ss.str();
+  try {
+    std::filesystem::create_directories(dir_path);
+  } catch (const std::exception& e) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
+                "Failed to create debug CSV directory '%s': %s", dir_path.c_str(), e.what());
+    return;
+  }
+
+  std::ostringstream fname;
+  fname << dir_path.string() << "/debug_" << arm_name << "_"
+        << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << ".csv";
+
+  std::ofstream csv(fname.str());
+  if (!csv.is_open()) {
+    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"), "Failed to open debug CSV: %s",
+                fname.str().c_str());
+    return;
+  }
+  csv << "timestamp,joint_id,pos_cmd,vel_cmd,tau_cmd,pos_state,vel_state,tau_state,"
+      << "pos_error,vel_error,gravity_comp,friction_comp,software_feedback,feedforward_tau,"
+      << "kp,kd\n";
+
+  // Oldest -> newest. When wrapped, the oldest sample sits at debug_ring_idx_.
+  const size_t start = debug_ring_wrapped_ ? debug_ring_idx_ : 0;
+  for (size_t k = 0; k < n; ++k) {
+    const ArmDebugSample& s = debug_ring_[(start + k) % debug_ring_capacity_];
+    for (size_t i = 0; i < ARM_DOF; ++i) {
+      csv << s.timestamp_ms << "," << i << ","
+          << s.pos_cmd[i] << "," << s.vel_cmd[i] << "," << s.tau_cmd[i] << ","
+          << s.pos_state[i] << "," << s.vel_state[i] << "," << s.tau_state[i] << ","
+          << (s.pos_cmd[i] - s.pos_state[i]) << "," << (s.vel_cmd[i] - s.vel_state[i]) << ","
+          << s.gravity_comp[i] << "," << s.friction_comp[i] << "," << 0.0 << ","
+          << s.feedforward_tau[i] << "," << kp_[i] << "," << kd_[i] << "\n";
+    }
+  }
+  csv.flush();
+  csv.close();
+  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
+              "Flushed %zu debug samples (%zu rows) to %s",
+              n, n * ARM_DOF, fname.str().c_str());
+}
+
 hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -680,11 +755,9 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   openarm_->recv_all();
   
   // Close debug CSVs if open
-  if (debug_csv_.is_open()) {
-    debug_csv_.flush();
-    debug_csv_.close();
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed arm debug CSV file on deactivate");
-  }
+  // Batch-dump the in-memory debug ring buffer to CSV (zero I/O happened in the loop).
+  // The arm control thread was already joined above, so this read needs no lock.
+  flush_debug_ring_to_csv();
   if (leap_debug_csv_.is_open()) {
     leap_debug_csv_.flush();
     leap_debug_csv_.close();
@@ -1170,7 +1243,7 @@ void OpenArm_v10HW::arm_control_loop() {
       tau_cmd = arm_tau_cmd_buffer_;
     }
     
-    // Copy latest states from decoupled state_read_loop @ 200Hz (thread-safe).
+    // Copy latest states from decoupled state_read_loop @ 500Hz (thread-safe).
     // state_read_loop applies LPF and updates these buffers independently.
     {
       std::lock_guard<std::mutex> lock(arm_state_mutex_);
@@ -1216,89 +1289,41 @@ void OpenArm_v10HW::arm_control_loop() {
       }
     }
     
-    // Debug logging: save data to CSV for analysis (one CSV per arm)
-    if (!csv_initialized_) {
-      // Get install directory path (workspace/install/openarm_hardware/share/openarm_hardware)
-      std::string package_share_dir;
-      try {
-        package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
-      } catch (const std::exception& e) {
-        package_share_dir = "/tmp";  // Fallback to /tmp if package not found
-      }
-      
-      // Create filename with arm prefix and timestamp
-      auto now = std::chrono::system_clock::now();
-      auto time_t_now = std::chrono::system_clock::to_time_t(now);
-      std::tm tm_now;
-      localtime_r(&time_t_now, &tm_now);
-      
-      std::ostringstream tmp_date;
-      tmp_date << std::put_time(&tm_now, "%Y%m%d");
-      std::string date_str = tmp_date.str();
+    // Build MIT commands with gravity/friction feed-forward, and snapshot this
+    // iteration into the in-memory debug ring buffer — no file I/O in the loop.
+    ArmDebugSample sample;
+    sample.timestamp_ms =
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 
-      std::string arm_name = arm_prefix_.empty() ? "arm" : arm_prefix_;
-      // Remove trailing underscore if present
-      if (!arm_name.empty() && arm_name.back() == '_') {
-        arm_name.pop_back();
-      }
-
-      // Build directory: <package_share_dir>/debug_csvs/YYYYMMDD
-      std::filesystem::path dir_path = std::filesystem::path(package_share_dir) / "debug_csvs" / date_str;
-      try {
-        std::filesystem::create_directories(dir_path);
-      } catch (const std::exception &e) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), "Failed to create debug CSV directory '%s': %s", dir_path.c_str(), e.what());
-      }
-
-      std::ostringstream oss;
-      oss << dir_path.string() << "/debug_" << arm_name << "_"
-          << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << ".csv";
-      std::string csv_filename = oss.str();
-      debug_csv_.open(csv_filename);
-      if (!debug_csv_.is_open()) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), "Failed to open debug CSV: %s", csv_filename.c_str());
-      } else {
-        debug_csv_ << "timestamp,joint_id,pos_cmd,vel_cmd,tau_cmd,pos_state,vel_state,tau_state,"
-          << "pos_error,vel_error,gravity_comp,friction_comp,software_feedback,feedforward_tau,"
-          << "kp,kd\n";
-      }
-      csv_initialized_ = true;
-      RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-          "Debug CSV created: %s", csv_filename.c_str());
-    }
-    
-    // Send arm commands with compensation
     std::vector<openarm::damiao_motor::MITParam> arm_params;
     for (size_t i = 0; i < ARM_DOF; ++i) {
-      // Software-layer feedforward with additional error-based correction
-      // This adds a software PD term on top of hardware PD for enhanced tracking
-      double pos_error = pos_cmd[i] - pos_state[i];
-      double vel_error = vel_cmd[i] - vel_state[i];
-      // double software_feedback = kp_[i] * pos_error *0.3 + kd_[i] * vel_error *0.3;
-      double software_feedback = 0;
-      // Combined feedforward: compensation + software feedback + user torque command
-      double feedforward_tau = tau_cmd[i] + gravity_comp[i] + friction_comp[i] + software_feedback;
-      
-      // MIT controller will add its own hardware PD on top of this
-      // Total control: hardware_PD + (gravity + friction + software_PD + tau_cmd)
-      
-      // Log data every 100 iterations (5Hz) to reduce file size
-      if (csv_sample_count_ % 100 == 0) {
-        auto timestamp = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-        if (debug_csv_.is_open()) {
-          debug_csv_ << timestamp << "," << i << ","
-            << pos_cmd[i] << "," << vel_cmd[i] << "," << tau_cmd[i] << ","
-            << pos_state[i] << "," << vel_state[i] << "," << tau_state[i] << ","
-            << pos_error << "," << vel_error << ","
-            << gravity_comp[i] << "," << friction_comp[i] << "," << software_feedback << ","
-            << feedforward_tau << "," << kp_[i] << "," << kd_[i] << "\n";
-        }
-      }
-      
+      double software_feedback = 0;  // software PD term (disabled); kept for clarity
+      double feedforward_tau =
+          tau_cmd[i] + gravity_comp[i] + friction_comp[i] + software_feedback;
+      // MIT controller adds its own hardware PD on top of this feed-forward.
       arm_params.push_back({kp_[i], kd_[i], pos_cmd[i], vel_cmd[i], feedforward_tau});
+
+      sample.pos_cmd[i]         = pos_cmd[i];
+      sample.vel_cmd[i]         = vel_cmd[i];
+      sample.tau_cmd[i]         = tau_cmd[i];
+      sample.pos_state[i]       = pos_state[i];
+      sample.vel_state[i]       = vel_state[i];
+      sample.tau_state[i]       = tau_state[i];
+      sample.gravity_comp[i]    = gravity_comp[i];
+      sample.friction_comp[i]   = friction_comp[i];
+      sample.feedforward_tau[i] = feedforward_tau;
     }
-    csv_sample_count_++;
+
     openarm_->get_arm().mit_control_all(arm_params);
+
+    // Record after the command is sent: a fixed-size struct copy, no allocation/I/O.
+    if (debug_ring_capacity_ > 0) {
+      debug_ring_[debug_ring_idx_] = sample;
+      if (++debug_ring_idx_ >= debug_ring_capacity_) {
+        debug_ring_idx_ = 0;
+        debug_ring_wrapped_ = true;
+      }
+    }
     
     // Send gripper command if enabled
     if (hand_) {
@@ -1449,7 +1474,7 @@ void OpenArm_v10HW::leap_control_loop() {
 }
 
 // Decoupled state read loop — reads both CAN arm and LEAP Hand serial, applies LPF.
-// Runs at CONTROL_READ_RATE_HZ (200Hz) independently of the 500Hz write loops.
+// Runs at CONTROL_READ_RATE_HZ (500Hz) independently of the 500Hz write loops.
 // This prevents RS-485 read latency from stalling CAN command sending.
 void OpenArm_v10HW::state_read_loop() {
   using namespace std::chrono;
@@ -1488,7 +1513,7 @@ void OpenArm_v10HW::state_read_loop() {
       }
     }
 
-    // Apply low-pass filter to arm position states (LPF cutoff=30Hz, sample=200Hz, alpha≈0.49)
+    // Apply low-pass filter to arm position states (LPF cutoff=100Hz, sample=500Hz, alpha≈0.56)
     arm_state_filter_.update(pos_state);
     const std::vector<double>& filtered_pos = arm_state_filter_.get();
 
