@@ -34,6 +34,7 @@ _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze
 _sys.path.insert(0, _os.path.join(_ROOT, "config"))            # arm_config
 
+import collections
 import csv
 import datetime
 import json
@@ -403,8 +404,29 @@ class PlacoOnlineProfiler(Node):
         self._msg_count      = 0
 
     def _init_telemetry(self, args):
-        """Create async CSV writer and records list."""
-        self._records: List[Dict] = []
+        """Create async CSV writer and records list.
+
+        _records is a bounded deque (keeps last _RECORDS_MAXLEN rows) so that
+        memory usage is O(1) for arbitrarily long runs.  All cumulative stats
+        (success, deadline, ik_ms, etc.) are maintained by O(1) running
+        accumulators instead of re-scanning the full list each time.
+        """
+        _RECORDS_MAXLEN = 6000   # ~2 min at 50 Hz; enough for the final plot
+        self._records: collections.deque = collections.deque(maxlen=_RECORDS_MAXLEN)
+
+        # O(1) running accumulators — updated per step in _write_step.
+        self._stat_n         = 0      # total step count
+        self._stat_ok        = 0      # success count
+        self._stat_miss      = 0      # deadline-miss count
+        self._stat_ik_sum    = 0.0    # sum of ik_ms
+        self._stat_loop_sum  = 0.0    # sum of loop_ms
+        self._stat_iter_sum  = 0.0    # sum of iterations
+        # Small ring buffer for median approximation (last 500 steps)
+        _RING = 500
+        self._ring_ik   = collections.deque(maxlen=_RING)
+        self._ring_loop = collections.deque(maxlen=_RING)
+        self._ring_iter = collections.deque(maxlen=_RING)
+
         mode  = "cached" if not args.rebuild else "rebuild"
         csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
         self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
@@ -1245,6 +1267,17 @@ class PlacoOnlineProfiler(Node):
         self._csv_writer.put(row)
         self._records.append(row)
 
+        # Update O(1) running accumulators
+        self._stat_n        += 1
+        self._stat_ok       += int(r["success"])
+        self._stat_miss     += pipeline["deadline_missed"]
+        self._stat_ik_sum   += ik_ms
+        self._stat_loop_sum += float(r.get("loop_ms", 0.0))
+        self._stat_iter_sum += int(r.get("iterations", 0))
+        self._ring_ik.append(ik_ms)
+        self._ring_loop.append(float(r.get("loop_ms", 0.0)))
+        self._ring_iter.append(int(r.get("iterations", 0)))
+
         kbd = self._kbd
         if step_count % 5 == 0 or kbd.verbose or self.args.verbose:
             tag = "✓" if r["success"] else "✗"
@@ -1305,29 +1338,34 @@ class PlacoOnlineProfiler(Node):
 
     # ── Stats ─────────────────────────────────────────────────────────────────
     def _print_partial_stats(self):
-        rows = self._records
-        if not rows:
+        """O(1) stats print using running accumulators + small ring-buffer median."""
+        n = self._stat_n
+        if n == 0:
             return
-        n     = len(rows)
-        ik    = [r["ik_ms"] for r in rows]
-        loop  = [r["loop_ms"] for r in rows]
-        iters = [r["iterations"] for r in rows]
-        ok    = sum(r["success"] for r in rows)
-        miss  = sum(r["deadline_missed"] for r in rows)
+        ok   = self._stat_ok
+        miss = self._stat_miss
+        # Median from last-500-step ring buffer (O(500) = O(1) effectively)
+        ik_med   = float(np.median(list(self._ring_ik)))   if self._ring_ik   else 0.0
+        loop_med = float(np.median(list(self._ring_loop))) if self._ring_loop else 0.0
+        iter_med = float(np.median(list(self._ring_iter))) if self._ring_iter else 0.0
         print(
             f"\n  ─── [{n}] sr={ok/n*100:.0f}%  "
-            f"ik_med={float(np.median(ik)):.2f}ms  "
-            f"loop_med={float(np.median(loop)):.2f}ms  "
-            f"iters_med={float(np.median(iters)):.1f}  "
+            f"ik_med={ik_med:.2f}ms  "
+            f"loop_med={loop_med:.2f}ms  "
+            f"iters_med={iter_med:.1f}  "
             f"ddl={miss}/{n}={miss/n*100:.0f}%"
         )
 
     def print_final_stats(self):
-        rows = self._records
-        if not rows:
+        rows = list(self._records)   # snapshot of bounded deque (last 6000 steps)
+        # Use running accumulators for total n / ok / miss (covers full run, not
+        # just the bounded deque window).
+        n_total = self._stat_n
+        if n_total == 0:
             return
         print(f"\n\n{'═'*65}")
-        print(f"  Final stats  arm={self.args.arm}  n={len(rows)}")
+        print(f"  Final stats  arm={self.args.arm}  n={n_total}"
+              + (f"  (plot/metrics from last {len(rows)} steps)" if len(rows) < n_total else ""))
         print(f"{'═'*65}")
         for key, unit in [
             ("ik_ms",        "ms — total"),
@@ -1348,11 +1386,10 @@ class PlacoOnlineProfiler(Node):
                 f"p95={np.percentile(vals,95):7.3f}  "
                 f"max={max(vals):7.3f}  [{unit}]"
             )
-        n    = len(rows)
-        miss = sum(r["deadline_missed"] for r in rows)
-        ok   = sum(r["success"] for r in rows)
-        print(f"\n  success_rate : {ok}/{n} = {ok/n*100:.1f}%")
-        print(f"  deadline_miss: {miss}/{n} = {miss/n*100:.1f}%  "
+        miss = self._stat_miss
+        ok   = self._stat_ok
+        print(f"\n  success_rate : {ok}/{n_total} = {ok/n_total*100:.1f}%")
+        print(f"  deadline_miss: {miss}/{n_total} = {miss/n_total*100:.1f}%  "
               f"(budget={self._deadline_ms:.1f}ms)")
         print(f"\n  CSV: {self._csv_path}")
         try:
@@ -1365,7 +1402,7 @@ class PlacoOnlineProfiler(Node):
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        rows = self._records
+        rows = list(self._records)   # snapshot of bounded deque
         if not rows:
             return
         plot_path = self.args.plot or _png_for(self._csv_path)

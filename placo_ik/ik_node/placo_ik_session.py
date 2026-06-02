@@ -209,6 +209,20 @@ class PlacoSession:
         print(f"[PlacoSession] adaptive-DLS  σ_thresh={_DLS_SIGMA_THRESH}  "
               f"λ_max={_DLS_LAMBDA_MAX}  jac_cols={self._jac_cols}")
 
+        # Throttled mem sampling: read /proc/self/status only every N steps
+        # to avoid 50 Hz syscall overhead during long runs.
+        self._mem_sample_every = 50   # refresh every 50 solve_step calls
+        self._mem_step_count   = 0
+        self._mem_cached_kb    = 0
+
+    # ── Throttled memory sampler ───────────────────────────────────────────────
+    def _throttled_mem_kb(self) -> int:
+        """Return RSS in KB; re-reads /proc only every _mem_sample_every calls."""
+        self._mem_step_count += 1
+        if self._mem_step_count % self._mem_sample_every == 1:
+            self._mem_cached_kb = _mem_rss_kb()
+        return self._mem_cached_kb
+
     # ── Velocity caps (teleop smoothness) ─────────────────────────────────────
     def _apply_velocity_caps(self, robot) -> None:
         """Override URDF velocity limits for teleop smoothness.
@@ -356,7 +370,7 @@ class PlacoSession:
             "wall_ms":          (time.perf_counter() - t_wall0) * 1000.0,
             "iterations":       iters_used,
             "iter_ms":          loop_ms / iters_used if iters_used else 0.0,
-            "mem_kb":           _mem_rss_kb(),
+            "mem_kb":           self._throttled_mem_kb(),
             "pos_err_mm":       pos_err * 1000.0,
             "ori_err_rad":      ori_err,
             "ori_err_deg":      float(np.degrees(ori_err)),
