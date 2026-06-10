@@ -198,13 +198,18 @@ class CommandReplayerAction(Node):
         """Send trajectory command via action."""
         goal_msg = FollowJointTrajectory.Goal()
         
-        # Set joint names based on controller
-        if controller == 'left':
+        # Set joint names based on controller.
+        # Recordings from record_replay_commands.py use 'left_arm'/'right_arm';
+        # older recordings used 'left'/'right'. Accept both.
+        if controller in ('left', 'left_arm'):
             goal_msg.trajectory.joint_names = self.left_arm_joints
             action_client = self.left_arm_client
-        else:  # right
+        elif controller in ('right', 'right_arm'):
             goal_msg.trajectory.joint_names = self.right_arm_joints
             action_client = self.right_arm_client
+        else:
+            self.get_logger().warn(f'Unknown controller "{controller}", skipping')
+            return
         
         # Create trajectory point
         point = JointTrajectoryPoint()

@@ -190,10 +190,18 @@ class CommandReplayer(Node):
             msg = Float64MultiArray()
             msg.data = record['positions']
             
-            if record['controller'] == 'left':
+            # Recordings from record_replay_commands.py use 'left_arm'/'right_arm';
+            # older recordings used 'left'/'right'. Accept both.
+            if record['controller'] in ('left', 'left_arm'):
                 self.left_pub.publish(msg)
-            else:
+            elif record['controller'] in ('right', 'right_arm'):
                 self.right_pub.publish(msg)
+            else:
+                self.get_logger().warn(
+                    f'Unknown controller "{record["controller"]}", skipping'
+                )
+                self.current_index += 1
+                continue
             
             self.get_logger().info(
                 f'[{record["timestamp"]:.3f}s] {record["controller"]}: '
