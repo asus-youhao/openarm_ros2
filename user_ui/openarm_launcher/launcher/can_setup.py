@@ -24,6 +24,27 @@ STEPS_OPENARM: list[tuple[str, list[str]]] = [
     ("can3 up", ["link", "set", "can3", "up"]),
 ]
 
+# Bring up every adapter in one shot — mirrors `install_can_udev.sh up`.
+# can2/can3 are taken down first so re-applying the CAN-FD config can't fail
+# on an already-up interface (the standalone STEPS_OPENARM assumes they're
+# down; this combined recipe makes no such assumption).
+#
+# Steps may carry an optional third element `ignore_fail=True`; the "down"
+# steps use it so a missing/already-down interface doesn't abort the recipe
+# (matching the script's `ip link set canN down 2>/dev/null || true`).
+STEPS_ALL: list[tuple] = [
+    ("can0 up", ["link", "set", "can0", "up", "type", "can", "bitrate", "1000000"]),
+    ("can1 up", ["link", "set", "can1", "up", "type", "can", "bitrate", "1000000"]),
+    ("can2 down", ["link", "set", "can2", "down"], True),
+    ("can3 down", ["link", "set", "can3", "down"], True),
+    ("can2 cfg", ["link", "set", "can2", "type", "can",
+                   "bitrate", "1000000", "dbitrate", "5000000", "fd", "on"]),
+    ("can3 cfg", ["link", "set", "can3", "type", "can",
+                   "bitrate", "1000000", "dbitrate", "5000000", "fd", "on"]),
+    ("can2 up", ["link", "set", "can2", "up"]),
+    ("can3 up", ["link", "set", "can3", "up"]),
+]
+
 
 class CanBringUp(QObject):
     """Sequentially run a recipe of `sudo -S ip link ...` steps.
@@ -71,8 +92,15 @@ class CanBringUp(QObject):
         if stripped:
             self.last_error = stripped
 
+    @staticmethod
+    def _unpack(step: tuple) -> tuple[str, list[str], bool]:
+        # (label, args) or (label, args, ignore_fail)
+        label, args = step[0], step[1]
+        ignore_fail = bool(step[2]) if len(step) > 2 else False
+        return label, args, ignore_fail
+
     def _run_current(self) -> None:
-        label, args = self._steps[self._idx]
+        label, args, _ = self._unpack(self._steps[self._idx])
         self.progress.emit(label)
         self.line.emit(f"$ sudo {IP} {' '.join(args)}")
         self.last_error = ""
@@ -83,8 +111,10 @@ class CanBringUp(QObject):
         )
 
     def _step_done(self, code: int) -> None:
-        label, _ = self._steps[self._idx]
-        if code != 0:
+        label, _, ignore_fail = self._unpack(self._steps[self._idx])
+        if code != 0 and ignore_fail:
+            self.line.emit(f"[skip] step '{label}' exited {code} (ignored)")
+        elif code != 0:
             self._ok = False
             self._password = ""  # clear immediately on failure
             self.line.emit(f"[error] step '{label}' exited {code}")

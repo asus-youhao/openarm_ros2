@@ -13,11 +13,21 @@ from PySide6.QtWidgets import (
 )
 
 from .can_detect import CAN_INTERFACES, CanDetector
-from .can_setup import CanBringUp, STEPS_O6_LEFT, STEPS_O6_RIGHT, STEPS_OPENARM
+from .can_install import CanRuleInstall
+from .can_setup import (
+    CanBringUp,
+    STEPS_ALL,
+    STEPS_O6_LEFT,
+    STEPS_O6_RIGHT,
+    STEPS_OPENARM,
+)
 from .ros2_launcher import CONTROLLERS, Ros2Launcher
 
 
-_BRINGUP_SPECS: list[tuple[str, list[tuple[str, list[str]]]]] = [
+_BRINGUP_ALL_SPEC: tuple[str, list[tuple]] = (
+    "Bring up ALL CAN (can0-3)", STEPS_ALL,
+)
+_BRINGUP_SPECS: list[tuple[str, list[tuple]]] = [
     ("Bring up can0 (O6 right)", STEPS_O6_RIGHT),
     ("Bring up can1 (O6 left)", STEPS_O6_LEFT),
     ("Bring up can2+can3 (OpenArm CAN-FD)", STEPS_OPENARM),
@@ -109,8 +119,21 @@ class LauncherPanel(QGroupBox):
         pw_row.addStretch()
         layout.addLayout(pw_row)
 
+        # ---- USB CAN udev rule install (auto-detect & name can0..can3) ----
+        self._install = CanRuleInstall(self)
+        self._install.line.connect(self.log_line)
+        self._install_btn = QPushButton("Detect & Install USB CAN rules")
+        self._install_btn.setToolTip(
+            "Auto-detect plugged gs_usb / PCAN devices and (re)install the "
+            "udev naming rules for can0..can3. Requires sudo."
+        )
+        self._install_btn.clicked.connect(self._on_install_clicked)
+        self._install.finished.connect(self._on_install_done)
+        layout.addWidget(self._install_btn)
+
+        # ---- bring-up buttons (combined "ALL" first, then per-adapter) ----
         self._bringups: list[tuple[QPushButton, CanBringUp, str]] = []
-        for label, steps in _BRINGUP_SPECS:
+        for label, steps in [_BRINGUP_ALL_SPEC, *_BRINGUP_SPECS]:
             btn = QPushButton(label)
             bringup = CanBringUp(steps, self)
             bringup.line.connect(self.log_line)
@@ -123,6 +146,13 @@ class LauncherPanel(QGroupBox):
             )
             layout.addWidget(btn)
             self._bringups.append((btn, bringup, label))
+        # The combined "ALL" recipe is the first entry; keep a handle so the
+        # startup auto-bring-up can drive it.
+        self._all_btn, self._all_bringup, self._all_label = self._bringups[0]
+
+        # ---- auto bring-up on startup ----
+        self._auto_chk = QCheckBox("Auto bring-up CAN on startup")
+        layout.addWidget(self._auto_chk)
 
         layout.addSpacing(8)
         layout.addWidget(QLabel("Launch:"))
@@ -158,7 +188,7 @@ class LauncherPanel(QGroupBox):
         # can't fire on a half-destroyed CanDetector during teardown.
         self._initial_scan = QTimer(self)
         self._initial_scan.setSingleShot(True)
-        self._initial_scan.timeout.connect(self._detector.emit_current_state)
+        self._initial_scan.timeout.connect(self._on_initial_scan)
         self._initial_scan.start(0)
 
         self._launcher = Ros2Launcher(self)
@@ -175,9 +205,15 @@ class LauncherPanel(QGroupBox):
         self._fake_chk.setChecked(
             self._settings.value("launcher/use_fake_hardware", False, type=bool)
         )
+        self._auto_chk.setChecked(
+            self._settings.value("launcher/auto_can_bringup", True, type=bool)
+        )
         self._controller_combo.currentTextChanged.connect(self._on_controller_changed)
         self._fake_chk.toggled.connect(
             lambda v: self._settings.setValue("launcher/use_fake_hardware", v)
+        )
+        self._auto_chk.toggled.connect(
+            lambda v: self._settings.setValue("launcher/auto_can_bringup", v)
         )
 
     # ------------------------------------------------------------------ #
@@ -213,22 +249,84 @@ class LauncherPanel(QGroupBox):
         self._pw_lbl.setText("\u25cf sudo password: <i>not set</i>")
         self._pw_lbl.setStyleSheet("color: #888;")
 
+    def _ensure_password(self) -> bool:
+        """Return True if a sudo password is available, prompting once if not.
+
+        The password is cached for the whole session. Returns False if the
+        user cancels the prompt.
+        """
+        if self._sudo_password:
+            return True
+        pw, ok = QInputDialog.getText(
+            self,
+            "sudo password",
+            "Enter sudo password (will be cached for this session):",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return False
+        self._sudo_password = pw
+        self._pw_lbl.setText("\u25cf sudo password: <b>set</b>")
+        self._pw_lbl.setStyleSheet("color: #33cc66;")
+        return True
+
+    # ------------------------------------------------------------------ #
+    # USB CAN rule install
+    # ------------------------------------------------------------------ #
+
+    def _on_install_clicked(self) -> None:
+        if self._install.is_running():
+            return
+        if not self._ensure_password():
+            return
+        self._install_btn.setEnabled(False)
+        self._install_btn.setText("Detect & Install USB CAN rules ...")
+        self.log_line.emit("--- install USB CAN udev rules start ---")
+        self._install.start(self._sudo_password)
+
+    def _on_install_done(self, ok: bool) -> None:
+        self._install_btn.setEnabled(True)
+        self._install_btn.setText("Detect & Install USB CAN rules")
+        if ok:
+            self.log_line.emit("--- install USB CAN udev rules done ---")
+            # Newly named interfaces may have appeared; refresh the LEDs.
+            self._detector.emit_current_state()
+        else:
+            hint = self._install.last_error
+            if "incorrect password" in hint.lower() or "wrong password" in hint.lower():
+                detail = "Wrong sudo password."
+            elif hint:
+                detail = hint
+            else:
+                detail = "check sudo password and user sudo rights."
+            self.log_line.emit(f"--- install USB CAN udev rules FAILED: {detail} ---")
+
+    # ------------------------------------------------------------------ #
+    # Startup
+    # ------------------------------------------------------------------ #
+
+    def _on_initial_scan(self) -> None:
+        """Emit current CAN state, then auto bring-up if enabled."""
+        self._detector.emit_current_state()
+        if self._auto_chk.isChecked():
+            self._auto_bringup()
+
+    def _auto_bringup(self) -> None:
+        """Run the combined bring-up automatically (prompts once for sudo)."""
+        if self._all_bringup.is_running():
+            return
+        self.log_line.emit("--- auto bring-up CAN on startup ---")
+        if not self._ensure_password():
+            self.log_line.emit("--- auto bring-up skipped (no sudo password) ---")
+            return
+        self._on_bringup_clicked(self._all_btn, self._all_bringup, self._all_label)
+
     def _on_bringup_clicked(self, btn: QPushButton, bringup: CanBringUp, label: str) -> None:
         if bringup.is_running():
             return
         # Use cached password; prompt once if not yet set.
-        if not self._sudo_password:
-            pw, ok = QInputDialog.getText(
-                self,
-                "sudo password",
-                "Enter sudo password (will be cached for this session):",
-                QLineEdit.Password,
-            )
-            if not ok:
-                return
-            self._sudo_password = pw
-            self._pw_lbl.setText("\u25cf sudo password: <b>set</b>")
-            self._pw_lbl.setStyleSheet("color: #33cc66;")
+        if not self._ensure_password():
+            return
         btn.setEnabled(False)
         btn.setText(f"{label} ...")
         self.log_line.emit(f"--- {label} start ---")
