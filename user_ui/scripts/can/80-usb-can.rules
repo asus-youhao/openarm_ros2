@@ -1,0 +1,29 @@
+# ============================================================
+#  USB CAN device naming rules for x86 laptop
+#  (Same naming scheme as NVIDIA Thor 192.168.1.139)
+#
+#  install:  sudo cp 80-usb-can.rules /etc/udev/rules.d/
+#            sudo udevadm control --reload && sudo udevadm trigger
+#
+#  NOTE: this is the template. Prefer running:
+#            ./install_can_udev.sh install
+#        which auto-detects PCAN USB port paths and writes the
+#        final rules file directly to /etc/udev/rules.d/.
+# ============================================================
+
+# --- gs_usb: pin by USB serial (same physical device as Thor) ---
+# gs_usb #1 -> can0  (Right O6 Hand)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0026003E5641571920373632", NAME="can0"
+
+# gs_usb #2 -> can1  (Left O6 Hand)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0035002A5742570C20353230", NAME="can1"
+
+# --- PCAN-USB FD: pin by USB port path ---
+# NOTE: laptop USB port path is likely different from Thor's (1-4.1.1 / 1-4.1.2).
+#       Run './install_can_udev.sh discover' first, OR just use
+#       './install_can_udev.sh install' to auto-detect and generate the rules.
+# PCAN #1 -> can2  (Right Arm CAN-FD)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_1__", NAME="can2"
+
+# PCAN #2 -> can3  (Left Arm CAN-FD)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_2__", NAME="can3"

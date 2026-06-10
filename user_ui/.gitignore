@@ -1,0 +1,15 @@
+# Runtime data (CSVs, images) — but keep config presets
+data/
+!data/presets/
+!data/presets/**
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
