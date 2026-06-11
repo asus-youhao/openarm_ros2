@@ -2,6 +2,14 @@
 #  USB CAN device naming rules for x86 laptop
 #  (Same naming scheme as NVIDIA Thor 192.168.1.139)
 #
+#  Two-phase naming to avoid the shared-canN rename race:
+#    Phase 1 (here): pin each device to a COLLISION-FREE interim name
+#      (o6r/o6l/armr/arml) that is NOT in the kernel's can%d pool, so the
+#      rename can never clash with another not-yet-renamed CAN device.
+#      Only a single can-settle.service is pulled in (not per-interface).
+#    Phase 2: can-settle.service renames interim -> can0..can3 and brings
+#      them up (see: install_can_udev.sh settle).
+#
 #  install:  sudo cp 80-usb-can.rules /etc/udev/rules.d/
 #            sudo udevadm control --reload && sudo udevadm trigger
 #
@@ -12,18 +20,18 @@
 # ============================================================
 
 # --- gs_usb: pin by USB serial (same physical device as Thor) ---
-# gs_usb #1 -> can0  (Right O6 Hand)
-SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0026003E5641571920373632", NAME="can0"
+# gs_usb #1 -> o6r  (Right O6 Hand, settles to can0)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0026003E5641571920373632", NAME="o6r", TAG+="systemd", ENV{SYSTEMD_WANTS}="can-settle.service"
 
-# gs_usb #2 -> can1  (Left O6 Hand)
-SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0035002A5742570C20353230", NAME="can1"
+# gs_usb #2 -> o6l  (Left O6 Hand, settles to can1)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="gs_usb", ATTRS{serial}=="0035002A5742570C20353230", NAME="o6l", TAG+="systemd", ENV{SYSTEMD_WANTS}="can-settle.service"
 
 # --- PCAN-USB FD: pin by USB port path ---
 # NOTE: laptop USB port path is likely different from Thor's (1-4.1.1 / 1-4.1.2).
 #       Run './install_can_udev.sh discover' first, OR just use
 #       './install_can_udev.sh install' to auto-detect and generate the rules.
-# PCAN #1 -> can2  (Right Arm CAN-FD)
-SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_1__", NAME="can2"
+# PCAN #1 -> armr  (Right Arm CAN-FD, settles to can2)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_1__", NAME="armr", TAG+="systemd", ENV{SYSTEMD_WANTS}="can-settle.service"
 
-# PCAN #2 -> can3  (Left Arm CAN-FD)
-SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_2__", NAME="can3"
+# PCAN #2 -> arml  (Left Arm CAN-FD, settles to can3)
+SUBSYSTEM=="net", ACTION=="add|move", DRIVERS=="pcan", KERNELS=="__PCAN_PORT_2__", NAME="arml", TAG+="systemd", ENV{SYSTEMD_WANTS}="can-settle.service"

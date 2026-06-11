@@ -17,10 +17,12 @@ class CanRuleInstall(QObject):
     """Run `install_can_udev.sh install` once, as root, with a cached password.
 
     The script auto-detects plugged gs_usb / PCAN devices, generates the
-    udev naming rules (can0..can3) and installs them to
-    /etc/udev/rules.d/, then reloads + triggers udev. We invoke the whole
-    script under a single `sudo -S` so its internal SUDO() helper sees
-    EUID==0 and runs each privileged step directly (no nested sudo).
+    two-phase udev naming rules (interim names -> can0..can3) and installs
+    them to /etc/udev/rules.d/ plus the can-settle.service unit, then
+    reloads udev and runs the settle sweep (`install up`) to rename and
+    bring the interfaces up immediately. We invoke the whole script under a
+    single `sudo -S` so its internal SUDO() helper sees EUID==0 and runs
+    each privileged step directly (no nested sudo).
 
     The sudo password is written to stdin (-S) so no NOPASSWD sudoers entry
     or terminal interaction is needed.
@@ -50,11 +52,13 @@ class CanRuleInstall(QObject):
             return
         self._running = True
         self.last_error = ""
-        self.line.emit(f"$ sudo bash {SCRIPT_PATH} install")
+        self.line.emit(f"$ sudo bash {SCRIPT_PATH} install up")
+        # `install up`: write rules + can-settle.service, then settle now
+        # (rename interim -> canN + bring up).
         # -S: read password from stdin; -p "": suppress the prompt line.
         self._proc.start(
             "sudo",
-            ["-S", "-p", "", "bash", str(SCRIPT_PATH), "install"],
+            ["-S", "-p", "", "bash", str(SCRIPT_PATH), "install", "up"],
             stdin_data=(password + "\n").encode(),
         )
 
