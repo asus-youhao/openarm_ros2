@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>placo_ik 安裝流程與依賴說明</title>
+<style>
+  :root{
+    --bg:#f6f8fa; --card:#ffffff; --ink:#1f2328; --muted:#656d76;
+    --line:#d0d7de; --accent:#0969da; --accent2:#1a7f37; --warn:#9a6700;
+    --warnbg:#fff8c5; --code:#f6f8fa; --pill:#ddf4ff; --pillink:#0a3069;
+    --apt:#e7f5ff; --aptink:#0b5cad; --pip:#e9f7ee; --pipink:#136c34;
+    --placo:#fdeef4; --placoink:#9b1d63;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans CJK TC","Microsoft JhengHei",sans-serif;
+    line-height:1.65;font-size:15px}
+  .wrap{max-width:980px;margin:0 auto;padding:32px 22px 80px}
+  header.hero{background:linear-gradient(135deg,#0969da,#1a7f37);color:#fff;
+    border-radius:16px;padding:30px 32px;margin-bottom:28px;box-shadow:0 6px 24px rgba(9,105,218,.18)}
+  header.hero h1{margin:0 0 6px;font-size:26px}
+  header.hero p{margin:0;opacity:.92;font-size:15px}
+  .badges{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+  .badge{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);
+    border-radius:999px;padding:4px 12px;font-size:13px;backdrop-filter:blur(4px)}
+  h2{font-size:20px;margin:38px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--line);
+    display:flex;align-items:center;gap:10px}
+  h2 .ic{font-size:22px}
+  h3{font-size:16px;margin:24px 0 10px}
+  p{margin:10px 0}
+  code{background:var(--code);border:1px solid var(--line);border-radius:5px;
+    padding:1.5px 6px;font-family:"SF Mono",Menlo,Consolas,monospace;font-size:13px}
+  pre{background:#0d1117;color:#e6edf3;border-radius:10px;padding:16px 18px;overflow-x:auto;
+    font-family:"SF Mono",Menlo,Consolas,monospace;font-size:13px;line-height:1.55;margin:12px 0}
+  pre .c{color:#8b949e}
+  pre .g{color:#7ee787}
+  pre .b{color:#79c0ff}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .tag{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600}
+  .t-rec{background:var(--accent2);color:#fff}
+  .t-alt{background:#eaeef2;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:#f0f3f6;font-weight:600}
+  td code{background:#eef1f4}
+  .note{border-left:4px solid var(--accent);background:#eef6ff;border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:14px 0}
+  .warn{border-left:4px solid var(--warn);background:var(--warnbg);border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:14px 0}
+  .ok{border-left:4px solid var(--accent2);background:#eafbf0;border-radius:0 8px 8px 0;
+    padding:12px 16px;margin:14px 0}
+  .layer{display:flex;align-items:center;gap:14px;border-radius:10px;padding:12px 16px;margin:9px 0;border:1px solid var(--line)}
+  .layer .ttl{font-weight:700;min-width:150px}
+  .layer .desc{color:var(--muted);font-size:13.5px}
+  .l-apt{background:var(--apt)} .l-apt .ttl{color:var(--aptink)}
+  .l-pip{background:var(--pip)} .l-pip .ttl{color:var(--pipink)}
+  .l-placo{background:var(--placo)} .l-placo .ttl{color:var(--placoink)}
+  .pill{display:inline-block;background:var(--pill);color:var(--pillink);border-radius:6px;
+    padding:2px 8px;margin:3px 4px 3px 0;font-size:12.5px;font-family:"SF Mono",Menlo,monospace}
+  .filelist .pill{background:#eef1f4;color:#24292f}
+  ul{margin:8px 0 8px 4px;padding-left:22px}
+  li{margin:5px 0}
+  .svgbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0;overflow-x:auto}
+  .kbd{font-family:"SF Mono",Menlo,monospace;background:#eef1f4;border:1px solid var(--line);
+    border-bottom-width:2px;border-radius:5px;padding:1px 7px;font-size:12.5px}
+  footer{margin-top:40px;color:var(--muted);font-size:13px;text-align:center;border-top:1px solid var(--line);padding-top:18px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>🦾 placo_ik 安裝流程與依賴說明</h1>
+  <p>把 <code>placo_ik_online_profiler_ws_mesh.py</code> 打包到其他 x86_64 PC（ROS&nbsp;2 Humble / Python&nbsp;3.10）</p>
+  <div class="badges">
+    <span class="badge">🐧 Ubuntu 22.04</span>
+    <span class="badge">🤖 ROS 2 Humble</span>
+    <span class="badge">🐍 Python 3.10</span>
+    <span class="badge">📦 placo 0.9.20</span>
+    <span class="badge">🔢 numpy 2.2.x</span>
+  </div>
+</header>
+
+<p>本文件說明兩種安裝路徑、實際會裝進哪些依賴，以及打包到別台機器時必須注意的版本約束與 ROS 通訊設定。所有檔案都在 <code>placo_ik/deploy/</code> 目錄。</p>
+
+<!-- section -->
+<h2><span class="ic">🧭</span>兩種安裝路徑</h2>
+<div class="grid2">
+  <div class="card">
+    <span class="tag t-rec">推薦</span>
+    <h3 style="margin-top:10px">🐳 路徑 A：Docker</h3>
+    <p style="color:var(--muted);font-size:14px">依賴全部烤進 image，<b>裝一次、之後秒進</b>，環境完全隔離、可重現。已內建跟本機 ROS 2 通訊所需設定。</p>
+    <pre><span class="c"># 第一次會 build image（約 1–2 分鐘）</span>
+cd placo_ik/deploy
+./shell.sh</pre>
+  </div>
+  <div class="card">
+    <span class="tag t-alt">替代</span>
+    <h3 style="margin-top:10px">⚙️ 路徑 B：直接裝在本機</h3>
+    <p style="color:var(--muted);font-size:14px">適合該機已有 ROS 2 Humble、想把依賴直接裝進系統 Python 的情況。</p>
+    <pre>cd placo_ik/deploy
+./install_deps.sh   <span class="c"># apt + pip</span>
+./verify_deps.sh    <span class="c"># 煙霧測試</span></pre>
+  </div>
+</div>
+
+<!-- section -->
+<h2><span class="ic">🔄</span>安裝流程</h2>
+<div class="svgbox">
+<svg viewBox="0 0 900 230" width="100%" height="230" role="img" aria-label="安裝流程圖">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+    <style>
+      .n{rx:12;ry:12;stroke-width:1.5}
+      .nt{font:600 14px -apple-system,"Noto Sans CJK TC",sans-serif;fill:#1f2328}
+      .ns{font:12px -apple-system,"Noto Sans CJK TC",sans-serif;fill:#656d76}
+      .ed{stroke:#57606a;stroke-width:2;fill:none;marker-end:url(#arr)}
+    </style>
+  </defs>
+  <!-- node 1 -->
+  <rect class="n" x="20"  y="70" width="170" height="90" fill="#e7f5ff" stroke="#0b5cad"/>
+  <text class="nt" x="105" y="100" text-anchor="middle">1 · apt</text>
+  <text class="ns" x="105" y="122" text-anchor="middle">ROS 2 訊息 / tf</text>
+  <text class="ns" x="105" y="140" text-anchor="middle">+ python3-pip</text>
+  <!-- node 2 -->
+  <rect class="n" x="240" y="70" width="170" height="90" fill="#e9f7ee" stroke="#136c34"/>
+  <text class="nt" x="325" y="100" text-anchor="middle">2 · pip upgrade</text>
+  <text class="ns" x="325" y="122" text-anchor="middle">新版 resolver</text>
+  <text class="ns" x="325" y="140" text-anchor="middle">才抓得到 wheel</text>
+  <!-- node 3 -->
+  <rect class="n" x="460" y="70" width="190" height="90" fill="#fdeef4" stroke="#9b1d63"/>
+  <text class="nt" x="555" y="100" text-anchor="middle">3 · pip install</text>
+  <text class="ns" x="555" y="122" text-anchor="middle">placo + cmeel 子樹</text>
+  <text class="ns" x="555" y="140" text-anchor="middle">numpy / scipy / mpl</text>
+  <!-- node 4 -->
+  <rect class="n" x="700" y="70" width="180" height="90" fill="#eafbf0" stroke="#1a7f37"/>
+  <text class="nt" x="790" y="100" text-anchor="middle">4 · verify</text>
+  <text class="ns" x="790" y="122" text-anchor="middle">import 全通過</text>
+  <text class="ns" x="790" y="140" text-anchor="middle">+ 跑 --help</text>
+  <!-- edges -->
+  <line class="ed" x1="190" y1="115" x2="238" y2="115"/>
+  <line class="ed" x1="410" y1="115" x2="458" y2="115"/>
+  <line class="ed" x1="650" y1="115" x2="698" y2="115"/>
+  <text class="ns" x="450" y="35" text-anchor="middle" style="font-weight:600;fill:#1f2328">install_deps.sh　／　Dockerfile（同一套邏輯）</text>
+  <line x1="20" y1="50" x2="650" y2="50" stroke="#d0d7de" stroke-dasharray="4 4"/>
+  <text class="ns" x="790" y="35" text-anchor="middle" style="font-weight:600;fill:#1a7f37">verify_deps.sh</text>
+</svg>
+</div>
+<p style="color:var(--muted);font-size:14px">路徑 A（Docker）在 <code>build</code> 時跑步驟 1–3，<code>shell.sh</code> 進場即用；路徑 B 用 <code>install_deps.sh</code> 跑 1–3、<code>verify_deps.sh</code> 跑 4。</p>
+
+<!-- section -->
+<h2><span class="ic">📦</span>會安裝哪些依賴</h2>
+<p>依賴分三層，由下而上堆疊：</p>
+
+<div class="layer l-apt">
+  <span style="font-size:26px">🟦</span>
+  <span class="ttl">A 層 · APT（系統）</span>
+  <span class="desc">ROS 2 Humble 的訊息型別與 tf2 Python binding。<code>rclpy</code> 雖隨 ros-base，仍顯式列出以防最小映像缺漏。</span>
+</div>
+<div style="margin:0 0 4px 8px">
+  <span class="pill">python3-pip</span>
+  <span class="pill">ros-humble-rclpy</span>
+  <span class="pill">ros-humble-geometry-msgs</span>
+  <span class="pill">ros-humble-sensor-msgs</span>
+  <span class="pill">ros-humble-std-msgs</span>
+  <span class="pill">ros-humble-trajectory-msgs</span>
+  <span class="pill">ros-humble-tf2-ros-py</span>
+</div>
+
+<div class="layer l-pip" style="margin-top:18px">
+  <span style="font-size:26px">🟩</span>
+  <span class="ttl">B 層 · PIP（科學運算）</span>
+  <span class="desc">腳本直接 import 的數值 / 繪圖 / 設定檔套件。</span>
+</div>
+<div style="margin:0 0 4px 8px">
+  <span class="pill">numpy &gt;=2.2,&lt;2.3</span>
+  <span class="pill">scipy</span>
+  <span class="pill">matplotlib</span>
+  <span class="pill">PyYAML</span>
+</div>
+
+<div class="layer l-placo" style="margin-top:18px">
+  <span style="font-size:26px">🟪</span>
+  <span class="ttl">C 層 · placo + cmeel 子樹</span>
+  <span class="desc">IK 求解核心。皆為預編譯 binary wheel，<b>整組鎖版本</b>（原因見下方「關鍵約束」）。</span>
+</div>
+<div style="margin:0 0 4px 8px">
+  <span class="pill">placo==0.9.20</span>
+  <span class="pill">pin==3.8.0</span>
+  <span class="pill">libpinocchio==3.8.0</span>
+  <span class="pill">coal==3.0.2</span>
+  <span class="pill">libcoal==3.0.2</span>
+  <span class="pill">eigenpy==3.12.0</span>
+  <span class="pill">eiquadprog==1.3.0</span>
+  <span class="pill">cmeel==0.60.1</span>
+  <span class="pill">cmeel-boost==1.89.0</span>
+  <span class="pill">cmeel-urdfdom==4.0.1</span>
+  <span class="pill">cmeel-tinyxml2==10.0.0</span>
+  <span class="pill">cmeel-console-bridge==1.0.2.3</span>
+  <span class="pill">cmeel-octomap==1.10.0</span>
+  <span class="pill">cmeel-qhull==8.0.2.1</span>
+  <span class="pill">cmeel-assimp==6.0.5</span>
+  <span class="pill">cmeel-zlib==1.3.2</span>
+  <span class="pill">rhoban-cmeel-jsoncpp==1.9.4.9</span>
+  <span class="pill">meshcat==0.3.2</span>
+  <span class="pill">ischedule==1.2.7</span>
+</div>
+
+<!-- section -->
+<h2><span class="ic">⚠️</span>關鍵約束（打包到別台必看）</h2>
+
+<div class="warn">
+  <b>① numpy 必須是 2.2.x，不能 &lt;2。</b><br>
+  依賴鏈 <code>placo 0.9.20 → pin 3.8.0 → cmeel-boost 1.89.0</code> 在 cp310 硬性要求
+  <code>numpy&gt;=2.2,&lt;2.3</code>。若強壓 <code>numpy&lt;2</code>，pip 會回報
+  <code>ResolutionImpossible</code>。下界寫 <code>&gt;=2.2</code> 也是為了逼 pip 升級掉系統 apt 內建的舊 numpy。
+</div>
+
+<div class="warn">
+  <b>② placo 的 cmeel 子樹要整組鎖死。</b><br>
+  這些是預編譯 <code>.so</code>，彼此以 <b>soname</b> 連結（例如 <code>liburdfdom_sensor.so.4.0</code>、<code>libtinyxml2.so.10</code>）。
+  而 <code>placo</code>/<code>pin</code> 只宣告鬆約束（<code>&gt;=4</code> 之類），全新解析會抓到 soname 更新的 wheel，造成
+  <code>import placo</code> 報 <code>lib&lt;x&gt;.so.&lt;n&gt;: cannot open shared object file</code>。
+  鎖整組就能保證 soname 對齊。
+</div>
+
+<div class="warn">
+  <b>③ FastDDS 跨容器通訊：容器要以本機 UID 跑。</b><br>
+  Humble 預設 RMW 是 <code>rmw_fastrtps_cpp</code>，透過 <code>/dev/shm</code> 的 per-UID 共享記憶體段做 discovery。
+  root 容器建的段是 0644，本機使用者（uid 1000）寫不進去 → discovery 靜默失敗、<code>ros2 topic echo</code> 只會 timeout。
+  <code>shell.sh</code> 已自動加 <code>--user $(id -u):$(id -g)</code> 解決。
+</div>
+
+<div class="note">
+  <b>🗂️ URDF 不是依賴、是資料。</b> placo 載入前會把 URDF 的 <code>&lt;visual&gt;</code> / <code>&lt;collision&gt;</code>
+  全部剝掉，所以<b>不需要帶 meshes</b>，只要一個 <code>.urdf</code> 檔。Docker image 已預設
+  <code>OPENARM_URDF=/work/openarm_ros2/placo_ik/ik_solver/v10_o6.urdf</code>；裝在本機時請自行
+  <code>export OPENARM_URDF=/path/to/openarm.urdf</code>。
+</div>
+
+<!-- section -->
+<h2><span class="ic">✅</span>驗證與通訊測試</h2>
+
+<h3>依賴煙霧測試（不需硬體）</h3>
+<p><code>verify_deps.sh</code> 會逐一 import 全部第三方套件，再用 <code>--help</code> 跑過整條 import chain：</p>
+<pre><span class="g">==&gt; [verify] importing third-party deps</span>
+   ok   numpy / scipy / matplotlib / yaml / placo
+   ok   rclpy / geometry_msgs / sensor_msgs / std_msgs / trajectory_msgs / tf2_ros
+<span class="g">==&gt; [verify] ALL CHECKS PASSED</span></pre>
+
+<h3>在乾淨容器驗證安裝腳本</h3>
+<pre>cd placo_ik/deploy
+./test_docker_humble.sh   <span class="c"># 全新 ros:humble 容器跑 install + verify</span></pre>
+
+<h3>本機 ROS 2 通訊測試（已實測通過）</h3>
+<p>容器端發 topic、本機端訂閱，確認 discovery 打通：</p>
+<pre><span class="c"># A 終端：容器發 topic</span>
+./shell.sh ros2 topic pub /ping std_msgs/msg/String <span class="b">"{data: hi}"</span> -r 5
+
+<span class="c"># B 終端：本機收</span>
+export ROS_DOMAIN_ID=10
+ros2 topic echo --once /ping        <span class="c"># → data: hi</span></pre>
+<div class="ok">
+  <b>實測結果：</b>容器（以 uid 對齊）→ 本機 <code>ros2 topic echo</code> 成功收到訊息。若 <code>echo</code> 噴
+  <code>xmlrpc Fault: !rclpy.ok()</code>，那是本機 ros2 daemon 壞了，跑 <code>ros2 daemon stop</code> 重啟即可，與容器無關。
+</div>
+
+<!-- section -->
+<h2><span class="ic">▶️</span>實際執行 profiler</h2>
+<pre>./shell.sh                                  <span class="c"># 進容器，落在 ik_node/</span>
+<span class="c"># 容器內：</span>
+python3 ./placo_ik_online_profiler_ws_mesh.py --arm right</pre>
+<div class="note">
+  執行 IK 時仍需本機有在跑 <b>robot driver</b>，且 tracker 在發 <code>/ee_delta/{arm}</code>。
+  <code>--help</code> 不需要這些；通訊管道本身已驗證 OK。RMW 若改 cyclonedds，用
+  <code>RMW=rmw_cyclonedds_cpp ./shell.sh</code> 對齊。
+</div>
+
+<!-- section -->
+<h2><span class="ic">🗃️</span>deploy/ 檔案清單</h2>
+<table>
+  <tr><th>檔案</th><th>用途</th></tr>
+  <tr><td><code>requirements.txt</code></td><td>pip 依賴清單（含上述版本鎖與原因註解）</td></tr>
+  <tr><td><code>install_deps.sh</code></td><td>本機安裝腳本：apt 裝 ROS 套件 + 升級 pip + pip 裝 Python 依賴</td></tr>
+  <tr><td><code>verify_deps.sh</code></td><td>import 煙霧測試 + 跑 <code>--help</code> 驗證</td></tr>
+  <tr><td><code>Dockerfile</code></td><td>把全部依賴烤進 <code>placo-ik-humble:latest</code> image</td></tr>
+  <tr><td><code>shell.sh</code></td><td>進容器：<code>--network host</code> + <code>--ipc host</code> + 本機 UID + <code>ROS_DOMAIN_ID</code> / RMW 對齊</td></tr>
+  <tr><td><code>test_docker_humble.sh</code></td><td>在乾淨 <code>ros:humble</code> 容器驗證安裝腳本可用</td></tr>
+  <tr><td><code>INSTALL.html</code></td><td>本文件</td></tr>
+</table>
+
+<h3>shell.sh 常用環境變數</h3>
+<table>
+  <tr><th>變數</th><th>預設</th><th>說明</th></tr>
+  <tr><td><code>ROS_DOMAIN_ID</code></td><td><code>10</code></td><td>對齊本機 <code>~/.bashrc</code></td></tr>
+  <tr><td><code>RMW</code></td><td><code>rmw_fastrtps_cpp</code></td><td>Humble 預設；改 <code>rmw_cyclonedds_cpp</code> 可切換</td></tr>
+  <tr><td><code>REBUILD</code></td><td><code>0</code></td><td><code>=1</code> 強制重 build image</td></tr>
+  <tr><td><code>ROOT</code></td><td><code>0</code></td><td><code>=1</code> 以 root 跑（會犧牲本機 ROS 通訊）</td></tr>
+</table>
+
+<footer>
+  placo_ik deployment guide · 目標環境 ROS 2 Humble / Ubuntu 22.04 / Python 3.10 · 產生於專案 <code>placo_ik/deploy/</code>
+</footer>
+
+</div>
+</body>
+</html>

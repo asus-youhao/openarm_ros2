@@ -1,0 +1,163 @@
+# MoveIt with OpenArm 使用指南
+
+## ⚠️ 重要说明
+
+**demo_o6.launch.py 实际上只控制 ARM**，不包含 O6 Hand。
+
+这是因为：
+- **MoveIt 专注于 arm 的路径规划和运动控制**（7 DOF）
+- **O6 Hand (灵巧手) 不需要通过 MoveIt 规划**
+- **O6 Hand 通过独立的 action/topic 控制即可**
+
+### 如果您需要控制 O6 Hand
+
+您有两个选择：
+
+**选择 1：使用默认 demo.launch.py（推荐）** ⭐
+```bash
+cd ~/ros2_ws_yh/src/openarm_ros2/scripts
+./start_moveit_demo.sh
+```
+这会启动 MoveIt 用于 arm 控制（使用虚拟 gripper）。
+
+**选择 2：MoveIt (arms) + 单独的 O6 Hand 控制**
+```bash
+# 终端 1: MoveIt for arms
+ros2 launch openarm_bimanual_moveit_config demo.launch.py use_fake_hardware:=false
+
+# 终端 2: O6 Hand 控制 (如果需要)
+ros2 action send_goal /right_hand_controller/follow_joint_trajectory \\
+  control_msgs/action/FollowJointTrajectory "..."
+```
+
+---
+
+## 📋 demo_o6.launch.py 与 demo.launch.py 对比
+
+| 特性 | demo.launch.py | demo_o6.launch.py |
+|------|---------------|------------------|
+| **控制对象** | Arms (7 DOF) | Arms (7 DOF) |
+| **末端执行器** | 虚拟 Gripper | 虚拟 Gripper |
+| **实际区别** | **几乎相同** | **几乎相同** |
+
+> ⚠️ **结论：建议直接使用 demo.launch.py**，它已经可以满足需求。
+
+---
+
+## 🚀 快速开始
+
+### 方式 1：默认 Demo ⭐
+
+```bash
+cd ~/ros2_ws_yh/src/openarm_ros2/scripts
+./start_moveit_demo.sh
+```
+
+### 方式 2：手动启动
+
+```bash
+ros2 launch openarm_bimanual_moveit_config demo.launch.py \\
+  use_fake_hardware:=false \\
+  right_can_interface:=can2 \\
+  left_can_interface:=can3
+```
+
+---
+
+## 🎮 MoveIt 控制示例
+
+### Python API（控制 Arm）
+
+```python
+from pymoveit2 import MoveIt2
+from geometry_msgs.msg import Point
+
+# 初始化 MoveIt2 (控制左臂)
+moveit2 = MoveIt2(
+    node=node,
+    joint_names=['openarm_left_joint1', ..., 'openarm_left_joint7'],
+    base_link_name="world",
+    end_effector_name="openarm_left_hand",
+    group_name="left_arm",
+    callback_group=callback_group
+)
+
+# 移动到目标位置
+position = Point(x=0.3, y=0.2, z=0.5)
+moveit2.move_to_pose(position=position, quat_xyzw=[0,0,0,1])
+moveit2.wait_until_executed()
+```
+
+### 独立控制 O6 Hand（如需要）
+
+```bash
+# 控制右手闭合
+ros2 action send_goal /right_hand_controller/follow_joint_trajectory \\
+  control_msgs/action/FollowJointTrajectory "
+trajectory:
+  joint_names: [R_thumb_cmc_pitch, R_thumb_cmc_yaw, R_index_mcp_pitch, 
+                R_middle_mcp_pitch, R_ring_mcp_pitch, R_pinky_mcp_pitch]
+  points:
+    - positions: [0.7, 0.3, 0.8, 0.8, 0.8, 0.8]
+      time_from_start: {sec: 2}
+"
+```
+
+---
+
+## ⚙️ 架构说明
+
+### MoveIt 组件
+
+- **Planning Group**: `left_arm`, `right_arm` (各 7 DOF)
+- **End Effector**: `openarm_left_hand`, `openarm_right_hand`
+- **Kinematics Solver**: KDL (IK 求解器)
+- **Controllers**: JointTrajectoryController
+
+### 不在 MoveIt 控制范围内
+
+- ❌ O6 Hand 手指关节
+- ❌ 触觉传感器
+- ❌ 手指力控制
+
+这些需要通过独立的 hardware interface 和 action clients 控制。
+
+---
+
+## 🔧 故障排查
+
+### 1. "Joint 'R_index_mcp_pitch' not found"
+
+**原因**：尝试用 MoveIt 控制 O6 Hand 关节（不支持）。
+
+**解决**：使用 demo.launch.py 代替 demo_o6.launch.py。
+
+### 2. CAN 接口错误
+
+```bash
+# 验证 CAN 设备
+ip link show | grep can
+```
+
+应该看到 can2, can3 处于 UP 状态。
+
+### 3. MoveIt 启动时卡住
+
+```bash
+# 检查 move_group 是否运行
+ros2 node list | grep move_group
+```
+
+---
+
+## 📖 相关文档
+
+- [PyMoveIt2 使用指南](PYMOVEIT2_GUIDE.md)
+- [MoveIt 故障排查](MOVEIT_CRASH_FIX.md)
+- [O6 Hand 测试指南](o6_test/O6_HAND_TESTING.md) (独立于 MoveIt)
+
+---
+
+**创建时间:** 2026-04-14  
+**状态:** ✅ 简化版本 (只控制 arm)  
+**推荐:** 使用 demo.launch.py 即可满足大多数用途

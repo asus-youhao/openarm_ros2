@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SRDF for OpenArm V10 Bimanual WITHOUT Grippers
+  
+  This SRDF is for use with O6 Hands or when no gripper is attached.
+  It only defines arm groups, no gripper groups.
+-->
+<robot name="openarm">
+    <!--GROUPS: Representation of a set of joints and links-->
+    <group name="left_arm">
+        <joint name="openarm_left_joint1"/>
+        <joint name="openarm_left_joint2"/>
+        <joint name="openarm_left_joint3"/>
+        <joint name="openarm_left_joint4"/>
+        <joint name="openarm_left_joint5"/>
+        <joint name="openarm_left_joint6"/>
+        <joint name="openarm_left_joint7"/>
+    </group>
+    <group name="right_arm">
+        <joint name="openarm_right_joint1"/>
+        <joint name="openarm_right_joint2"/>
+        <joint name="openarm_right_joint3"/>
+        <joint name="openarm_right_joint4"/>
+        <joint name="openarm_right_joint5"/>
+        <joint name="openarm_right_joint6"/>
+        <joint name="openarm_right_joint7"/>
+    </group>
+    
+    <!-- Empty hand groups for end-effector definitions -->
+    <!-- O6 Hands are controlled separately, but MoveIt requires these groups -->
+    <!-- to exist for end-effector configuration (even if empty) -->
+    <group name="left_hand">
+        <link name="openarm_left_link7"/>
+    </group>
+    <group name="right_hand">
+        <link name="openarm_right_link7"/>
+    </group>
+    
+    <!-- NO GRIPPER GROUPS - O6 Hands controlled separately -->
+    
+    <!--GROUP STATES: Define named states for arms-->
+    <group_state name="home" group="left_arm">
+        <joint name="openarm_left_joint1" value="0"/>
+        <joint name="openarm_left_joint2" value="0"/>
+        <joint name="openarm_left_joint3" value="0"/>
+        <joint name="openarm_left_joint4" value="0"/>
+        <joint name="openarm_left_joint5" value="0"/>
+        <joint name="openarm_left_joint6" value="0"/>
+        <joint name="openarm_left_joint7" value="0"/>
+    </group_state>
+    <group_state name="home" group="right_arm">
+        <joint name="openarm_right_joint1" value="0"/>
+        <joint name="openarm_right_joint2" value="0"/>
+        <joint name="openarm_right_joint3" value="0"/>
+        <joint name="openarm_right_joint4" value="0"/>
+        <joint name="openarm_right_joint5" value="0"/>
+        <joint name="openarm_right_joint6" value="0"/>
+        <joint name="openarm_right_joint7" value="0"/>
+    </group_state>
+    
+    <!--END EFFECTOR: Purpose: Represent information about an end effector.
+        O6 Hands are controlled separately (not part of arm planning),
+        but we define empty hand groups to satisfy MoveIt's requirements.
+    -->
+    <end_effector name="left_ee" parent_link="openarm_left_link7" group="left_hand" parent_group="left_arm"/>
+    <end_effector name="right_ee" parent_link="openarm_right_link7" group="right_hand" parent_group="right_arm"/>
+    
+    <!--VIRTUAL JOINT: Purpose: this element defines a virtual joint between a robot link and an external frame of reference (considered fixed)-->
+    <virtual_joint name="virtual_joint" type="fixed" parent_frame="world" child_link="openarm_body_link0"/>
+    
+    <!--PASSIVE JOINT: Purpose: this element is used to mark joints that are not actuated-->
+    
+    <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
+    <disable_collisions link1="openarm_body_link0" link2="openarm_left_link0" reason="Adjacent"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_left_link1" reason="Never"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_left_link2" reason="Never"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_left_link3" reason="Never"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_right_link0" reason="Adjacent"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_right_link1" reason="Never"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_right_link2" reason="Never"/>
+    <disable_collisions link1="openarm_body_link0" link2="openarm_right_link3" reason="Never"/>
+    <disable_collisions link1="openarm_left_link0" link2="openarm_left_link1" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link0" link2="openarm_left_link2" reason="Never"/>
+    <disable_collisions link1="openarm_left_link1" link2="openarm_left_link2" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link1" link2="openarm_left_link3" reason="Never"/>
+    <disable_collisions link1="openarm_left_link2" link2="openarm_left_link3" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link2" link2="openarm_left_link4" reason="Never"/>
+    <disable_collisions link1="openarm_left_link3" link2="openarm_left_link4" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link3" link2="openarm_left_link5" reason="Never"/>
+    <disable_collisions link1="openarm_left_link4" link2="openarm_left_link5" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link4" link2="openarm_left_link6" reason="Never"/>
+    <disable_collisions link1="openarm_left_link5" link2="openarm_left_link6" reason="Adjacent"/>
+    <disable_collisions link1="openarm_left_link5" link2="openarm_left_link7" reason="Never"/>
+    <disable_collisions link1="openarm_left_link6" link2="openarm_left_link7" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link0" link2="openarm_right_link1" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link0" link2="openarm_right_link2" reason="Never"/>
+    <disable_collisions link1="openarm_right_link1" link2="openarm_right_link2" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link1" link2="openarm_right_link3" reason="Never"/>
+    <disable_collisions link1="openarm_right_link2" link2="openarm_right_link3" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link2" link2="openarm_right_link4" reason="Never"/>
+    <disable_collisions link1="openarm_right_link3" link2="openarm_right_link4" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link3" link2="openarm_right_link5" reason="Never"/>
+    <disable_collisions link1="openarm_right_link4" link2="openarm_right_link5" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link4" link2="openarm_right_link6" reason="Never"/>
+    <disable_collisions link1="openarm_right_link5" link2="openarm_right_link6" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link5" link2="openarm_right_link7" reason="Never"/>
+    <disable_collisions link1="openarm_right_link6" link2="openarm_right_link7" reason="Adjacent"/>
+    
+    <!--O6 Hand Collision Rules-->
+    <!--Disable collisions between arm and O6 hand base-->
+    <disable_collisions link1="openarm_left_link7" link2="L_hand_base_link" reason="Adjacent"/>
+    <disable_collisions link1="openarm_right_link7" link2="R_hand_base_link" reason="Adjacent"/>
+    
+    <!--Disable collisions between O6 hand links (since MoveIt doesn't plan for hands)-->
+    <!--Left Hand: base to all fingers-->
+    <disable_collisions link1="L_hand_base_link" link2="L_thumb_metacarpals_base2" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_thumb_metacarpals" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_thumb_distal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_index_proximal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_index_distal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_middle_proximal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_middle_distal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_ring_proximal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_ring_distal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="L_hand_base_link" link2="L_pinky_distal" reason="Default"/>
+    
+    <!--Left Hand: thumb to all other fingers (critical for avoiding red collision)-->
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_thumb_metacarpals" reason="Adjacent"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_thumb_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_thumb_distal" reason="Adjacent"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_index_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_index_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_index_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_index_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_index_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_index_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_middle_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_middle_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_middle_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_middle_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_middle_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_middle_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_ring_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_ring_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_ring_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_ring_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_ring_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_ring_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals_base2" link2="L_pinky_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_metacarpals" link2="L_pinky_distal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="L_thumb_distal" link2="L_pinky_distal" reason="Default"/>
+    
+    <!--Left Hand: adjacent fingers-->
+    <disable_collisions link1="L_index_proximal" link2="L_index_distal" reason="Adjacent"/>
+    <disable_collisions link1="L_index_proximal" link2="L_middle_proximal" reason="Default"/>
+    <disable_collisions link1="L_index_distal" link2="L_middle_distal" reason="Default"/>
+    <disable_collisions link1="L_middle_proximal" link2="L_middle_distal" reason="Adjacent"/>
+    <disable_collisions link1="L_middle_proximal" link2="L_ring_proximal" reason="Default"/>
+    <disable_collisions link1="L_middle_distal" link2="L_ring_distal" reason="Default"/>
+    <disable_collisions link1="L_ring_proximal" link2="L_ring_distal" reason="Adjacent"/>
+    <disable_collisions link1="L_ring_proximal" link2="L_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="L_ring_distal" link2="L_pinky_distal" reason="Default"/>
+    <disable_collisions link1="L_pinky_proximal" link2="L_pinky_distal" reason="Adjacent"/>
+    
+    <!--Right Hand: base to all fingers-->
+    <disable_collisions link1="R_hand_base_link" link2="R_thumb_metacarpals_base2" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_thumb_metacarpals" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_thumb_distal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_index_proximal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_index_distal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_middle_proximal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_middle_distal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_ring_proximal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_ring_distal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="R_hand_base_link" link2="R_pinky_distal" reason="Default"/>
+    
+    <!--Right Hand: thumb to all other fingers (critical for avoiding red collision)-->
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_thumb_metacarpals" reason="Adjacent"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_thumb_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_thumb_distal" reason="Adjacent"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_index_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_index_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_index_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_index_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_index_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_index_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_middle_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_middle_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_middle_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_middle_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_middle_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_middle_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_ring_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_ring_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_ring_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_ring_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_ring_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_ring_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals_base2" link2="R_pinky_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_metacarpals" link2="R_pinky_distal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="R_thumb_distal" link2="R_pinky_distal" reason="Default"/>
+    
+    <!--Right Hand: adjacent fingers-->
+    <disable_collisions link1="R_index_proximal" link2="R_index_distal" reason="Adjacent"/>
+    <disable_collisions link1="R_index_proximal" link2="R_middle_proximal" reason="Default"/>
+    <disable_collisions link1="R_index_distal" link2="R_middle_distal" reason="Default"/>
+    <disable_collisions link1="R_middle_proximal" link2="R_middle_distal" reason="Adjacent"/>
+    <disable_collisions link1="R_middle_proximal" link2="R_ring_proximal" reason="Default"/>
+    <disable_collisions link1="R_middle_distal" link2="R_ring_distal" reason="Default"/>
+    <disable_collisions link1="R_ring_proximal" link2="R_ring_distal" reason="Adjacent"/>
+    <disable_collisions link1="R_ring_proximal" link2="R_pinky_proximal" reason="Default"/>
+    <disable_collisions link1="R_ring_distal" link2="R_pinky_distal" reason="Default"/>
+    <disable_collisions link1="R_pinky_proximal" link2="R_pinky_distal" reason="Adjacent"/>
+</robot>

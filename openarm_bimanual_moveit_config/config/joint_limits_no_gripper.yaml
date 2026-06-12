@@ -1,0 +1,319 @@
+# Copyright 2025 Enactic, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# joint_limits.yaml (NO GRIPPER) for O6 Hands
+# This version excludes gripper joints
+# O6 Hand joints are controlled separately through their own controllers
+
+default_velocity_scaling_factor: 0.1
+default_acceleration_scaling_factor: 0.1
+
+joint_limits:
+  openarm_left_joint1:
+   has_position_limits: true
+   min_position: -3.491
+   max_position: 1.396
+   has_velocity_limits: true
+   max_velocity: 16.754666
+   has_acceleration_limits: true
+   max_acceleration: 10.0
+  openarm_left_joint2:
+   has_position_limits: true
+   min_position: -3.316
+   max_position: 0.175
+   has_velocity_limits: true
+   max_velocity: 16.754666
+   has_acceleration_limits: true
+   max_acceleration: 10.0
+  openarm_left_joint3:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 5.445426
+   has_acceleration_limits: true
+   max_acceleration: 3.0
+  openarm_left_joint4:
+   has_position_limits: true
+   min_position: -0.01
+   max_position: 2.443
+   has_velocity_limits: true
+   max_velocity: 5.445426
+   has_acceleration_limits: true
+   max_acceleration: 3.0
+  openarm_left_joint5:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  openarm_left_joint6:
+   has_position_limits: true
+   min_position: -0.785
+   max_position: 0.785
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  openarm_left_joint7:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  openarm_right_joint1:
+   has_position_limits: true
+   min_position: -1.396
+   max_position: 3.491
+   has_velocity_limits: true
+   max_velocity: 16.754666
+   has_acceleration_limits: true
+   max_acceleration: 10.0
+  openarm_right_joint2:
+   has_position_limits: true
+   min_position: -0.175
+   max_position: 3.316
+   has_velocity_limits: true
+   max_velocity: 16.754666
+   has_acceleration_limits: true
+   max_acceleration: 10.0
+  openarm_right_joint3:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 5.445426
+   has_acceleration_limits: true
+   max_acceleration: 3.0
+  openarm_right_joint4:
+   has_position_limits: true
+   min_position: -0.01
+   max_position: 2.443
+   has_velocity_limits: true
+   max_velocity: 5.445426
+   has_acceleration_limits: true
+   max_acceleration: 3.0
+  openarm_right_joint5:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  openarm_right_joint6:
+   has_position_limits: true
+   min_position: -0.785
+   max_position: 0.785
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  openarm_right_joint7:
+   has_position_limits: true
+   min_position: -1.571
+   max_position: 1.571
+   has_velocity_limits: true
+   max_velocity: 20.943946
+   has_acceleration_limits: true
+   max_acceleration: 12.0
+  
+  # ============================================================================
+  # O6 HAND JOINTS (Left Hand)
+  # These are controlled separately but MoveIt needs limits for state validation
+  # ============================================================================
+  L_thumb_cmc_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 0.58
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_thumb_cmc_yaw:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.36
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_index_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_middle_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_ring_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_pinky_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_thumb_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.08
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_index_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_middle_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_ring_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  L_pinky_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  
+  # ============================================================================
+  # O6 HAND JOINTS (Right Hand)
+  # ============================================================================
+  R_thumb_cmc_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 0.58
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_thumb_cmc_yaw:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.36
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_index_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_middle_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_ring_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_pinky_mcp_pitch:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.6
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_thumb_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.08
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_index_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_middle_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_ring_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
+  R_pinky_dip:
+   has_position_limits: true
+   min_position: 0.0
+   max_position: 1.43
+   has_velocity_limits: true
+   max_velocity: 8.48
+   has_acceleration_limits: false
+   max_acceleration: 0.0
