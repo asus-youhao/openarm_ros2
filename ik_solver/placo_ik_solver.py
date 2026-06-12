@@ -37,6 +37,7 @@ import numpy as np
 _URDF_SOURCES = [
     "/home/asus/openArm_leapHand_urdf/src/openarm_description/usd/v10_o6.urdf",
     "/home/asus/Desktop/openarm_description/urdf_transform/urdf/openarm_step10.urdf",
+    "./v10_o6.urdf"
 ]
 _KIN_URDF_CACHE = "/tmp/openarm_kin_placo.urdf"
 
