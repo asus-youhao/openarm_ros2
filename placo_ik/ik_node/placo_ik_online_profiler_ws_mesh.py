@@ -318,7 +318,14 @@ def main():
     rclpy.init()
     node = PlacoOnlineProfiler(args)
 
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    # 2026-06-12: the /{arm}/go_home service callback blocks waiting for homing
+    # to finish; a single-threaded executor (rclpy.spin) would get stuck
+    # (/joint_states and TF would stall), so use a MultiThreadedExecutor
+    # (consistent with the --arm both path).
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
     try:
