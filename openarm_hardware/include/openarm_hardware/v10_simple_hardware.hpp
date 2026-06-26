@@ -27,7 +27,6 @@
 #include <thread>
 #include <vector>
 
-#include "dynamixel_sdk/dynamixel_sdk.h"
 #include "LinkerHandApi.h"
 #include "hardware_interface/handle.hpp"
 #include "hardware_interface/hardware_info.hpp"
@@ -94,7 +93,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
  protected:
   // V10 default configuration
   static constexpr size_t ARM_DOF = 7;
-  static constexpr size_t LEAP_HAND_DOF = 16;
   static constexpr size_t O6_HAND_DOF = 11;  // 6 active + 5 passive (matching external openarm_description URDF) (coupled) joints
   static constexpr bool ENABLE_GRIPPER = true;
 
@@ -165,7 +163,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::string ee_type_;
   bool hand_;
   bool can_fd_;
-  bool has_leap_hand_;
   bool has_o6_hand_;
   bool enable_frequency_diagnostics_;  // Enable performance monitoring
 
@@ -198,25 +195,14 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   std::vector<double> arm_pos_state_buffer_;
   std::vector<double> arm_vel_state_buffer_;
   std::vector<double> arm_tau_state_buffer_;
-  
-  // LEAP Hand control thread (now 500Hz for synchronized execution)
-  std::thread leap_control_thread_;
-  std::atomic<bool> leap_thread_running_;
-  std::mutex leap_command_mutex_;
-  std::mutex leap_state_mutex_;
-  std::mutex serial_mutex_;  // Protect RS-485 serial port access (half-duplex)
-  
-  // LEAP Hand command/state buffers
-  std::vector<double> leap_pos_cmd_buffer_;
-  std::vector<double> leap_pos_state_buffer_;
-  
+
   // ========== DECOUPLED STATE READ THREAD ==========
-  // Reads CAN arm + LEAP serial states at CONTROL_READ_RATE_HZ, applies LPF.
-  // Decoupled from write loops so RS-485 read latency does not stall CAN commands.
+  // Reads CAN arm states at CONTROL_READ_RATE_HZ, applies LPF.
+  // Decoupled from write loops so read latency does not stall CAN commands.
   std::thread state_read_thread_;
   std::atomic<bool> state_read_thread_running_;
-  
-  // Debug CSV logging (one file per arm instance for arm, one for LEAP Hand)
+
+  // Debug CSV logging (one file per arm instance)
   std::ofstream debug_csv_;
 
   // ===== DEBUG RING BUFFER =====
@@ -239,13 +225,9 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   size_t debug_ring_idx_ = 0;
   bool debug_ring_wrapped_ = false;
 
-  std::ofstream leap_debug_csv_;
-  bool leap_csv_initialized_;
-  size_t leap_csv_sample_count_;
-
   // Note: State reading is handled exclusively by state_read_loop().
-  // arm_control_loop() and leap_control_loop() are pure write-only threads.
-  
+  // arm_control_loop() is a pure write-only thread.
+
   // ========== HEALTH MONITORING ==========
   struct HealthStatus {
     std::atomic<size_t> consecutive_read_failures{0};
@@ -253,7 +235,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
     std::atomic<double> last_read_latency_ms{0.0};
     std::atomic<double> last_write_latency_ms{0.0};
     std::atomic<bool> arm_healthy{true};
-    std::atomic<bool> leap_healthy{true};
     std::atomic<uint64_t> last_successful_read_time{0};
     std::atomic<uint64_t> last_successful_write_time{0};
     std::atomic<size_t> total_read_operations{0};
@@ -296,7 +277,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   };
   
   LowPassFilter arm_state_filter_;
-  LowPassFilter leap_state_filter_;
 
   // Helper methods
   void return_to_zero();
@@ -305,8 +285,7 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   
   // Thread control loops
   void arm_control_loop();        // Write-only loop @ 500Hz (CAN-FD MIT commands)
-  void leap_control_loop();       // Write-only loop @ 500Hz (LEAP Hand serial TX)
-  void state_read_loop();         // Read-only loop @ CONTROL_READ_RATE_HZ (CAN + serial + LPF)
+  void state_read_loop();         // Read-only loop @ CONTROL_READ_RATE_HZ (CAN + LPF)
   void flush_debug_ring_to_csv(); // Batch-dump the debug ring buffer to CSV (on deactivate)
   
   // Health monitoring methods
@@ -318,35 +297,6 @@ class OpenArm_v10HW : public hardware_interface::SystemInterface {
   // Gripper mapping functions
   double joint_to_motor_radians(double joint_value);
   double motor_radians_to_joint(double motor_radians);
-
-  // LEAP Hand Dynamixel support
-  std::string leap_serial_port_;
-  int leap_baudrate_;
-  std::vector<uint8_t> leap_motor_ids_;
-  bool leap_connected_;
-  
-  std::shared_ptr<dynamixel::PortHandler> leap_port_handler_;
-  std::shared_ptr<dynamixel::PacketHandler> leap_packet_handler_;
-  std::shared_ptr<dynamixel::GroupSyncWrite> leap_group_sync_write_;
-  std::shared_ptr<dynamixel::GroupSyncRead> leap_group_sync_read_pos_;
-  
-  // Dynamixel Protocol 2.0 addresses (XH series)
-  static constexpr uint8_t LEAP_ADDR_TORQUE_ENABLE = 64;
-  static constexpr uint8_t LEAP_ADDR_GOAL_POSITION = 116;
-  static constexpr uint8_t LEAP_ADDR_PRESENT_POSITION = 132;
-  static constexpr uint8_t LEAP_LEN_GOAL_POSITION = 4;
-  static constexpr uint8_t LEAP_LEN_PRESENT_POSITION = 4;
-  static constexpr float LEAP_PROTOCOL_VERSION = 2.0;
-  static constexpr double LEAP_POS_SCALE = 2.0 * M_PI / 4096.0;  // ticks to radians
-  
-  bool connect_leap_hand();
-  void disconnect_leap_hand();
-  bool send_leap_hand_command(const std::vector<double>& positions, size_t start_idx);
-  bool read_leap_hand_states(std::vector<double>& positions, size_t start_idx);
-  
-  // LEAP coordinate conversion (URDF 0=home, LEAP 3.14=home)
-  inline double urdf_to_leap(double urdf_pos) { return urdf_pos + M_PI; }
-  inline double leap_to_urdf(double leap_pos) { return leap_pos - M_PI; }
 
   // O6 Hand LinkerHandApi support
   std::string o6_can_interface_;

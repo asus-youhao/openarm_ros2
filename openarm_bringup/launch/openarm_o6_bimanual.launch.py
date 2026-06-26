@@ -205,7 +205,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "description_package",
             default_value="openarm_description",
-            description="Description package with robot URDF/xacro files. Use external package at /home/asus/openArm_leapHand_urdf/src/openarm_description",
+            description="Description package with robot URDF/xacro files.",
         ),
         DeclareLaunchArgument(
             "description_file",

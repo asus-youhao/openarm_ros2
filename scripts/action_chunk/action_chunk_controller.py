@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Synchronized Action Chunk Controller for OpenArm Bimanual System with LEAP Hand.
+Synchronized Action Chunk Controller for OpenArm Bimanual System.
 
 This controller receives action chunks from VLA models (e.g., GR00T N1.5) and
-executes them with proper timestamp-based synchronization between arms and hands.
+executes them with proper timestamp-based synchronization between the two arms.
 
 Key Design Decisions
 --------------------
@@ -12,9 +12,9 @@ Key Design Decisions
    always executes the freshest inference result — critical when GR00T inference
    time (50–100 ms) is much shorter than the chunk duration (16 × 1/30 s ≈ 533 ms).
 
-2. **Synchronized start time**: All three FollowJointTrajectory goals are sent with
+2. **Synchronized start time**: Both FollowJointTrajectory goals are sent with
    the same ``trajectory.header.stamp``. The JointTrajectoryController interprets
-   ``time_from_start`` relative to this stamp, so left arm, right arm, and LEAP hand
+   ``time_from_start`` relative to this stamp, so the left arm and right arm
    all start at exactly the same ROS clock instant.
 
 3. **GR00T N1.5 step dt = 1/30 s**: Each of the 16 action steps covers 33.3 ms.
@@ -27,14 +27,13 @@ Usage
 
 Subscribes
 ----------
-  /action_chunk        (Float64MultiArray, 497 values) — from GR00T inference
+  /action_chunk        (Float64MultiArray, 241 values) — from GR00T inference
   /joint_states        (JointState)                    — for current positions
 
 Sends goals to
 --------------
   /left_joint_trajectory_controller/follow_joint_trajectory
   /right_joint_trajectory_controller/follow_joint_trajectory
-  /right_hand_controller/follow_joint_trajectory
 """
 
 import rclpy
@@ -75,7 +74,6 @@ class ActionChunk:
     timestamps: List[float]              # time_from_start for each step (seconds)
     left_arm_positions: List[List[float]]   # 16 steps × 7 joints
     right_arm_positions: List[List[float]]  # 16 steps × 7 joints
-    right_hand_positions: List[List[float]] # 16 steps × 16 joints
     chunk_id: int = 0
     received_time: float = 0.0
 
@@ -86,7 +84,7 @@ class ActionChunkController(Node):
 
     Execution model:
     - On new chunk: cancel any in-flight goals → dispatch new chunk immediately.
-    - All three controllers (left arm, right arm, hand) receive goals with the
+    - Both controllers (left arm, right arm) receive goals with the
       same ``header.stamp`` (= now + TRAJECTORY_START_DELAY_SEC) so they start
       executing at exactly the same wall-clock time.
     """
@@ -104,24 +102,13 @@ class ActionChunkController(Node):
         'openarm_right_joint7'
     ]
 
-    RIGHT_HAND_JOINTS = [
-        'right_index_mcp_side',    'right_index_mcp_forward',
-        'right_index_pip',         'right_index_dip',
-        'right_middle_mcp_side',   'right_middle_mcp_forward',
-        'right_middle_pip',        'right_middle_dip',
-        'right_ring_mcp_side',     'right_ring_mcp_forward',
-        'right_ring_pip',          'right_ring_dip',
-        'right_thumb_mcp_side',    'right_thumb_mcp_forward',
-        'right_thumb_pip_joint',   'right_thumb_dip_joint'
-    ]
-
     def __init__(self):
         super().__init__('action_chunk_controller')
 
         # Reentrant callback group allows concurrent spin_until_future_complete
         self.callback_group = ReentrantCallbackGroup()
 
-        # Action clients for all three controllers
+        # Action clients for both arm controllers
         self.left_arm_client = ActionClient(
             self, FollowJointTrajectory,
             '/left_joint_trajectory_controller/follow_joint_trajectory',
@@ -130,11 +117,6 @@ class ActionChunkController(Node):
         self.right_arm_client = ActionClient(
             self, FollowJointTrajectory,
             '/right_joint_trajectory_controller/follow_joint_trajectory',
-            callback_group=self.callback_group
-        )
-        self.right_hand_client = ActionClient(
-            self, FollowJointTrajectory,
-            '/right_hand_controller/follow_joint_trajectory',
             callback_group=self.callback_group
         )
 
@@ -181,31 +163,28 @@ class ActionChunkController(Node):
             f'  Start delay  : {TRAJECTORY_START_DELAY_SEC*1000:.0f} ms\n'
             f'  Left arm     : {len(self.LEFT_ARM_JOINTS)} joints\n'
             f'  Right arm    : {len(self.RIGHT_ARM_JOINTS)} joints\n'
-            f'  Right hand   : {len(self.RIGHT_HAND_JOINTS)} joints\n'
             f'  Total DOF    : '
-            f'{len(self.LEFT_ARM_JOINTS)+len(self.RIGHT_ARM_JOINTS)+len(self.RIGHT_HAND_JOINTS)}'
+            f'{len(self.LEFT_ARM_JOINTS)+len(self.RIGHT_ARM_JOINTS)}'
         )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Server readiness
 
     def _wait_for_servers(self, timeout: float = 10.0) -> bool:
-        """Wait for all three action servers to become available."""
+        """Wait for both action servers to become available."""
         # Pre-initialize to avoid NameError if timeout==0
-        left_ready = right_ready = hand_ready = False
+        left_ready = right_ready = False
 
         start_time = time.time()
         while time.time() - start_time < timeout:
             left_ready  = self.left_arm_client.wait_for_server(timeout_sec=0.1)
             right_ready = self.right_arm_client.wait_for_server(timeout_sec=0.1)
-            hand_ready  = self.right_hand_client.wait_for_server(timeout_sec=0.1)
-            if left_ready and right_ready and hand_ready:
+            if left_ready and right_ready:
                 return True
 
         missing = []
         if not left_ready:  missing.append('left_arm')
         if not right_ready: missing.append('right_arm')
-        if not hand_ready:  missing.append('right_hand')
         self.get_logger().error(f'Action servers not available: {missing}')
         return False
 
@@ -222,22 +201,21 @@ class ActionChunkController(Node):
         """
         Receive action chunk from GR00T inference.
 
-        Message format (497 floats):
+        Message format (241 floats):
           [0]       chunk_id
           [1:17]    timestamps for each step (seconds from chunk start)
                     If all zeros, auto-generated as k * GROOT_STEP_DT
           [17:129]  left  arm positions  — 16 steps × 7  joints (flat)
           [129:241] right arm positions  — 16 steps × 7  joints (flat)
-          [241:497] right hand positions — 16 steps × 16 joints (flat)
 
         On arrival: cancel any in-flight goals and execute the new chunk
         immediately (preempt-on-new-chunk strategy).
         """
         data = msg.data
 
-        if len(data) < 497:
+        if len(data) < 241:
             self.get_logger().error(
-                f'Invalid action chunk size: {len(data)}, expected 497')
+                f'Invalid action chunk size: {len(data)}, expected 241')
             return
 
         try:
@@ -252,26 +230,17 @@ class ActionChunkController(Node):
             else:
                 timestamps = raw_ts
 
-            # Extract position arrays (left arm, right arm, right hand)
+            # Extract position arrays (left arm, right arm)
             la_flat = data[17:129]
             ra_flat = data[129:241]
-            rh_flat = data[241:497]
 
             left_arm_positions  = [list(la_flat[i*7  :(i+1)*7 ]) for i in range(16)]
             right_arm_positions = [list(ra_flat[i*7  :(i+1)*7 ]) for i in range(16)]
-            right_hand_positions= [list(rh_flat[i*16 :(i+1)*16]) for i in range(16)]
-            # Debug print right hand positions in 4x4 blocks
-            for step_idx, step in enumerate(right_hand_positions):
-                self.get_logger().info(f'right_hand_positions step {step_idx}:')
-                for row in range(4):
-                    block = step[row*4:(row+1)*4]
-                    self.get_logger().info(f'  {block}')
 
             chunk = ActionChunk(
                 timestamps=timestamps,
                 left_arm_positions=left_arm_positions,
                 right_arm_positions=right_arm_positions,
-                right_hand_positions=right_hand_positions,
                 chunk_id=chunk_id,
                 received_time=time.time()
             )
@@ -297,9 +266,9 @@ class ActionChunkController(Node):
 
     def execute_action_chunk(self, chunk: ActionChunk):
         """
-        Send synchronized multi-point trajectories to all three controllers.
+        Send synchronized multi-point trajectories to both arm controllers.
 
-        All three goals share the same ``header.stamp`` so controllers start
+        Both goals share the same ``header.stamp`` so controllers start
         at exactly the same ROS clock instant (= now + TRAJECTORY_START_DELAY_SEC).
         Timestamps inside the trajectory are relative to that stamp.
         """
@@ -314,28 +283,26 @@ class ActionChunkController(Node):
         # Build trajectory point lists
         left_points  = self._build_trajectory_points(chunk.timestamps, chunk.left_arm_positions)
         right_points = self._build_trajectory_points(chunk.timestamps, chunk.right_arm_positions)
-        hand_points  = self._build_trajectory_points(chunk.timestamps, chunk.right_hand_positions)
 
         # ── Receding Horizon Control ──────────────────────────────────────────
         if RECEDING_HORIZON_ENABLED:
             # Check if any timestamps have already passed and adjust trajectory
             adjusted_points = self._apply_receding_horizon_control(
-                chunk.timestamps, left_points, right_points, hand_points, chunk.received_time)
-            left_points, right_points, hand_points = adjusted_points
+                chunk.timestamps, left_points, right_points, chunk.received_time)
+            left_points, right_points = adjusted_points
 
         # ── Synchronized start time ───────────────────────────────────────────
-        # All three trajectory goals share the SAME header.stamp.
+        # Both trajectory goals share the SAME header.stamp.
         # JointTrajectoryController interprets time_from_start relative to this
-        # stamp, so all controllers start at the same wall-clock instant.
+        # stamp, so both controllers start at the same wall-clock instant.
         now = self.get_clock().now()
         start_time = now + RclpyDuration(seconds=TRAJECTORY_START_DELAY_SEC)
 
-        # Send all three goals asynchronously (as close together as possible)
+        # Send both goals asynchronously (as close together as possible)
         send_time = time.time()
         futures_with_labels = [
             ('left_arm',   self._send_trajectory_async(self.left_arm_client,  self.LEFT_ARM_JOINTS,  left_points,  start_time)),
             ('right_arm',  self._send_trajectory_async(self.right_arm_client, self.RIGHT_ARM_JOINTS, right_points, start_time)),
-            ('right_hand', self._send_trajectory_async(self.right_hand_client, self.RIGHT_HAND_JOINTS, hand_points, start_time)),
         ]
 
         # Register callbacks to collect accepted goal handles for future preemption
@@ -345,7 +312,7 @@ class ActionChunkController(Node):
         self._record_chunk_processing_time(time.time() - start_process_time)
 
         self.get_logger().info(
-            f'Chunk {chunk.chunk_id}: trajectories sent to all 3 controllers '
+            f'Chunk {chunk.chunk_id}: trajectories sent to both controllers '
             f'(start_delay={TRAJECTORY_START_DELAY_SEC*1000:.0f} ms)'
         )
 
@@ -437,10 +404,9 @@ class ActionChunkController(Node):
 
         return action_client.send_goal_async(goal_msg)
 
-    def _apply_receding_horizon_control(self, timestamps: List[float], 
+    def _apply_receding_horizon_control(self, timestamps: List[float],
                                       left_points: List[JointTrajectoryPoint],
                                       right_points: List[JointTrajectoryPoint],
-                                      hand_points: List[JointTrajectoryPoint],
                                       received_time: float) -> tuple:
         """
         Apply receding horizon control to prevent jumps when timestamps have passed.
@@ -479,44 +445,39 @@ class ActionChunkController(Node):
             # Get current joint positions for interpolation
             current_left = self._get_current_joint_positions(self.LEFT_ARM_JOINTS)
             current_right = self._get_current_joint_positions(self.RIGHT_ARM_JOINTS)
-            current_hand = self._get_current_joint_positions(self.RIGHT_HAND_JOINTS)
-            
+
             # Get the first future point
             target_left = left_points[first_future_idx].positions
             target_right = right_points[first_future_idx].positions
-            target_hand = hand_points[first_future_idx].positions
-            
+
             # Calculate alpha based on progress from previous point to target point
             prev_ts = timestamps[first_future_idx - 1]
             curr_ts = timestamps[first_future_idx]
             alpha = (time_offset - prev_ts) / (curr_ts - prev_ts) if curr_ts > prev_ts else 1.0
             alpha = max(0.0, min(1.0, alpha))
-            
+
             # Create interpolated first point
             interp_left = self._interpolate_points(current_left, target_left, alpha)
             interp_right = self._interpolate_points(current_right, target_right, alpha)
-            interp_hand = self._interpolate_points(current_hand, target_hand, alpha)
-            
+
             # Build new trajectories starting from interpolated point
             new_left_points = [self._create_trajectory_point(interp_left, 0.0)]
             new_right_points = [self._create_trajectory_point(interp_right, 0.0)]
-            new_hand_points = [self._create_trajectory_point(interp_hand, 0.0)]
-            
+
             # Add remaining points with adjusted timestamps
             for i in range(first_future_idx, len(timestamps)):
                 # Adjust timestamp relative to time_offset
                 adjusted_ts = timestamps[i] - time_offset
                 if adjusted_ts <= 0.0:
                     adjusted_ts = 0.001
-                
+
                 new_left_points.append(self._create_trajectory_point(left_points[i].positions, adjusted_ts))
                 new_right_points.append(self._create_trajectory_point(right_points[i].positions, adjusted_ts))
-                new_hand_points.append(self._create_trajectory_point(hand_points[i].positions, adjusted_ts))
-            
-            return new_left_points, new_right_points, new_hand_points
-        
+
+            return new_left_points, new_right_points
+
         # No adjustment needed, return original trajectories
-        return left_points, right_points, hand_points
+        return left_points, right_points
 
     def _get_current_joint_positions(self, joint_names: List[str]) -> List[float]:
         """Get current joint positions from cached joint states."""
@@ -547,13 +508,11 @@ class ActionChunkController(Node):
         """Create single-point trajectories using current positions."""
         current_left = self._get_current_joint_positions(self.LEFT_ARM_JOINTS)
         current_right = self._get_current_joint_positions(self.RIGHT_ARM_JOINTS)
-        current_hand = self._get_current_joint_positions(self.RIGHT_HAND_JOINTS)
-        
+
         single_left = [self._create_trajectory_point(current_left, 0.0)]
         single_right = [self._create_trajectory_point(current_right, 0.0)]
-        single_hand = [self._create_trajectory_point(current_hand, 0.0)]
-        
-        return single_left, single_right, single_hand
+
+        return single_left, single_right
 
     # ──────────────────────────────────────────────────────────────────────────
     # Testing / replay utilities
@@ -566,7 +525,6 @@ class ActionChunkController(Node):
           timestamps  : List[float]        (optional; auto-generated if absent)
           left_arm    : List[List[float]]  shape [16, 7]
           right_arm   : List[List[float]]  shape [16, 7]
-          right_hand  : List[List[float]]  shape [16, 16]
         """
         raw_ts = chunk_data.get(
             'timestamps',
@@ -576,7 +534,6 @@ class ActionChunkController(Node):
             timestamps=raw_ts,
             left_arm_positions=chunk_data.get('left_arm',   [[0.0] * 7]  * 16),
             right_arm_positions=chunk_data.get('right_arm',  [[0.0] * 7]  * 16),
-            right_hand_positions=chunk_data.get('right_hand', [[0.0] * 16] * 16),
             chunk_id=self.chunk_id_counter,
             received_time=time.time()
         )

@@ -45,7 +45,6 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   // Parse end-effector type
   it = info.hardware_parameters.find("ee_type");
   ee_type_ = (it != info.hardware_parameters.end()) ? it->second : "default";
-  has_leap_hand_ = (ee_type_ == "leap_hand_right" && arm_prefix_ == "right_");
   // O6 hand detection: supports o6_hand (bimanual), o6_hand_left, o6_hand_right, o6_left, o6_right
   has_o6_hand_ = (ee_type_.find("o6") != std::string::npos);
 
@@ -114,10 +113,9 @@ bool OpenArm_v10HW::parse_config(const hardware_interface::HardwareInfo& info) {
   }
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, leap_hand=%s, o6_hand=%s, freq_diag=%s",
+              "Configuration: CAN=%s, arm_prefix=%s, ee_type=%s, hand=%s, can_fd=%s, o6_hand=%s, freq_diag=%s",
               can_interface_.c_str(), arm_prefix_.c_str(), ee_type_.c_str(),
               hand_ ? "enabled" : "disabled", can_fd_ ? "enabled" : "disabled",
-              has_leap_hand_ ? "enabled" : "disabled",
               has_o6_hand_ ? "enabled" : "disabled",
               enable_frequency_diagnostics_ ? "enabled" : "disabled");
   return true;
@@ -134,43 +132,17 @@ void OpenArm_v10HW::generate_joint_names() {
     joint_names_.push_back(joint_name);
   }
 
-  // Generate gripper joint name if enabled (but not for O6/Leap hands - they have their own joints)
-  if (hand_ && !has_o6_hand_ && !has_leap_hand_) {
+  // Generate gripper joint name if enabled (but not for O6 hand - it has its own joints)
+  if (hand_ && !has_o6_hand_) {
     std::string gripper_joint_name = "openarm_" + arm_prefix_ + "finger_joint1";
     joint_names_.push_back(gripper_joint_name);
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added gripper joint: %s",
                 gripper_joint_name.c_str());
   } else {
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Gripper joint NOT added (hand_=%s, has_o6=%s, has_leap=%s)",
+                "Gripper joint NOT added (hand_=%s, has_o6=%s)",
                 hand_ ? "true" : "false",
-                has_o6_hand_ ? "true" : "false",
-                has_leap_hand_ ? "true" : "false");
-  }
-
-  // Generate leap_hand finger joint names if enabled (right hand only)
-  if (has_leap_hand_) {
-    // Index finger
-    joint_names_.push_back("right_index_mcp_side");
-    joint_names_.push_back("right_index_mcp_forward");
-    joint_names_.push_back("right_index_pip");
-    joint_names_.push_back("right_index_dip");
-    // Middle finger
-    joint_names_.push_back("right_middle_mcp_side");
-    joint_names_.push_back("right_middle_mcp_forward");
-    joint_names_.push_back("right_middle_pip");
-    joint_names_.push_back("right_middle_dip");
-    // Ring finger
-    joint_names_.push_back("right_ring_mcp_side");
-    joint_names_.push_back("right_ring_mcp_forward");
-    joint_names_.push_back("right_ring_pip");
-    joint_names_.push_back("right_ring_dip");
-    // Thumb
-    joint_names_.push_back("right_thumb_mcp_side");
-    joint_names_.push_back("right_thumb_mcp_forward");
-    joint_names_.push_back("right_thumb_pip_joint");
-    joint_names_.push_back("right_thumb_dip_joint");
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Added 16 leap_hand finger joints");
+                has_o6_hand_ ? "true" : "false");
   }
 
   // Generate O6 hand joint names if enabled
@@ -231,11 +203,10 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   // Generate joint names based on arm prefix
   generate_joint_names();
 
-  // Validate joint count (7 arm joints + optional gripper + optional leap_hand + optional o6_hand)
-  // Note: gripper joint only added when hand_=true AND no O6/Leap hand (those have their own joints)
+  // Validate joint count (7 arm joints + optional gripper + optional o6_hand)
+  // Note: gripper joint only added when hand_=true AND no O6 hand (it has its own joints)
   size_t expected_joints = ARM_DOF +
-                           (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) +
-                           (has_leap_hand_ ? LEAP_HAND_DOF : 0) +
+                           (hand_ && !has_o6_hand_ ? 1 : 0) +
                            (has_o6_hand_ ? O6_HAND_DOF : 0);
   if (joint_names_.size() != expected_joints) {
     RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
@@ -274,15 +245,11 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
 
   // Initialize thread control flags
   arm_thread_running_ = false;
-  leap_thread_running_ = false;
   state_read_thread_running_ = false;
-  
+
   // Initialize low-pass filters for state smoothing
   size_t arm_size = ARM_DOF + (hand_ ? 1 : 0);
   arm_state_filter_.init(arm_size, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
-  if (has_leap_hand_) {
-    leap_state_filter_.init(LEAP_HAND_DOF, STATE_FILTER_CUTOFF_HZ, CONTROL_READ_RATE_HZ);
-  }
   if (has_o6_hand_) {
     o6_state_filter_.init(O6_HAND_DOF, STATE_FILTER_CUTOFF_HZ, 60.0);  // O6 runs at 60Hz
   }
@@ -293,9 +260,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   debug_ring_.assign(debug_ring_capacity_, ArmDebugSample{});
   debug_ring_idx_ = 0;
   debug_ring_wrapped_ = false;
-  leap_csv_initialized_ = false;
-  leap_csv_sample_count_ = 0;
-  
+
   // Initialize arm thread buffers (7 DOF + optional gripper) - arm_size already declared above
   arm_pos_cmd_buffer_.resize(arm_size, 0.0);
   arm_vel_cmd_buffer_.resize(arm_size, 0.0);
@@ -303,12 +268,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
   arm_pos_state_buffer_.resize(arm_size, 0.0);
   arm_vel_state_buffer_.resize(arm_size, 0.0);
   arm_tau_state_buffer_.resize(arm_size, 0.0);
-  
-  // Initialize LEAP Hand thread buffers if enabled
-  if (has_leap_hand_) {
-    leap_pos_cmd_buffer_.resize(LEAP_HAND_DOF, 0.0);
-    leap_pos_state_buffer_.resize(LEAP_HAND_DOF, 0.0);
-  }
 
   // Initialize O6 Hand thread buffers if enabled
   if (has_o6_hand_) {
@@ -316,41 +275,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_init(
     o6_pos_cmd_buffer_.resize(6, 0.0);
     // State buffer: all 11 joints (6 active + 5 passive for full kinematics)
     o6_pos_state_buffer_.resize(O6_HAND_DOF, 0.0);
-  }
-
-  // Initialize LEAP Hand if enabled
-  leap_connected_ = false;
-  if (has_leap_hand_) {
-    // Get serial port parameter (default: /dev/ttyUSB0)
-    auto it = info.hardware_parameters.find("serial_port");
-    leap_serial_port_ = (it != info.hardware_parameters.end()) ? it->second : "/dev/leaphand";
-    
-    // Get baudrate parameter (default: 4000000)
-    it = info.hardware_parameters.find("baudrate");
-    leap_baudrate_ = (it != info.hardware_parameters.end()) ? std::stoi(it->second) : 4000000;
-    
-    // Initialize motor IDs (0-15)
-    leap_motor_ids_.clear();
-    for (size_t i = 0; i < LEAP_HAND_DOF; i++) {
-      leap_motor_ids_.push_back(static_cast<uint8_t>(i));
-    }
-    
-    // Initialize Dynamixel SDK objects
-    leap_port_handler_ = std::shared_ptr<dynamixel::PortHandler>(
-      dynamixel::PortHandler::getPortHandler(leap_serial_port_.c_str()));
-    leap_packet_handler_ = std::shared_ptr<dynamixel::PacketHandler>(
-      dynamixel::PacketHandler::getPacketHandler(LEAP_PROTOCOL_VERSION));
-    
-    leap_group_sync_write_ = std::make_shared<dynamixel::GroupSyncWrite>(
-      leap_port_handler_.get(), leap_packet_handler_.get(), 
-      LEAP_ADDR_GOAL_POSITION, LEAP_LEN_GOAL_POSITION);
-    leap_group_sync_read_pos_ = std::make_shared<dynamixel::GroupSyncRead>(
-      leap_port_handler_.get(), leap_packet_handler_.get(), 
-      LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
-    
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "LEAP Hand configured: port=%s, baudrate=%d", 
-                leap_serial_port_.c_str(), leap_baudrate_);
   }
 
   // Initialize O6 Hand if enabled
@@ -539,14 +463,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   openarm_->recv_all();
 
-  // Connect to LEAP Hand if enabled
-  if (has_leap_hand_) {
-    if (!connect_leap_hand()) {
-      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                  "Failed to connect to LEAP Hand, will operate in simulation mode");
-    }
-  }
-
   // Connect to O6 Hand if enabled
   if (has_o6_hand_) {
     if (!connect_o6_hand()) {
@@ -555,8 +471,8 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
     }
     
     // Initialize O6 hand to open position (0.0 rad = open)
-    // Gripper slot only exists in joint_names_ when hand_=true AND no O6/LEAP hand
-    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    // Gripper slot only exists in joint_names_ when hand_=true AND no O6 hand
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     
     // Set command and state buffers to open position
     for (size_t i = 0; i < 6; ++i) {
@@ -588,13 +504,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
   arm_thread_running_ = true;
   arm_control_thread_ = std::thread(&OpenArm_v10HW::arm_control_loop, this);
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread started at 500Hz (write-only)");
-  
-  // Start LEAP Hand control thread (500Hz, write-only) if enabled
-  if (has_leap_hand_ && leap_connected_) {
-    leap_thread_running_ = true;
-    leap_control_thread_ = std::thread(&OpenArm_v10HW::leap_control_loop, this);
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread started at 500Hz (write-only)");
-  }
 
   // Start O6 Hand control thread (60Hz) if enabled
   if (has_o6_hand_ && o6_connected_) {
@@ -616,7 +525,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_activate(
                 arm_prefix_.c_str());
   }
 
-  // Start decoupled state read thread (reads CAN arm + LEAP serial + applies LPF)
+  // Start decoupled state read thread (reads CAN arm + applies LPF)
   state_read_thread_running_ = true;
   state_read_thread_ = std::thread(&OpenArm_v10HW::state_read_loop, this);
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
@@ -719,15 +628,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     }
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Arm control thread stopped");
   }
-  
-  // Stop LEAP Hand control thread
-  if (leap_thread_running_) {
-    leap_thread_running_ = false;
-    if (leap_control_thread_.joinable()) {
-      leap_control_thread_.join();
-    }
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "LEAP Hand control thread stopped");
-  }
 
   // Stop O6 Hand control thread
   if (o6_thread_running_) {
@@ -747,11 +647,6 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
     RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "State read thread stopped");
   }
 
-  // Disconnect LEAP Hand if connected
-  if (has_leap_hand_) {
-    disconnect_leap_hand();
-  }
-
   // Disconnect O6 Hand if connected
   if (has_o6_hand_) {
     disconnect_o6_hand();
@@ -766,12 +661,7 @@ hardware_interface::CallbackReturn OpenArm_v10HW::on_deactivate(
   // Batch-dump the in-memory debug ring buffer to CSV (zero I/O happened in the loop).
   // The arm control thread was already joined above, so this read needs no lock.
   flush_debug_ring_to_csv();
-  if (leap_debug_csv_.is_open()) {
-    leap_debug_csv_.flush();
-    leap_debug_csv_.close();
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "Closed LEAP Hand debug CSV file on deactivate");
-  }
-  
+
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"), "OpenArm V10 deactivated");
   return CallbackReturn::SUCCESS;
 }
@@ -781,8 +671,8 @@ hardware_interface::return_type OpenArm_v10HW::read(
   // Copy arm states from high-frequency thread buffer (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_state_mutex_);
-    // Only include gripper slot in joint interface when it's a CAN gripper (not O6/LEAP)
-    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
+    // Only include gripper slot in joint interface when it's a CAN gripper (not O6)
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       pos_states_[i] = arm_pos_state_buffer_[i];
       vel_states_[i] = arm_vel_state_buffer_[i];
@@ -797,21 +687,10 @@ hardware_interface::return_type OpenArm_v10HW::read(
     }
   }
 
-  // Copy LEAP Hand states from thread buffer if enabled (thread-safe)
-  if (has_leap_hand_ && leap_connected_) {
-    std::lock_guard<std::mutex> lock(leap_state_mutex_);
-    size_t leap_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
-    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-      pos_states_[leap_start_idx + i] = leap_pos_state_buffer_[i];
-      vel_states_[leap_start_idx + i] = 0.0;  // LEAP Hand doesn't provide velocity
-      tau_states_[leap_start_idx + i] = 0.0;  // LEAP Hand doesn't provide torque
-    }
-  }
-
   // Copy O6 Hand states from thread buffer if enabled (thread-safe)
   if (has_o6_hand_ && o6_connected_) {
     std::lock_guard<std::mutex> lock(o6_state_mutex_);
-    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     for (size_t i = 0; i < O6_HAND_DOF; ++i) {
       pos_states_[o6_start_idx + i] = o6_pos_state_buffer_[i];
       vel_states_[o6_start_idx + i] = 0.0;  // O6 Hand doesn't provide velocity feedback
@@ -827,8 +706,8 @@ hardware_interface::return_type OpenArm_v10HW::write(
   // Update arm command buffers (thread-safe)
   {
     std::lock_guard<std::mutex> lock(arm_command_mutex_);
-    // Only include gripper slot when it's a CAN gripper (not O6/LEAP)
-    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
+    // Only include gripper slot when it's a CAN gripper (not O6)
+    size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     for (size_t i = 0; i < arm_size; ++i) {
       // Apply inverse joint direction correction before sending to hardware
       if (i < ARM_DOF && joint_direction_[i] < 0) {
@@ -843,20 +722,11 @@ hardware_interface::return_type OpenArm_v10HW::write(
     }
   }
 
-  // Update LEAP Hand command buffers if enabled (thread-safe)
-  if (has_leap_hand_ && leap_connected_) {
-    std::lock_guard<std::mutex> lock(leap_command_mutex_);
-    size_t leap_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
-    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-      leap_pos_cmd_buffer_[i] = pos_commands_[leap_start_idx + i];
-    }
-  }
-
   // Update O6 Hand command buffers if enabled (thread-safe)
   // Only copy 6 active joint commands (passive joints are mechanically coupled)
   if (has_o6_hand_ && o6_connected_) {
     std::lock_guard<std::mutex> lock(o6_command_mutex_);
-    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) + (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+    size_t o6_start_idx = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     
     // Copy 6 active joint commands (indices 0-5 in O6 joint list)
     for (size_t i = 0; i < 6; ++i) {
@@ -900,138 +770,6 @@ double OpenArm_v10HW::motor_radians_to_joint(double motor_radians) {
   return GRIPPER_JOINT_0_POSITION *
          (motor_radians /
           GRIPPER_MOTOR_1_RADIANS);  // Scale from 0 to -1.0472 to 0-0.044
-}
-
-// LEAP Hand Dynamixel functions
-bool OpenArm_v10HW::connect_leap_hand() {
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Connecting to LEAP Hand on %s at %d baud",
-              leap_serial_port_.c_str(), leap_baudrate_);
-
-  // Open port
-  if (!leap_port_handler_->openPort()) {
-    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "Failed to open LEAP Hand port %s", leap_serial_port_.c_str());
-    return false;
-  }
-
-  // Set baudrate
-  if (!leap_port_handler_->setBaudRate(leap_baudrate_)) {
-    RCLCPP_ERROR(rclcpp::get_logger("OpenArm_v10HW"),
-                 "Failed to set LEAP Hand baudrate to %d", leap_baudrate_);
-    leap_port_handler_->closePort();
-    return false;
-  }
-
-  // Add motors to sync read group
-  for (uint8_t motor_id : leap_motor_ids_) {
-    if (!leap_group_sync_read_pos_->addParam(motor_id)) {
-      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                  "Failed to add LEAP motor %d to sync read", motor_id);
-    }
-  }
-
-  // Enable torque for all motors
-  for (uint8_t motor_id : leap_motor_ids_) {
-    uint8_t dxl_error = 0;
-    int dxl_comm_result = leap_packet_handler_->write1ByteTxRx(
-      leap_port_handler_.get(), motor_id, LEAP_ADDR_TORQUE_ENABLE, 1, &dxl_error);
-    
-    if (dxl_comm_result != COMM_SUCCESS) {
-      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                  "Failed to enable torque for LEAP motor %d: %s",
-                  motor_id, leap_packet_handler_->getTxRxResult(dxl_comm_result));
-    }
-  }
-
-  leap_connected_ = true;
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "LEAP Hand connected successfully");
-  return true;
-}
-
-void OpenArm_v10HW::disconnect_leap_hand() {
-  if (!leap_connected_) {
-    return;
-  }
-
-  // Disable torque for all motors
-  for (uint8_t motor_id : leap_motor_ids_) {
-    uint8_t dxl_error = 0;
-    leap_packet_handler_->write1ByteTxRx(
-      leap_port_handler_.get(), motor_id, LEAP_ADDR_TORQUE_ENABLE, 0, &dxl_error);
-  }
-
-  leap_port_handler_->closePort();
-  leap_connected_ = false;
-  
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "LEAP Hand disconnected");
-}
-
-bool OpenArm_v10HW::send_leap_hand_command(const std::vector<double>& positions, size_t start_idx) {
-  if (!leap_connected_ || start_idx + LEAP_HAND_DOF > positions.size()) {
-    return false;
-  }
-
-  // Clear previous sync write data
-  leap_group_sync_write_->clearParam();
-
-  // Convert URDF coordinates to LEAP coordinates, then to Dynamixel ticks
-  for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-    double leap_pos = urdf_to_leap(positions[start_idx + i]);
-    int32_t position_ticks = static_cast<int32_t>(leap_pos / LEAP_POS_SCALE);
-    
-    // Add position goal to sync write
-    uint8_t param_goal_position[4];
-    param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(position_ticks));
-    param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(position_ticks));
-    param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(position_ticks));
-    param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(position_ticks));
-    
-    if (!leap_group_sync_write_->addParam(leap_motor_ids_[i], param_goal_position)) {
-      RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                  "Failed to add goal position for LEAP motor %d", leap_motor_ids_[i]);
-      return false;
-    }
-  }
-
-  // Transmit sync write packet
-  int dxl_comm_result = leap_group_sync_write_->txPacket();
-  if (dxl_comm_result != COMM_SUCCESS) {
-    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "LEAP Hand sync write failed: %s",
-                leap_packet_handler_->getTxRxResult(dxl_comm_result));
-    return false;
-  }
-
-  return true;
-}
-
-bool OpenArm_v10HW::read_leap_hand_states(std::vector<double>& positions, size_t start_idx) {
-  if (!leap_connected_ || start_idx + LEAP_HAND_DOF > positions.size()) {
-    return false;
-  }
-
-  // Read positions
-  int dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
-  if (dxl_comm_result != COMM_SUCCESS) {
-    return false;
-  }
-
-  // Extract data for each motor
-  for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-    uint8_t motor_id = leap_motor_ids_[i];
-    
-    if (leap_group_sync_read_pos_->isAvailable(motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION)) {
-      int32_t position_ticks = leap_group_sync_read_pos_->getData(
-        motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
-      double leap_pos = static_cast<double>(position_ticks) * LEAP_POS_SCALE;
-      positions[start_idx + i] = leap_to_urdf(leap_pos);
-    }
-  }
-
-  return true;
 }
 
 // Helper: Scan URDF for links matching keywords (palm, hand, finger, tip)
@@ -1080,45 +818,7 @@ bool OpenArm_v10HW::init_kdl_dynamics(const std::string& urdf_content) {
   std::string root_link = "openarm_body_link0";
   std::vector<std::string> tip_candidates;
 
-  // Build tip candidates list (prioritize fingertips over palm)
-  if (has_leap_hand_) {
-    std::string pref_no_openarm = arm_prefix_;
-    if (!pref_no_openarm.empty() && pref_no_openarm.back() == '_') {
-      pref_no_openarm.pop_back();
-    }
-    RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-                "Scanning URDF for LEAP hand tip candidates (arm_prefix: '%s')",
-                pref_no_openarm.c_str());
-
-    // Priority 1: Scan URDF for fingertip/tip_head links (most distal)
-    std::vector<std::string> tip_keywords = {"tip_head", "fingertip"};
-    std::vector<std::string> fingertip_candidates = scan_urdf_for_tip_links(urdf_content, tip_keywords);
-    
-    for (const auto &cand : fingertip_candidates) {
-      tip_candidates.push_back(cand);
-      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-      //             "Found fingertip candidate: '%s' (priority 1)", cand.c_str());
-    }
-
-    // Priority 2: Common LEAP/O6 fingertip patterns
-    tip_candidates.push_back(pref_no_openarm + "_index_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_middle_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_ring_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_thumb_tip_head");
-    tip_candidates.push_back(pref_no_openarm + "_fingertip");
-
-    // Priority 3: Scan for palm/hand links (fallback)
-    std::vector<std::string> palm_keywords = {"palm", "hand"};
-    std::vector<std::string> palm_candidates = scan_urdf_for_tip_links(urdf_content, palm_keywords);
-    
-    for (const auto &cand : palm_candidates) {
-      tip_candidates.push_back(cand);
-      // RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-      //             "Found palm/hand candidate: '%s' (priority 3, fallback)", cand.c_str());
-    }
-  }
-  
-  // Priority 4: Always try standard link7 as final fallback
+  // Build tip candidates list. Always try standard link7 as the fallback.
   tip_candidates.push_back("openarm_" + arm_prefix_ + "link7");
 
   // Try all candidates to build KDL chain (first successful one wins)
@@ -1383,109 +1083,8 @@ void OpenArm_v10HW::arm_control_loop() {
               "Arm control loop stopped");
 }
 
-// LEAP Hand control loop (500Hz - synchronized with arm)
-void OpenArm_v10HW::leap_control_loop() {
-  using namespace std::chrono;
-  const auto loop_period = microseconds(2000);  // 500Hz = 2ms (matches arm control timing)
-  auto next_cycle = steady_clock::now() + loop_period;
-  
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-              "LEAP Hand control loop started (500Hz, synchronized with arm)");
-  
-  std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
-  
-  while (leap_thread_running_) {
-    // Copy commands from buffer (thread-safe)
-    {
-      std::lock_guard<std::mutex> lock(leap_command_mutex_);
-      pos_cmd = leap_pos_cmd_buffer_;
-    }
-    
-    // Initialize CSV file on first iteration
-    if (!leap_csv_initialized_) {
-      std::string package_share_dir;
-      try {
-        package_share_dir = ament_index_cpp::get_package_share_directory("openarm_hardware");
-      } catch (const std::exception& e) {
-        package_share_dir = "/tmp";
-      }
-      
-      auto now = std::chrono::system_clock::now();
-      auto time_t_now = std::chrono::system_clock::to_time_t(now);
-      std::tm tm_now;
-      localtime_r(&time_t_now, &tm_now);
-      
-      std::ostringstream tmp_date;
-      tmp_date << std::put_time(&tm_now, "%Y%m%d");
-      std::string date_str = tmp_date.str();
-      
-      std::filesystem::path dir_path = std::filesystem::path(package_share_dir) / "debug_csvs" / date_str;
-      try {
-        std::filesystem::create_directories(dir_path);
-      } catch (const std::exception &e) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-                    "Failed to create LEAP debug CSV directory '%s': %s", 
-                    dir_path.c_str(), e.what());
-      }
-      
-      std::ostringstream oss;
-      oss << dir_path.string() << "/debug_leap_hand_"
-          << std::put_time(&tm_now, "%Y%m%d_%H%M%S") << ".csv";
-      std::string csv_filename = oss.str();
-      leap_debug_csv_.open(csv_filename);
-      
-      if (!leap_debug_csv_.is_open()) {
-        RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-                    "Failed to open LEAP debug CSV: %s", csv_filename.c_str());
-      } else {
-        leap_debug_csv_ << "timestamp,motor_id,pos_cmd_urdf,pos_cmd_leap,pos_state_urdf,"
-                        << "pos_state_leap,pos_error_urdf,motor_name\n";
-        RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-                    "LEAP Hand debug CSV created: %s", csv_filename.c_str());
-      }
-      leap_csv_initialized_ = true;
-    }
-    
-    // Send LEAP Hand commands
-    if (leap_connected_) {
-      // Clear previous sync write data
-      leap_group_sync_write_->clearParam();
-      
-      // Convert URDF coordinates to LEAP coordinates and send
-      for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-        double leap_pos = urdf_to_leap(pos_cmd[i]);
-        int32_t position_ticks = static_cast<int32_t>(leap_pos / LEAP_POS_SCALE);
-        
-        uint8_t param_goal_position[4];
-        param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(position_ticks));
-        param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(position_ticks));
-        param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(position_ticks));
-        param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(position_ticks));
-        
-        leap_group_sync_write_->addParam(leap_motor_ids_[i], param_goal_position);
-      }
-      
-      // Protect serial write operation with mutex (RS-485 is half-duplex)
-      {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        leap_group_sync_write_->txPacket();
-      }
-      
-      // State reading is handled by the decoupled state_read_loop() @ 200Hz.
-    }
-    
-    // Sleep until next cycle
-    std::this_thread::sleep_until(next_cycle);
-    next_cycle += loop_period;
-  }
-  
-  RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW_Thread"), 
-              "LEAP Hand control loop stopped");
-}
-
-// Decoupled state read loop — reads both CAN arm and LEAP Hand serial, applies LPF.
-// Runs at CONTROL_READ_RATE_HZ (500Hz) independently of the 500Hz write loops.
-// This prevents RS-485 read latency from stalling CAN command sending.
+// Decoupled state read loop — reads CAN arm states, applies LPF.
+// Runs at CONTROL_READ_RATE_HZ (500Hz) independently of the 500Hz write loop.
 void OpenArm_v10HW::state_read_loop() {
   using namespace std::chrono;
   const auto loop_period =
@@ -1499,7 +1098,6 @@ void OpenArm_v10HW::state_read_loop() {
   std::vector<double> pos_state(arm_buf_size, 0.0);
   std::vector<double> vel_state(arm_buf_size, 0.0);
   std::vector<double> tau_state(arm_buf_size, 0.0);
-  std::vector<double> leap_pos_state(LEAP_HAND_DOF, 0.0);
 
   while (state_read_thread_running_) {
     // ---- ARM STATE READ (CAN-FD) ----
@@ -1535,79 +1133,6 @@ void OpenArm_v10HW::state_read_loop() {
       arm_tau_state_buffer_ = tau_state;
     }
 
-    // ---- LEAP HAND STATE READ (RS-485) ----
-    if (has_leap_hand_ && leap_connected_) {
-      int dxl_comm_result;
-      {
-        std::lock_guard<std::mutex> lock(serial_mutex_);
-        dxl_comm_result = leap_group_sync_read_pos_->txRxPacket();
-      }
-      if (dxl_comm_result == COMM_SUCCESS) {
-        for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-          uint8_t motor_id = leap_motor_ids_[i];
-          if (leap_group_sync_read_pos_->isAvailable(
-                motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION)) {
-            int32_t ticks = leap_group_sync_read_pos_->getData(
-              motor_id, LEAP_ADDR_PRESENT_POSITION, LEAP_LEN_PRESENT_POSITION);
-            leap_pos_state[i] = leap_to_urdf(static_cast<double>(ticks) * LEAP_POS_SCALE);
-          }
-        }
-
-        // Apply low-pass filter to LEAP position states
-        leap_state_filter_.update(leap_pos_state);
-        const std::vector<double>& filtered_leap = leap_state_filter_.get();
-
-        // Update LEAP state buffer (thread-safe)
-        {
-          std::lock_guard<std::mutex> lock(leap_state_mutex_);
-          leap_pos_state_buffer_ = filtered_leap;
-        }
-
-        // Health: successful read
-        health_status_.consecutive_read_failures = 0;
-        health_status_.leap_healthy = true;
-      } else {
-        health_status_.consecutive_read_failures++;
-        if (health_status_.consecutive_read_failures > MAX_CONSECUTIVE_FAILURES) {
-          health_status_.leap_healthy = false;
-          RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW_Thread"),
-                      "State read loop: %zu consecutive LEAP read failures",
-                      health_status_.consecutive_read_failures.load());
-        }
-        
-        // Log data to CSV every 10 iterations (10Hz) to reduce file size
-        if (leap_csv_sample_count_ % 1 == 0 && leap_debug_csv_.is_open()) {
-          auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now().time_since_epoch()).count();
-          // Motor names for readability
-          const char* motor_names[] = {
-            "index_side", "index_fwd", "index_pip", "index_dip",
-            "middle_side", "middle_fwd", "middle_pip", "middle_dip",
-            "ring_side", "ring_fwd", "ring_pip", "ring_dip",
-            "thumb_side", "thumb_fwd", "thumb_pip", "thumb_dip"
-          };
-          // Get latest command buffer (thread-safe)
-          std::vector<double> pos_cmd(LEAP_HAND_DOF, 0.0);
-          {
-            std::lock_guard<std::mutex> lock(leap_command_mutex_);
-            pos_cmd = leap_pos_cmd_buffer_;
-          }
-          for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-            double pos_cmd_urdf = pos_cmd[i];
-            double pos_cmd_leap = urdf_to_leap(pos_cmd_urdf);
-            double pos_state_urdf = pos_state[i];
-            double pos_state_leap = urdf_to_leap(pos_state_urdf);
-            double pos_error = pos_cmd_urdf - pos_state_urdf;
-            leap_debug_csv_ << timestamp << "," << static_cast<int>(leap_motor_ids_[i]) << ","
-                           << pos_cmd_urdf << "," << pos_cmd_leap << ","
-                           << pos_state_urdf << "," << pos_state_leap << ","
-                           << pos_error << "," << motor_names[i] << "\n";
-          }
-        }
-        leap_csv_sample_count_++;
-      }
-    }
-
     std::this_thread::sleep_until(next_cycle);
     next_cycle += loop_period;
   }
@@ -1626,21 +1151,14 @@ void OpenArm_v10HW::check_health() {
                 health_status_.consecutive_read_failures.load(),
                 health_status_.consecutive_write_failures.load());
   }
-  
-  // Check LEAP health
-  if (!health_status_.leap_healthy) {
-    RCLCPP_WARN(rclcpp::get_logger("OpenArm_v10HW"),
-                "LEAP Hand health check failed");
-  }
 }
 
 void OpenArm_v10HW::report_health_status() {
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "=== Health Status ===");
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
-              "Arm healthy: %s, LEAP healthy: %s",
-              health_status_.arm_healthy ? "YES" : "NO",
-              health_status_.leap_healthy ? "YES" : "NO");
+              "Arm healthy: %s",
+              health_status_.arm_healthy ? "YES" : "NO");
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10HW"),
               "Consecutive read failures: %zu",
               health_status_.consecutive_read_failures.load());
@@ -1656,7 +1174,7 @@ void OpenArm_v10HW::report_health_status() {
 }
 
 bool OpenArm_v10HW::is_healthy() const {
-  return health_status_.arm_healthy && health_status_.leap_healthy;
+  return health_status_.arm_healthy;
 }
 
 // Health monitoring thread implementation

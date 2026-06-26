@@ -354,6 +354,5 @@ openarm/
     └── o6_bimanual_standalone.urdf.xacro        # 雙手 URDF
 
 scripts/
-├── test_leap_hand.py                            # LEAP hand 測試腳本
 └── test_o6_bimanual.py                          # O6 雙手測試腳本
 ```

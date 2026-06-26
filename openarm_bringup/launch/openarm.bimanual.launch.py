@@ -310,34 +310,6 @@ def generate_launch_description():
         )]
     )
 
-    # Spawn right_hand_controller for leap_hand finger joints
-    # This controller is needed for both fake and real hardware when ee_type=leap_hand_right
-    def conditional_hand_controller_spawner(context: LaunchContext):
-        ee_type_str = context.perform_substitution(ee_type)
-        use_jsp = context.perform_substitution(use_joint_state_publisher)
-        robot_controller_str = context.perform_substitution(robot_controller)
-        
-        # Only spawn if ee_type is leap_hand_right AND not using joint_state_publisher
-        if ee_type_str == "leap_hand_right" and use_jsp.lower() != "true":
-            # Select hand controller based on robot_controller mode
-            if robot_controller_str == "forward_position_controller":
-                hand_controller_name = "right_hand_forward_position_controller"
-            else:  # joint_trajectory_controller (default)
-                hand_controller_name = "right_hand_controller"
-            
-            return [Node(
-                package="controller_manager",
-                executable="spawner",
-                namespace=namespace_from_context(context, arm_prefix),
-                arguments=[hand_controller_name, "-c",
-                           f"/{namespace_from_context(context, arm_prefix)}/controller_manager" if namespace_from_context(context, arm_prefix) else "/controller_manager"],
-            )]
-        return []
-    
-    hand_controller_spawner = OpaqueFunction(
-        function=conditional_hand_controller_spawner
-    )
-
     # Timing and sequencing
     LAUNCH_DELAY_SECONDS = 1.0
     delayed_joint_state_broadcaster = TimerAction(
@@ -357,11 +329,6 @@ def generate_launch_description():
         condition=UnlessCondition(use_joint_state_publisher),
     )
     
-    delayed_hand_controller = TimerAction(
-        period=LAUNCH_DELAY_SECONDS,
-        actions=[hand_controller_spawner],
-    )
-
     return LaunchDescription(
         declared_arguments + [
             robot_nodes_spawner_func,
@@ -372,7 +339,6 @@ def generate_launch_description():
             delayed_joint_state_broadcaster,
             delayed_robot_controller,
             delayed_gripper_controller,
-            delayed_hand_controller,
         ]
     )
 

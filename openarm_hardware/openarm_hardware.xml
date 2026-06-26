@@ -28,15 +28,8 @@
     <description>
       LPF-enhanced OpenArm V10 hardware interface. Adds a Low-Pass Filter on
       position commands (cmd_filter_cutoff_hz param, default 10 Hz) while
-      inheriting all motor control, gravity/friction compensation, LEAP Hand,
+      inheriting all motor control, gravity/friction compensation,
       and O6 Hand functionality from OpenArm_v10HW.
-    </description>
-  </class>
-  <class name="openarm_hardware/LeapHandHardware"
-         type="openarm_hardware::LeapHandHardware"
-         base_class_type="hardware_interface::SystemInterface">
-    <description>
-      ros2_control hardware interface for LEAP Hand via Dynamixel serial communication.
     </description>
   </class>
   <class name="openarm_hardware/O6HandHardware"

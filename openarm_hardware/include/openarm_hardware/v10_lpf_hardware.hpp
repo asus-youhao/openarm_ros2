@@ -20,7 +20,7 @@
 //
 // This class extends OpenArm_v10HW to add a Low-Pass Filter (LPF) on the
 // COMMAND side.  The state-side LPF already exists in the base class
-// (arm_state_filter_, leap_state_filter_, o6_state_filter_).
+// (arm_state_filter_, o6_state_filter_).
 //
 // Data-flow overview
 // ------------------
@@ -62,7 +62,7 @@ namespace openarm_hardware {
  * @brief LPF-enhanced OpenArm V10 Hardware Interface.
  *
  * Inherits all motor control, thread management, gravity/friction compensation,
- * LEAP Hand, and O6 Hand functionality from OpenArm_v10HW.
+ * and O6 Hand functionality from OpenArm_v10HW.
  *
  * Only three methods are overridden:
  *   - on_init()     : adds cmd filter initialisation after base on_init()
@@ -94,8 +94,7 @@ class OpenArm_v10LPF_HW : public OpenArm_v10HW {
 
   /**
    * Applies LPF to position commands before writing them to the thread-safe
-   * cmd buffers consumed by arm_control_loop() / leap_control_loop() /
-   * o6_control_loop().
+   * cmd buffers consumed by arm_control_loop() / o6_control_loop().
    *
    * Velocity and torque commands are passed through unfiltered to preserve
    * feed-forward dynamics accuracy.
@@ -105,11 +104,10 @@ class OpenArm_v10LPF_HW : public OpenArm_v10HW {
 
  private:
   // ---- Command LPF filters ----
-  // (State LPF filters arm_state_filter_ / leap_state_filter_ / o6_state_filter_
+  // (State LPF filters arm_state_filter_ / o6_state_filter_
   //  are inherited from OpenArm_v10HW and applied in state_read_loop().)
 
   LowPassFilter arm_cmd_filter_;   ///< LPF for arm (+ gripper) position commands
-  LowPassFilter leap_cmd_filter_;  ///< LPF for LEAP Hand position commands
   LowPassFilter o6_cmd_filter_;    ///< LPF for O6 Hand (6 active joints) position commands
 
   /// Cutoff frequency for command LPF (Hz). Loaded from hardware parameter
