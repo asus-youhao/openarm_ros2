@@ -21,9 +21,9 @@ OPENARM_URDF (env var)
 | q index | 關節群 | 說明 |
 |---------|--------|------|
 | `q[0:7]`  | `openarm_left_joint1~7`  | 左臂 7 DOF |
-| `q[7:18]` | 左手 11 joints           | LEAP Hand fingers |
+| `q[7:18]` | 左手 11 joints           | O6 Hand fingers |
 | `q[18:25]`| `openarm_right_joint1~7` | 右臂 7 DOF ← **IK 目標範圍** |
-| `q[25:36]`| 右手 11 joints           | LEAP Hand fingers |
+| `q[25:36]`| 右手 11 joints           | O6 Hand fingers |
 
 > ⚠️ 注意：右臂 q_slice = `[18:25]`，**不是** `[7:14]`（那是左手 finger）。  
 > pinocchio solver 透過 `model.joints[id].idx_q` 動態查詢避免硬編碼錯誤。
