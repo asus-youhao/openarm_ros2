@@ -316,7 +316,6 @@ class PlacoOnlineProfiler(Node):
         self._placo_session = PlacoSession(
             urdf          = urdf,
             arm           = args.arm,
-            rebuild       = args.rebuild,
             max_iter      = getattr(args, "max_iter", _MAX_ITER),
             rate_hz       = self._rate_hz,
             vel_limits    = not getattr(args, "no_vel_limits", False),
@@ -399,8 +398,7 @@ class PlacoOnlineProfiler(Node):
         self._ring_loop = collections.deque(maxlen=_RING)
         self._ring_iter = collections.deque(maxlen=_RING)
 
-        mode  = "cached" if not args.rebuild else "rebuild"
-        csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
+        csv_p = args.csv or _csv_path("placo_online", args.arm, "cached")
         self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
         self._csv_path   = csv_p
 
@@ -1182,7 +1180,7 @@ class PlacoOnlineProfiler(Node):
             "success":           r["success"],
             "deadline_missed":   deadline_missed,
             "mem_mb":            round(r["mem_kb"] / 1024.0, 1),
-            "mode":              "rebuild" if self.args.rebuild else "cached",
+            "mode":              "cached",
             "sigma_min":         round(r.get("sigma_min", 0.0), 6),
             "lambda_dls":        round(r.get("lambda_dls", 0.0), 8),
         })))
@@ -1381,8 +1379,7 @@ class PlacoOnlineProfiler(Node):
 
         fig, axes = plt.subplots(4, 2, figsize=(14, 16))
         fig.suptitle(
-            f"Placo Online Profiler  arm={self.args.arm}  "
-            f"{'rebuild' if self.args.rebuild else 'cached'}\n"
+            f"Placo Online Profiler  arm={self.args.arm}  cached\n"
             f"n={len(rows)}  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms",
             fontsize=11,
         )
@@ -1477,7 +1474,7 @@ class PlacoOnlineProfiler(Node):
         cfg  = self.cfg
         print(f"\n{'═'*65}")
         print(f"  Placo Online Profiler")
-        print(f"  arm={args.arm}  mode={'rebuild' if args.rebuild else 'CACHED+early_exit'}")
+        print(f"  arm={args.arm}  mode=CACHED+early_exit")
         print(f"  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms")
         print(f"  ee_delta : {cfg['ee_delta_topic']}")
         if self._fwd_pub is not None:

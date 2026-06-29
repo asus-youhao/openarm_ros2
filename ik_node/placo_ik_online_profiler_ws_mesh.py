@@ -2,59 +2,43 @@
 """
 placo_ik_online_profiler_ws_mesh.py
 ===================================
-Placo IK online profiler。預設雙手 (--arm both)、不做 workspace clamp
-(--no-ws-clamp)、開機先 home (--home-first)，裸跑即可。
+Placo IK online profiler。預設雙手 (--arm both)、開機先 home (--home-first)，
+裸跑即可。
 
-深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
-並揭露為何原版測到 20-30 ms。
+深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations。
 
-【為什麼原版是 20-30 ms？】
-  原版 PlacoIKSolver._solve_from_seed() 有兩個問題：
-  1. 每次 solve 都 rebuild RobotWrapper（~5ms overhead）
-  2. _solve_from_seed 跑滿 MAX_ITER=250 iterations，沒有 early exit
-     → 250 iters × ~0.08ms/iter ≈ 20ms + robot_build ≈ 5ms = ~25ms
+【RobotWrapper 一律 cache（本檔固定行為，無切換）】
+  RobotWrapper 建立成本昂貴且只需建一次；KinematicsSolver 輕量，每步重建沒問題。
+  每步 = solver_setup(~0.15ms) + early_exit_iters(~0.3ms) ≈ 0.5ms
+  → 200Hz 輕鬆，50Hz deadline miss = 0%。
+  （對比：每步 rebuild RobotWrapper(~5ms) + 跑滿 250 iters(~20ms) ≈ 25ms，
+    50Hz 必爆 deadline——所以本檔不提供 rebuild 模式。）
 
-【online 要 rebuild 還是 cache？→ 一定要 cache！】
-  rebuild (原版行為):
-    每步 = robot_build(~5ms) + solver_setup(~0.1ms) + 250_iters(~20ms) ≈ 25ms
-    → 20Hz 已在 deadline 邊緣，50Hz 不可能 (預算=20ms)
-  cached (本檔預設):
-    每步 = solver_setup(~0.15ms) + early_exit_iters(~0.3ms) ≈ 0.5ms
-    → 200Hz 輕鬆，50Hz deadling miss = 0%
-    原理：RobotWrapper 建立成本昂貴且只需建一次；
-           KinematicsSolver 輕量，每步重建沒問題。
-
-【Early exit（本檔新增，原版缺少）】
+【Early exit】
   每 iteration 後檢查 pos_err < POS_TOL (3mm)，達到即跳出。
   near-target 步通常 1-3 iters 即收斂，比跑滿 250 fast 100×。
 
 Usage（需要 ROS2 + robot driver 執行中）：
-  # 右臂，ee_delta tracker 模式，right 手把
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right
+  # 預設：雙手 + home-first，裸跑即可
+  python3 placo_ik_online_profiler_ws_mesh.py
 
-  # 左臂
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm left
-
-  # 對比原版行為（rebuild + 無 early exit）
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right --rebuild
-
-  # 自訂輸出路徑
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py \\
-      --arm right --csv ~/my_profile.csv --plot ~/my_profile.png
+  # 單臂（右 / 左）
+  python3 placo_ik_online_profiler_ws_mesh.py --arm right
+  python3 placo_ik_online_profiler_ws_mesh.py --arm left
 
   # dry-run（計算 IK 但不送 trajectory）
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right --dry-run
+  python3 placo_ik_online_profiler_ws_mesh.py --dry-run
 
-Prerequisites（和 tracker_ee_delta_ik_backend.py 相同）：
+Prerequisites：
   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py
   # tracker 需要在另一個 terminal 發布 /ee_delta/{arm} (PoseStamped)
 
-Published topics（完全相容 tracker_ee_delta_ik_backend.py）：
-  /right_joint_trajectory_controller/joint_trajectory   (JointTrajectory)
-  /right/delta_ik_latency_ms                            (Float32) — total ik_ms
-  /right/placo_profile                                  (String, JSON) — detailed breakdown
+Published topics（每隻手 {arm} ∈ {right,left}）：
+  /{arm}_joint_trajectory_controller/joint_trajectory   (JointTrajectory)
+  /{arm}/delta_ik_latency_ms                            (Float32) — total ik_ms
+  /{arm}/placo_profile                                  (String, JSON) — detailed breakdown
 
-CSV columns（延伸自原版）：
+CSV columns：
   t, x, y, z, success, ik_ms, total_ms, dx, dy, dz,
   robot_ms, setup_ms, loop_ms, iterations, iter_ms,
   pos_err_mm, track_err_mm, mem_kb, deadline_missed
@@ -102,8 +86,6 @@ def _parse_args():
                    help="JointTrajectory duration ms  (default: auto = 1.5× period)")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
-    p.add_argument("--rebuild",   action="store_true",
-                   help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
                    help="Disable joint velocity limits in IK solver  (not recommended)")
     p.add_argument("--wrist-vel-cap", type=float, default=4.0, dest="wrist_vel_cap",
