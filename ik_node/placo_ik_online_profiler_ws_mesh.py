@@ -84,8 +84,6 @@ def _parse_args():
                    help="Control-loop Hz  (default: 50).  Also sets solver dt.")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
-    p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
-                   help="Disable joint velocity limits in IK solver  (not recommended)")
     p.add_argument("--wrist-vel-cap", type=float, default=4.0, dest="wrist_vel_cap",
                    help="Wrist (joint5-7) velocity cap in rad/s for teleop smoothness. "
                         "URDF default = 20.94 rad/s (1200°/s) lets IK noise pass through. "
@@ -113,8 +111,6 @@ def _parse_args():
                    help="Tracker→arm yaw offset in degrees  (default: 0)")
     p.add_argument("--calib-rpy", default=None, dest="calib_rpy",
                    help="'roll,pitch,yaw' degrees — overrides --calib-yaw")
-    p.add_argument("--tracker-side", default=None, dest="tracker_side",
-                   choices=["left", "right", None])
     p.add_argument("--csv",       default="", help="Output CSV path")
     p.add_argument("--plot",      default="", help="Output plot PNG path")
     p.add_argument("--dry-run",   action="store_true", dest="dry_run",
@@ -133,12 +129,6 @@ def _parse_args():
                         "elbow restriction, or to diagnose coupling behaviour. (default: on)")
     p.add_argument("--j3j4-couple", action="store_false", dest="no_j3j4_couple",
                    help="Enable j3/j4 elbow-torso safety coupling")
-    p.add_argument("--success-gate", action="store_true", dest="success_gate",
-                   help="Restore legacy 'freeze on IK failure' behaviour. "
-                        "Default (off) = Set2-D continuous approach: always publish, "
-                        "let velocity_limits saturate the partial solution. "
-                        "Set this flag to revert to the old behaviour where IK "
-                        "pos_err > 10mm causes the arm to stop moving.")
     return p.parse_args()
 
 

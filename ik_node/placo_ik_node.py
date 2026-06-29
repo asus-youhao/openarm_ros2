@@ -316,13 +316,13 @@ class PlacoOnlineProfiler(Node):
             arm           = args.arm,
             max_iter      = getattr(args, "max_iter", _MAX_ITER),
             rate_hz       = self._rate_hz,
-            vel_limits    = not getattr(args, "no_vel_limits", False),
+            vel_limits    = True,
             wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
             j3j4_couple   = not getattr(args, "no_j3j4_couple", False),
         )
 
     def _init_motion_pipe(self, args):
-        """Initialise output-side LPF, jump guard, and success-gate state."""
+        """Initialise output-side LPF and jump guard state."""
         n_joints = len(self.cfg["joint_names"])
         self._lpf_alpha: List[float] = _parse_lpf_alpha(
             getattr(args, "lpf_alpha", "1.0"), n_joints)
@@ -330,7 +330,6 @@ class PlacoOnlineProfiler(Node):
         self._filt_joints: Optional[List[float]] = None
 
         self._joint_jump_guard_deg = float(getattr(args, "joint_jump_guard_deg", 15.0))
-        self._success_gate    = bool(getattr(args, "success_gate", False))
         # guard-clamp mode: instead of rejecting the whole step when a joint jump
         # is detected, clamp each joint's delta to the guard threshold and publish
         # the clamped solution.  This lets the arm crawl toward the target instead
@@ -961,7 +960,6 @@ class PlacoOnlineProfiler(Node):
 
         Set2-D (continuous approach): on IK failure, still publish the partial
         solution; velocity_limits in the controller saturate safely.
-        --success-gate restores the legacy freeze-on-failure behaviour.
 
         Returns merged dict: {r, ik_ms, total_ms, track_err, guard_hit,
                                max_joint_delta_deg, deadline_missed}.
@@ -1032,7 +1030,7 @@ class PlacoOnlineProfiler(Node):
                     print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
                           f"streak={self._fail_streak} — publishing partial solve")
 
-            if (r["success"] or not self._success_gate) and not self.args.dry_run:
+            if not self.args.dry_run:
                 self._publish(joints_out)
 
         self._latency_pub.publish(Float32(data=float(ik_ms)))
@@ -1382,7 +1380,7 @@ class PlacoOnlineProfiler(Node):
             print(f"  lpf      : α={alpha_str}  (1st-order on joint cmd)")
         else:
             print(f"  lpf      : OFF")
-        print(f"  publish  : {'success-gate (legacy freeze)' if self._success_gate else 'always (continuous approach, Set2-D)'}")
+        print(f"  publish  : always (continuous approach, Set2-D)")
         if self._ori_lpf_active:
             print(f"  ori_lpf  : α={self._ori_lpf_alpha:.2f}  (SLERP EMA on target quat, test3)")
         else:
