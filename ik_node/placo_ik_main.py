@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-placo_ik_online_profiler_ws_mesh.py
-===================================
+placo_ik_main.py
+================
 Placo IK online profiler。預設雙手 (--arm both)、開機先 home (--home-first)，
 裸跑即可。
 
@@ -20,14 +20,14 @@ Placo IK online profiler。預設雙手 (--arm both)、開機先 home (--home-fi
 
 Usage（需要 ROS2 + robot driver 執行中）：
   # 預設：雙手 + home-first，裸跑即可
-  python3 placo_ik_online_profiler_ws_mesh.py
+  python3 placo_ik_main.py
 
   # 單臂（右 / 左）
-  python3 placo_ik_online_profiler_ws_mesh.py --arm right
-  python3 placo_ik_online_profiler_ws_mesh.py --arm left
+  python3 placo_ik_main.py --arm right
+  python3 placo_ik_main.py --arm left
 
   # dry-run（計算 IK 但不送指令）
-  python3 placo_ik_online_profiler_ws_mesh.py --dry-run
+  python3 placo_ik_main.py --dry-run
 
 Prerequisites：
   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py
