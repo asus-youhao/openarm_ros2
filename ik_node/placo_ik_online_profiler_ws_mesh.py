@@ -89,7 +89,7 @@ except ImportError:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Placo IK online profiler (ROS2) — bimanual, no workspace clamp",
+        description="Placo IK online profiler (ROS2) — bimanual",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--arm",       default="both", choices=["right", "left", "both"])
@@ -143,18 +143,10 @@ def _parse_args():
                    help="Send arm to home (with TF confirmation) before starting (default: on)")
     p.add_argument("--no-home-first", action="store_false", dest="home_first",
                    help="Skip homing before starting")
-    p.add_argument("--no-ws-clamp", action="store_true", default=True, dest="no_ws_clamp",
-                   help="Disable workspace XYZ clamping (default: on)")
-    p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
-                   help="Enable workspace XYZ clamping")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
                    help="Start in KEYBOARD mode  (w/s/a/d/q/e/i/k/j/l/u/o)")
-    p.add_argument("--boundary-margin", type=float, default=0.05,
-                   dest="boundary_margin",
-                   help="Soft-clamp margin in metres  (default: 0.05 = 5 cm). "
-                        "Distance from workspace boundary where damping begins.")
     p.add_argument("--no-j3j4-couple", action="store_true", default=True, dest="no_j3j4_couple",
                    help="Disable j3/j4 elbow-torso safety coupling (both soft QP guidance "
                         "and hard post-solve clip). Use when testing chest-reach without "

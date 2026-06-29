@@ -58,7 +58,6 @@ from tf2_ros import Buffer, TransformListener, TransformException
 from placo_ik_solver import _find_urdf, _quat_to_rot
 from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
-from ws_boundary import SoftClamp, BoundaryMonitor
 from paths import csv_path as _csv_path, png_for as _png_for
 from arm_config import ARM_CONFIG   # L2-A: single source of truth
 
@@ -263,15 +262,11 @@ class PlacoOnlineProfiler(Node):
 
         self._init_pose_state()
         self._init_ee_delta(args)
-        self._init_workspace(args)
         self._init_ik_session(args)
         self._init_motion_pipe(args)
         self._init_ros(args)
         self._init_telemetry(args)
         self._init_keyboard(args)
-
-        # BoundaryMonitor needs ROS publishers → must be last
-        self._bdry_monitor = BoundaryMonitor(self, args.arm)
 
         self._print_banner()
 
@@ -314,18 +309,6 @@ class PlacoOnlineProfiler(Node):
         self._ori_lpf_alpha  = max(0.0, min(1.0, float(getattr(args, "ori_lpf_alpha", 0.35))))
         self._ori_lpf_active = self._ori_lpf_alpha < 0.999
         self._ori_filt_q: Optional[Tuple[float, float, float, float]] = None
-
-    def _init_workspace(self, args):
-        """Initialise rectangular box clamp and soft boundary."""
-        self._ws_clamp = not getattr(args, "no_ws_clamp", False)
-
-        _soft_margin = float(getattr(args, "boundary_margin", 0.05))
-        # SoftClamp uses the rectangular box_ws defined in ARM_CONFIG.
-        self._soft_clamp = SoftClamp(
-            margin_m = _soft_margin,
-            box_ws   = self.cfg["workspace"],
-        )
-        self._bdry_monitor = None  # created after publishers are ready
 
     def _init_ik_session(self, args):
         """Build PlacoSession (cached RobotWrapper + KinematicsSolver)."""
@@ -989,7 +972,7 @@ class PlacoOnlineProfiler(Node):
         """
         Map tracker/keyboard input → IK target dict.
 
-        Handles session-ref reset, calibration rotation, workspace clamping,
+        Handles session-ref reset, calibration rotation,
         and SLERP orientation filter.
 
         Returns dict with keys:
@@ -1051,19 +1034,9 @@ class PlacoOnlineProfiler(Node):
             dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
             dq       = _rotate_quat(dq, self._calib_q)   # Fix-8: calib on orientation
 
-        # ── Workspace clamp (SoftClamp: smooth damping instead of hard snap) ──
-        raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
-                                base_xyz[1] + dx_arm[1],
-                                base_xyz[2] + dx_arm[2]])
-        dx_arm_arr  = np.array(dx_arm)
-        if self._ws_clamp:
-            new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
-            new_x = float(new_xyz_arr[0])
-            new_y = float(new_xyz_arr[1])
-            new_z = float(new_xyz_arr[2])
-            self._bdry_monitor.publish(_bs)
-        else:
-            new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
+        new_x = base_xyz[0] + dx_arm[0]
+        new_y = base_xyz[1] + dx_arm[1]
+        new_z = base_xyz[2] + dx_arm[2]
 
         # ── Orientation filter (input-side SLERP EMA) ─────────────────────────
         new_q_raw  = _qnorm(_qmul(dq, base_q))
@@ -1514,7 +1487,6 @@ class PlacoOnlineProfiler(Node):
         print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (for aggregator)")
         print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
-        print(f"  ws_clamp : {'box' if self._ws_clamp else 'OFF'}")
         if self._lpf_active:
             alpha_str = (f"{self._lpf_alpha[0]:.2f}" if len(set(self._lpf_alpha)) == 1
                          else "[" + ",".join(f"{a:.2f}" for a in self._lpf_alpha) + "]")
