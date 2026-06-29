@@ -31,7 +31,6 @@ _ROOT = _os.path.dirname(_HERE)                                # project root
 _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, kbd
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
-_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze
 _sys.path.insert(0, _os.path.join(_ROOT, "config"))            # arm_config
 
 import collections
@@ -57,7 +56,6 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from placo_ik_solver import _find_urdf, _quat_to_rot
-from placo_ws_analyze import WorkspaceMesh
 from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
 from ws_boundary import SoftClamp, BoundaryMonitor
@@ -318,23 +316,14 @@ class PlacoOnlineProfiler(Node):
         self._ori_filt_q: Optional[Tuple[float, float, float, float]] = None
 
     def _init_workspace(self, args):
-        """Initialise workspace mesh / box clamp and soft boundary."""
+        """Initialise rectangular box clamp and soft boundary."""
         self._ws_clamp = not getattr(args, "no_ws_clamp", False)
-        self._ws_mesh: Optional[WorkspaceMesh] = None
-        npz_path = getattr(args, "ws_mesh", None)
-        if npz_path:
-            if not os.path.isfile(npz_path):
-                raise FileNotFoundError(f"--ws-mesh not found: {npz_path}")
-            self._ws_mesh  = WorkspaceMesh.load(npz_path)
-            self._ws_clamp = True
 
         _soft_margin = float(getattr(args, "boundary_margin", 0.05))
-        # When no ws_mesh is provided, SoftClamp uses the rectangular box_ws
-        # defined in ARM_CONFIG (the "default box" fallback).
+        # SoftClamp uses the rectangular box_ws defined in ARM_CONFIG.
         self._soft_clamp = SoftClamp(
-            ws_mesh  = self._ws_mesh,
             margin_m = _soft_margin,
-            box_ws   = self.cfg["workspace"] if not self._ws_mesh else None,
+            box_ws   = self.cfg["workspace"],
         )
         self._bdry_monitor = None  # created after publishers are ready
 
@@ -1067,7 +1056,7 @@ class PlacoOnlineProfiler(Node):
                                 base_xyz[1] + dx_arm[1],
                                 base_xyz[2] + dx_arm[2]])
         dx_arm_arr  = np.array(dx_arm)
-        if self._ws_clamp or self._ws_mesh is not None:
+        if self._ws_clamp:
             new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
             new_x = float(new_xyz_arr[0])
             new_y = float(new_xyz_arr[1])
@@ -1525,12 +1514,7 @@ class PlacoOnlineProfiler(Node):
         print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (for aggregator)")
         print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
-        if self._ws_mesh is not None:
-            s = self._ws_mesh.summary()
-            print(f"  ws_mesh  : {s['n_reachable_voxels']} voxels  "
-                  f"step={s['step_m']*100:.0f}cm  vol~{s['total_volume_cm3']:.0f}cm³")
-        else:
-            print(f"  ws_clamp : {'box' if self._ws_clamp else 'OFF'}")
+        print(f"  ws_clamp : {'box' if self._ws_clamp else 'OFF'}")
         if self._lpf_active:
             alpha_str = (f"{self._lpf_alpha[0]:.2f}" if len(set(self._lpf_alpha)) == 1
                          else "[" + ",".join(f"{a:.2f}" for a in self._lpf_alpha) + "]")

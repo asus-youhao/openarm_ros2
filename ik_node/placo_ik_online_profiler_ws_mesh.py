@@ -2,13 +2,10 @@
 """
 placo_ik_online_profiler_ws_mesh.py
 ===================================
-基於 placo_ik_online_profiler.py，但將矩形 workspace clamp
-替換為由 placo_ws_analyze.WorkspaceMesh (.npz) 驅動的真實形狀 clamp。
+Placo IK online profiler。預設雙手 (--arm both)、不做 workspace clamp
+(--no-ws-clamp)、開機先 home (--home-first)，裸跑即可。
 
-  --ws-mesh <path.npz>   載入掃描產生的 WorkspaceMesh（取代矩形 box）
-  --ws-mesh-or  0.0      最低 orient_rate 門檻（若 npz 缺少時從 CSV rebuild）
-
-原有深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
+深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
 並揭露為何原版測到 20-30 ms。
 
 【為什麼原版是 20-30 ms？】
@@ -70,7 +67,6 @@ _ROOT = _os.path.dirname(_HERE)                                # project root
 _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, node
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
-_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_ROOT), "scripts"))  # joint_actions_aggregator
 
 import argparse
@@ -93,7 +89,7 @@ except ImportError:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Placo IK online profiler with WorkspaceMesh clamp (ROS2)",
+        description="Placo IK online profiler (ROS2) — bimanual, no workspace clamp",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--arm",       default="both", choices=["right", "left", "both"])
@@ -151,8 +147,6 @@ def _parse_args():
                    help="Disable workspace XYZ clamping (default: on)")
     p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
                    help="Enable workspace XYZ clamping")
-    p.add_argument("--ws-mesh",   default=None, dest="ws_mesh",
-                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py)")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",

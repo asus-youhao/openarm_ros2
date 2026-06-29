@@ -1,18 +1,16 @@
 """Centralized output-path helpers — import to skip hand-typing paths.
 
 Usage:
-    from paths import csv_path, png_for, ws_mesh_path, today_dir
+    from paths import csv_path, png_for, today_dir
 
     self._csv_path = args.csv or csv_path("placo_online", args.arm, mode)
     self._png_path = args.plot or png_for(self._csv_path)
-    npz            = args.ws_mesh or ws_mesh_path(args.arm)
 
 Layout produced:
     results/
       YYYYMMDD/                                       <- today_dir()
         placo_online_YYYYMMDD_HHMMSS_right_cached.csv <- csv_path(...)
         placo_online_YYYYMMDD_HHMMSS_right_cached.png <- png_for(csv)
-      reachability_{arm}_ws.npz                       <- ws_mesh_path(arm)
       legacy/                                         <- pre-refactor artifacts
 """
 
@@ -61,14 +59,6 @@ def png_for(csv_pathlike: str) -> str:
     return csv_pathlike + ".png"
 
 
-def ws_mesh_path(arm: str) -> str:
-    """Canonical workspace mesh location for an arm.
-
-    Profilers auto-detect this path when ``--ws-mesh`` is not given.
-    """
-    return os.path.join(RESULTS_DIR, f"reachability_{arm}_ws.npz")
-
-
 def reachability_csv(arm: str, ts: str | None = None) -> str:
     """``results/YYYYMMDD/reachability_<ts>_<arm>.csv``."""
     ts = ts or timestamp()
@@ -88,7 +78,6 @@ __all__ = [
     "timestamp",
     "csv_path",
     "png_for",
-    "ws_mesh_path",
     "reachability_csv",
     "clamp_benchmark_png",
 ]

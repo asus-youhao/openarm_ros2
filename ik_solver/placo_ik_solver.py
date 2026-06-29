@@ -33,11 +33,10 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────────
 # URDF helper
 # ─────────────────────────────────────────────────────────────────────────────
-# URDF file paths (in priority order, or override with OPENARM_URDF env var)
+# Bundled URDF lives next to this file (ik_solver/v10_o6.urdf), resolved
+# relative to the script so it works from any CWD. OPENARM_URDF env overrides.
 _URDF_SOURCES = [
-    "/home/asus/openArm_leapHand_urdf/src/openarm_description/usd/v10_o6.urdf",
-    "/home/asus/Desktop/openarm_description/urdf_transform/urdf/openarm_step10.urdf",
-    "./v10_o6.urdf"
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "v10_o6.urdf"),
 ]
 _KIN_URDF_CACHE = "/tmp/openarm_kin_placo.urdf"
 

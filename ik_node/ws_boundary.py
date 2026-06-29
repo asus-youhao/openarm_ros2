@@ -11,10 +11,10 @@ ws_boundary.py
     from ws_boundary import SoftClamp, BoundaryMonitor
 
     # __init__
-    self._soft_clamp = SoftClamp(ws_mesh, margin_m=0.05)
+    self._soft_clamp = SoftClamp(margin_m=0.05, box_ws=box_ws)
     self._bdry_mon   = BoundaryMonitor(node, arm)
 
-    # 熱迴圈裡取代舊的 ws_mesh.clamp() 呼叫
+    # 熱迴圈裡取代舊的硬 snap clamp 呼叫
     new_xyz, bs = self._soft_clamp.apply(
         raw_xyz    = np.array([raw_x, raw_y, raw_z]),
         dx_arm_raw = np.array([dx_arm[0], dx_arm[1], dx_arm[2]]),
@@ -65,7 +65,7 @@ class BoundaryState:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  SoftClamp  —  方案 A：彈性邊界，取代 WorkspaceMesh.clamp() 硬 snap
+#  SoftClamp  —  方案 A：彈性邊界（rectangular box），取代硬 snap
 # ─────────────────────────────────────────────────────────────────────────────
 class SoftClamp:
     """
@@ -81,18 +81,15 @@ class SoftClamp:
 
     Parameters
     ----------
-    ws_mesh    : WorkspaceMesh  (placo_ws_analyze.WorkspaceMesh)
     margin_m   : 開始衰減的距離（公尺），建議 = 1~2 個 voxel step
-    box_ws     : 無 ws_mesh 時退回 box clamp dict {"x":(lo,hi), ...}
+    box_ws     : rectangular box clamp dict {"x":(lo,hi), ...}
     """
 
     def __init__(
         self,
-        ws_mesh=None,
         margin_m: float = 0.05,
         box_ws: Optional[dict] = None,
     ):
-        self._mesh    = ws_mesh
         self._margin  = float(margin_m)
         self._box     = box_ws
         self._t_outside: Optional[float] = None   # timestamp when went outside
@@ -109,99 +106,11 @@ class SoftClamp:
         new_xyz     : np.ndarray  shape (3,)  — 衰減後的 target XYZ
         state       : BoundaryState
         """
-        if self._mesh is not None:
-            return self._apply_mesh(raw_xyz, dx_arm_raw)
-        elif self._box is not None:
+        if self._box is not None:
             return self._apply_box(raw_xyz, dx_arm_raw)
         else:
             bs = BoundaryState(raw_xyz=raw_xyz.tolist(), clamped_xyz=raw_xyz.tolist())
             return raw_xyz.copy(), bs
-
-    # ── Mesh-based soft clamp ─────────────────────────────────────────────────
-    def _apply_mesh(
-        self,
-        raw_xyz: np.ndarray,
-        dx_arm_raw: np.ndarray,
-    ) -> Tuple[np.ndarray, BoundaryState]:
-        nearest_xyz, dist_m = self._mesh.nearest(raw_xyz)
-        inside = self._mesh.contains(raw_xyz)
-
-        # Distance convention: positive = inside, negative = outside
-        signed_dist_m = dist_m if inside else -dist_m
-        d_mm = signed_dist_m * 1000.0
-
-        now = time.monotonic()
-        if not inside:
-            if self._t_outside is None:
-                self._t_outside = now
-            since_ms = (now - self._t_outside) * 1000.0
-        else:
-            self._t_outside  = None
-            since_ms = 0.0
-
-        # Boundary normal: unit vector pointing from nearest voxel toward raw_xyz
-        # — if inside, it points toward the nearest boundary surface
-        # — if outside, it points away from workspace (we'll use -normal for "inward")
-        vec = raw_xyz - nearest_xyz
-        vec_len = float(np.linalg.norm(vec))
-        if vec_len > 1e-6:
-            outward_normal = vec / vec_len    # points outward from workspace
-        else:
-            outward_normal = np.zeros(3)
-
-        if inside:
-            if dist_m >= self._margin:
-                # ── Well inside: passthrough ──────────────────────────────────
-                normal_gain = 1.0
-                tangential_gain = 1.0
-                new_xyz = raw_xyz.copy()
-            else:
-                # ── Near boundary: quadratic damping on outward component ─────
-                g = (dist_m / self._margin) ** 2    # 0 at boundary, 1 at margin
-                dx_normal_proj = float(np.dot(dx_arm_raw, outward_normal))
-                if dx_normal_proj > 0:
-                    # Moving outward → scale that component
-                    dx_tangent = dx_arm_raw - dx_normal_proj * outward_normal
-                    scaled_dx  = dx_tangent + g * dx_normal_proj * outward_normal
-                    new_xyz    = raw_xyz - dx_arm_raw + scaled_dx
-                    # (raw_xyz = base_xyz + dx_arm_raw, so new = base_xyz + scaled_dx)
-                    normal_gain = g
-                else:
-                    # Moving inward (away from boundary) → passthrough
-                    new_xyz = raw_xyz.copy()
-                    normal_gain = 1.0
-                tangential_gain = 1.0
-        else:
-            # ── Outside: tangential slide, zero outward component ─────────────
-            dx_outward_proj = float(np.dot(dx_arm_raw, outward_normal))
-            if dx_outward_proj > 0:
-                # dx_arm is pushing further outside → remove that component
-                dx_tangent = dx_arm_raw - dx_outward_proj * outward_normal
-                # Project target onto boundary voxel + tangential offset
-                new_xyz = nearest_xyz + dx_tangent
-            else:
-                # dx_arm is heading back inside → allow full delta
-                new_xyz = raw_xyz.copy()
-            normal_gain = 0.0
-            tangential_gain = 1.0
-
-            # Ensure the projected target is also inside workspace
-            new_nearest, new_dist = self._mesh.nearest(new_xyz)
-            new_inside = self._mesh.contains(new_xyz)
-            if not new_inside:
-                new_xyz = new_nearest.copy()
-
-        bs = BoundaryState(
-            d_to_boundary_mm = d_mm,
-            outside          = not inside,
-            since_outside_ms = since_ms,
-            normal           = outward_normal.tolist(),
-            tangential_gain  = tangential_gain,
-            normal_gain      = normal_gain,
-            raw_xyz          = raw_xyz.tolist(),
-            clamped_xyz      = new_xyz.tolist(),
-        )
-        return new_xyz, bs
 
     # ── Box-based soft clamp ──────────────────────────────────────────────────
     def _apply_box(
