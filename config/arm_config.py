@@ -11,8 +11,7 @@ base_link     : TF frame of robot base
 ee_link       : TF frame of end-effector
 home_joints   : [q1..q7] goal configuration for "go home" command
 home_pose     : (x,y,z, qx,qy,qz,qw)  FK result at home_joints  ← verified FK
-traj_topic    : JointTrajectoryController ROS2 topic (legacy homing only)
-fwd_cmd_topic : ForwardPositionController ROS2 topic (hot-loop streaming)
+fwd_cmd_topic : ForwardPositionController ROS2 topic (hot-loop streaming + homing)
 latency_topic : Float32 IK latency topic
 profile_topic : String JSON profiling topic
 ee_delta_topic: PoseStamped EE delta input topic
@@ -25,7 +24,6 @@ ARM_CONFIG = {
         "ee_link":       "openarm_left_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
-        "traj_topic":    "/left_joint_trajectory_controller/joint_trajectory",
         "fwd_cmd_topic": "/left_forward_position_controller/commands",
         "latency_topic": "/left/delta_ik_latency_ms",
         "profile_topic": "/left/placo_profile",
@@ -37,7 +35,6 @@ ARM_CONFIG = {
         "ee_link":       "openarm_right_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
-        "traj_topic":    "/right_joint_trajectory_controller/joint_trajectory",
         "fwd_cmd_topic": "/right_forward_position_controller/commands",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",

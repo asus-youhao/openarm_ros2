@@ -26,7 +26,7 @@ Usage（需要 ROS2 + robot driver 執行中）：
   python3 placo_ik_online_profiler_ws_mesh.py --arm right
   python3 placo_ik_online_profiler_ws_mesh.py --arm left
 
-  # dry-run（計算 IK 但不送 trajectory）
+  # dry-run（計算 IK 但不送指令）
   python3 placo_ik_online_profiler_ws_mesh.py --dry-run
 
 Prerequisites：
@@ -34,7 +34,7 @@ Prerequisites：
   # tracker 需要在另一個 terminal 發布 /ee_delta/{arm} (PoseStamped)
 
 Published topics（每隻手 {arm} ∈ {right,left}）：
-  /{arm}_joint_trajectory_controller/joint_trajectory   (JointTrajectory)
+  /{arm}_forward_position_controller/commands           (Float64MultiArray)
   /{arm}/delta_ik_latency_ms                            (Float32) — total ik_ms
   /{arm}/placo_profile                                  (String, JSON) — detailed breakdown
 
@@ -82,8 +82,6 @@ def _parse_args():
                         "Required when --arm both; optional for single-arm use.")
     p.add_argument("--rate",      type=float, default=50.0,
                    help="Control-loop Hz  (default: 50).  Also sets solver dt.")
-    p.add_argument("--horizon",   type=float, default=None,
-                   help="JointTrajectory duration ms  (default: auto = 1.5× period)")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
     p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
@@ -141,10 +139,6 @@ def _parse_args():
                         "let velocity_limits saturate the partial solution. "
                         "Set this flag to revert to the old behaviour where IK "
                         "pos_err > 10mm causes the arm to stop moving.")
-    p.add_argument("--use-traj",  action="store_true", dest="use_traj",
-                   help="Use JointTrajectoryController (legacy, may vibrate) "
-                        "instead of the default ForwardCommandController. "
-                        "Topic mode is preferred for VR teleop (no JT spline re-plan).")
     return p.parse_args()
 
 
@@ -170,18 +164,6 @@ def _apply_yaml_to_args(args, yaml_cfg, arm):
     return args
 
 
-def _prepare_args(args):
-    """Compute JointTrajectory horizon in-place for one arm."""
-    period_ms = 1000.0 / args.rate
-    if args.horizon is None:
-        args.horizon = round(1.5 * period_ms, 1)
-        print(f"  [{args.arm}][horizon] auto → {args.horizon:.1f}ms  (1.5× period @ {args.rate:.0f}Hz)")
-    elif args.horizon < period_ms:
-        print(f"  ⚠ [{args.arm}] --horizon {args.horizon:.1f}ms < period {period_ms:.1f}ms "
-              f"→ clamped to {period_ms:.1f}ms")
-        args.horizon = period_ms
-
-
 def _run_arm(node):
     """Run one arm's home sequence + IK hot-loop. Designed to run in a thread."""
     try:
@@ -189,12 +171,8 @@ def _run_arm(node):
             arm = node.args.arm
             print(f"  [{arm}] Running pre-home unfold sequence...")
             node.joint_unfold_sequence()
-            if node.args.use_traj:
-                print(f"  [{arm}] Moving to home (JointTrajectory)...")
-                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
-            else:
-                print(f"  [{arm}] Moving to home (ForwardCommand ramp)...")
-                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            print(f"  [{arm}] Moving to home (ForwardCommand ramp)...")
+            node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()
     except KeyboardInterrupt:
         pass
@@ -221,9 +199,6 @@ def _run_bimanual(args):
     args_right.arm = "right"
     args_left  = _apply_yaml_to_args(copy.deepcopy(args), yaml_cfg, "left")
     args_left.arm  = "left"
-
-    _prepare_args(args_right)
-    _prepare_args(args_left)
 
     rclpy.init()
     node_right = PlacoOnlineProfiler(args_right)
@@ -274,8 +249,6 @@ def main():
         return
 
     # ── Single-arm path ──────────────────────────────────────────────────────
-    _prepare_args(args)
-
     rclpy.init()
     node = PlacoOnlineProfiler(args)
 
@@ -287,12 +260,8 @@ def main():
             # Safety unfold sequence: joint3 0→90°, joint4 0→90°, joint3 90→0°
             print("  Running pre-home unfold sequence...")
             node.joint_unfold_sequence()
-            if args.use_traj:
-                print("  Moving to home (JointTrajectory)...")
-                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
-            else:
-                print("  Moving to home (ForwardCommand ramp)...")
-                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            print("  Moving to home (ForwardCommand ramp)...")
+            node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()
     except KeyboardInterrupt:
         print("\n\n  Ctrl-C — stopping...")
