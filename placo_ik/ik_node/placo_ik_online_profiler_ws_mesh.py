@@ -223,20 +223,42 @@ def _prepare_args(args):
 
 def _add_reset_pose_service(host_node, nodes):
     """Create a single /reset_robot_pose (std_srvs/Trigger) on host_node that
-    homes every node in `nodes`.
+    first disables teleop, then homes every node in `nodes`.
 
-    Reuses each node's hot-loop homing mechanism (_home_request / _home_done),
-    the same path as /{arm}/go_home and keyboard 'h'. The callback raises the
-    flag on all nodes, then waits for each hot loop to finish homing.
+    Flow:
+      1. Call /set_teleop_arm_enabled {data: false} as a client so the tracker
+         stops feeding ee_delta (best-effort — skipped if the service is offline).
+      2. Reuse each node's hot-loop homing mechanism (_home_request /
+         _home_done), the same path as /{arm}/go_home and keyboard 'h'.
 
-    Requires a MultiThreadedExecutor (the wait would otherwise stall the host
-    node's own callbacks).
+    Requires a MultiThreadedExecutor + ReentrantCallbackGroup (host_node._cbg),
+    otherwise the client wait / home wait would deadlock the executor.
     """
-    from std_srvs.srv import Trigger
+    import time
+    from std_srvs.srv import Trigger, SetBool
+
+    teleop_cli = host_node.create_client(
+        SetBool, "/set_teleop_arm_enabled", callback_group=host_node._cbg)
+
+    def _disable_teleop(timeout_sec=3.0):
+        if not teleop_cli.wait_for_service(timeout_sec=1.0):
+            return "SKIPPED (service /set_teleop_arm_enabled offline)"
+        sb = SetBool.Request()
+        sb.data = False
+        fut = teleop_cli.call_async(sb)
+        t0 = time.time()
+        while not fut.done() and (time.time() - t0) < timeout_sec:
+            time.sleep(0.02)
+        if not fut.done():
+            return "TIMEOUT (no response)"
+        res = fut.result()
+        return f"disabled ({res.message})" if res.success else f"FAILED ({res.message})"
 
     def _cb(req, resp):
         arms = ", ".join(n.args.arm for n in nodes)
-        print(f"\n  [srv] /reset_robot_pose requested — homing: {arms}")
+        print("\n  [srv] /reset_robot_pose → step1: disable teleop")
+        disable_msg = _disable_teleop()
+        print(f"  [srv] /reset_robot_pose → step2: homing: {arms}  ({disable_msg})")
         for n in nodes:
             n._home_done.clear()
         for n in nodes:
@@ -251,13 +273,13 @@ def _add_reset_pose_service(host_node, nodes):
                 ok_all = False
                 msgs.append(f"{n.args.arm}: timeout — hot loop not running?")
         resp.success = ok_all
-        resp.message = " | ".join(msgs)
+        resp.message = f"teleop: {disable_msg} | home: " + " | ".join(msgs)
         return resp
 
     host_node.create_service(
         Trigger, "/reset_robot_pose", _cb,
         callback_group=host_node._cbg)
-    print("  [✓] service /reset_robot_pose (std_srvs/Trigger) — homes all arms")
+    print("  [✓] service /reset_robot_pose (std_srvs/Trigger) — disable teleop → home all arms")
 
 
 def _run_arm(node):
