@@ -52,6 +52,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, Float64MultiArray, String
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from placo_ik_solver import _find_urdf, _quat_to_rot
@@ -366,6 +367,18 @@ class PlacoOnlineProfiler(Node):
         self._pending_t_recv = None     # wall-clock recv time of the pending tracker msg
         self._delta_lock     = threading.Lock()
         self._msg_count      = 0
+
+        # ── Service-triggered homing ────────────────────────────────────────────
+        # send_home_fwd must run inside the hot-loop thread (it streams
+        # ForwardCommand ramps). A service/keyboard request only raises the
+        # flag; the hot loop executes it and signals done. Requires a
+        # MultiThreadedExecutor so this callback's wait doesn't stall the loop.
+        self._home_request = threading.Event()
+        self._home_done    = threading.Event()
+        self._home_result  = {"ok": False, "msg": ""}
+        self.create_service(
+            Trigger, f"/{self.args.arm}/go_home", self._home_srv_cb,
+            callback_group=self._cbg)
 
     def _init_telemetry(self, args):
         """Create async CSV writer and records list.
@@ -806,6 +819,45 @@ class PlacoOnlineProfiler(Node):
         print("  ⚠ TF & FK unavailable — using home_pose "
               "(internal EE reference ≠ real arm state)")
 
+    def _home_srv_cb(self, req, resp):
+        """/{arm}/go_home (std_srvs/Trigger) — raise the flag and wait for the
+        hot loop to finish homing.
+
+        Requires the executor to be a MultiThreadedExecutor (a single-threaded
+        executor would block on this callback's wait, stalling /joint_states
+        and TF). The entry point uses MultiThreadedExecutor accordingly.
+        """
+        if self._home_request.is_set():
+            resp.success, resp.message = False, "homing already in progress"
+            return resp
+        self._home_done.clear()
+        self._home_request.set()
+        print(f"\n  [srv] /{self.args.arm}/go_home requested")
+        if self._home_done.wait(timeout=20.0):
+            resp.success = self._home_result["ok"]
+            resp.message = self._home_result["msg"]
+        else:
+            resp.success = False
+            resp.message = "timeout — hot loop not running?"
+        return resp
+
+    def _execute_home_request(self):
+        """Actually run homing inside the hot loop (shared path for the service
+        and keyboard 'h')."""
+        ok = self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+        # Anti-jump: discard any tracker pending accumulated during homing and
+        # force a reanchor (the service can fire at any time, independent of
+        # gap timing).
+        with self._delta_lock:
+            self._pending          = None
+            self._pending_t_recv   = None
+            self._reanchor_pending = True
+        self._home_result.update(
+            ok=ok, msg=f"{self.args.arm} arm homed" if ok
+                       else "home verification failed")
+        self._home_request.clear()
+        self._home_done.set()
+
     def _handle_kbd_events(self) -> bool:
         """Handle keyboard flags. Returns True if quit was requested."""
         kbd = self._kbd
@@ -815,7 +867,9 @@ class PlacoOnlineProfiler(Node):
         if kbd.request_home:
             kbd.request_home = False
             print("\n  [kbd] sending home...")
-            self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            self._home_request.set()   # same execution path as the service
+        if self._home_request.is_set():
+            self._execute_home_request()
         if kbd.reset_ref:
             kbd.reset_ref          = False
             self._ee_delta_ref_xyz = None

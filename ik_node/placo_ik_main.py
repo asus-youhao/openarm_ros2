@@ -154,6 +154,67 @@ def _apply_yaml_to_args(args, yaml_cfg, arm):
     return args
 
 
+def _add_reset_pose_service(host_node, nodes):
+    """Create a single /reset_robot_pose (std_srvs/Trigger) on host_node that
+    first disables teleop, then homes every node in `nodes`.
+
+    Flow:
+      1. Call /set_teleop_arm_enabled {data: false} as a client so the tracker
+         stops feeding ee_delta (best-effort — skipped if the service is offline).
+      2. Reuse each node's hot-loop homing mechanism (_home_request /
+         _home_done), the same path as /{arm}/go_home and keyboard 'h'.
+
+    Requires a MultiThreadedExecutor + ReentrantCallbackGroup (host_node._cbg),
+    otherwise the client wait / home wait would deadlock the executor.
+    """
+    import time
+    from std_srvs.srv import Trigger, SetBool
+
+    teleop_cli = host_node.create_client(
+        SetBool, "/set_teleop_arm_enabled", callback_group=host_node._cbg)
+
+    def _disable_teleop(timeout_sec=3.0):
+        if not teleop_cli.wait_for_service(timeout_sec=1.0):
+            return "SKIPPED (service /set_teleop_arm_enabled offline)"
+        sb = SetBool.Request()
+        sb.data = False
+        fut = teleop_cli.call_async(sb)
+        t0 = time.time()
+        while not fut.done() and (time.time() - t0) < timeout_sec:
+            time.sleep(0.02)
+        if not fut.done():
+            return "TIMEOUT (no response)"
+        res = fut.result()
+        return f"disabled ({res.message})" if res.success else f"FAILED ({res.message})"
+
+    def _cb(req, resp):
+        arms = ", ".join(n.args.arm for n in nodes)
+        print("\n  [srv] /reset_robot_pose → step1: disable teleop")
+        disable_msg = _disable_teleop()
+        print(f"  [srv] /reset_robot_pose → step2: homing: {arms}  ({disable_msg})")
+        for n in nodes:
+            n._home_done.clear()
+        for n in nodes:
+            n._home_request.set()
+        ok_all = True
+        msgs = []
+        for n in nodes:
+            if n._home_done.wait(timeout=25.0):
+                ok_all = ok_all and n._home_result["ok"]
+                msgs.append(f"{n.args.arm}: {n._home_result['msg']}")
+            else:
+                ok_all = False
+                msgs.append(f"{n.args.arm}: timeout — hot loop not running?")
+        resp.success = ok_all
+        resp.message = f"teleop: {disable_msg} | home: " + " | ".join(msgs)
+        return resp
+
+    host_node.create_service(
+        Trigger, "/reset_robot_pose", _cb,
+        callback_group=host_node._cbg)
+    print("  [✓] service /reset_robot_pose (std_srvs/Trigger) — disable teleop → home all arms")
+
+
 def _run_arm(node):
     """Run one arm's home sequence + IK hot-loop. Designed to run in a thread."""
     try:
@@ -197,7 +258,10 @@ def _run_bimanual(args):
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node_right)
     executor.add_node(node_left)
-    
+
+    # Single /reset_robot_pose that disables teleop then homes BOTH arms.
+    _add_reset_pose_service(node_right, [node_right, node_left])
+
     # Start joint_actions_aggregator if available (default: o6_both)
     aggregator_node = None
     if _AGGREGATOR_AVAILABLE:
@@ -239,10 +303,19 @@ def main():
         return
 
     # ── Single-arm path ──────────────────────────────────────────────────────
+    # MultiThreadedExecutor (not rclpy.spin): the go_home / reset_robot_pose
+    # service callbacks block waiting on the hot loop, so a single-threaded
+    # executor would deadlock (TF / joint_states / client responses stall).
+    from rclpy.executors import MultiThreadedExecutor
     rclpy.init()
     node = PlacoOnlineProfiler(args)
 
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    # /reset_robot_pose in single-arm mode homes just this arm.
+    _add_reset_pose_service(node, [node])
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
     try:
