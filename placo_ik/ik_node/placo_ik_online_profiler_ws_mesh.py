@@ -221,6 +221,45 @@ def _prepare_args(args):
         args.horizon = period_ms
 
 
+def _add_reset_pose_service(host_node, nodes):
+    """Create a single /reset_robot_pose (std_srvs/Trigger) on host_node that
+    homes every node in `nodes`.
+
+    Reuses each node's hot-loop homing mechanism (_home_request / _home_done),
+    the same path as /{arm}/go_home and keyboard 'h'. The callback raises the
+    flag on all nodes, then waits for each hot loop to finish homing.
+
+    Requires a MultiThreadedExecutor (the wait would otherwise stall the host
+    node's own callbacks).
+    """
+    from std_srvs.srv import Trigger
+
+    def _cb(req, resp):
+        arms = ", ".join(n.args.arm for n in nodes)
+        print(f"\n  [srv] /reset_robot_pose requested — homing: {arms}")
+        for n in nodes:
+            n._home_done.clear()
+        for n in nodes:
+            n._home_request.set()
+        ok_all = True
+        msgs = []
+        for n in nodes:
+            if n._home_done.wait(timeout=25.0):
+                ok_all = ok_all and n._home_result["ok"]
+                msgs.append(f"{n.args.arm}: {n._home_result['msg']}")
+            else:
+                ok_all = False
+                msgs.append(f"{n.args.arm}: timeout — hot loop not running?")
+        resp.success = ok_all
+        resp.message = " | ".join(msgs)
+        return resp
+
+    host_node.create_service(
+        Trigger, "/reset_robot_pose", _cb,
+        callback_group=host_node._cbg)
+    print("  [✓] service /reset_robot_pose (std_srvs/Trigger) — homes all arms")
+
+
 def _run_arm(node):
     """Run one arm's home sequence + IK hot-loop. Designed to run in a thread."""
     try:
@@ -271,7 +310,10 @@ def _run_bimanual(args):
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node_right)
     executor.add_node(node_left)
-    
+
+    # Single /reset_robot_pose that homes BOTH arms at once (2026-07-01).
+    _add_reset_pose_service(node_right, [node_right, node_left])
+
     # Start joint_actions_aggregator if available (default: o6_both)
     aggregator_node = None
     if _AGGREGATOR_AVAILABLE:
@@ -325,6 +367,8 @@ def main():
     from rclpy.executors import MultiThreadedExecutor
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
+    # /reset_robot_pose alias — single arm mode homes just this arm.
+    _add_reset_pose_service(node, [node])
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
