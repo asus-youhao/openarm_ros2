@@ -207,20 +207,70 @@ class SoftClamp:
     def _apply_box(
         self,
         raw_xyz: np.ndarray,
-        dx_arm_raw: np.ndarray,
+        dx_arm_raw: np.ndarray,      # kept for apply() signature; unused here
     ) -> Tuple[np.ndarray, BoundaryState]:
-        """Soft version of the rectangular box clamp."""
+        """Position-based soft rectangular clamp.
+
+        Each axis is mapped independently through a smooth *saturating* knee
+        that starts ``margin`` before the face.  The clamped target is a
+        continuous, monotonically-increasing function of ``raw_xyz`` alone
+        (it does NOT scale the incremental delta), so:
+
+          * no snap-back to the session reference as the target nears a face
+            (the old ``dx *= g`` collapsed the command toward ``base``),
+          * no re-opening of the gate once outside (the old ``(d/margin)²``
+            was a parabola symmetric about the face → gain climbed back to 1),
+          * no hard ``np.clip`` jump — the map asymptotes to the face and
+            never crosses it, so out-of-range targets glide to the boundary.
+
+        Saturation law, per axis, upper side (lower side is symmetric):
+
+            over = raw - (hi - margin)              # >0 once inside the band
+            enc  = margin * over / (over + margin)  # ∈ [0, margin), slope 1 at
+                                                    #   band entry → 0 far out
+            new  = (hi - margin) + enc              # strictly < hi
+
+        C¹-continuous at the band entry (slope matches passthrough), so there
+        is no velocity discontinuity.  Tangential motion (axes not pressed
+        against a face) passes through untouched → the arm slides along the
+        boundary instead of sticking.
+        """
         ws = self._box
         lo = np.array([ws["x"][0], ws["y"][0], ws["z"][0]])
         hi = np.array([ws["x"][1], ws["y"][1], ws["z"][1]])
+        m  = self._margin
 
-        # Signed distance to nearest box face (positive = inside)
+        # ── Position-based soft saturation, independent per axis ──────────────
+        new_xyz  = raw_xyz.copy()
+        min_gain = 1.0                          # local slope of the map (report)
+        for i in range(3):
+            r          = float(raw_xyz[i])
+            lo_i, hi_i = float(lo[i]), float(hi[i])
+            if hi_i - lo_i <= 2.0 * m:
+                # Degenerate: margins from both faces overlap → hard clamp.
+                new_xyz[i] = min(hi_i, max(lo_i, r))
+                if r < lo_i or r > hi_i:
+                    min_gain = 0.0
+                continue
+            over_hi  = r - (hi_i - m)           # >0 once within margin of hi
+            under_lo = (lo_i + m) - r           # >0 once within margin of lo
+            if over_hi > 0.0:
+                enc        = m * over_hi / (over_hi + m)
+                new_xyz[i] = (hi_i - m) + enc
+                min_gain   = min(min_gain, (m * m) / ((over_hi + m) ** 2))
+            elif under_lo > 0.0:
+                enc        = m * under_lo / (under_lo + m)
+                new_xyz[i] = (lo_i + m) - enc
+                min_gain   = min(min_gain, (m * m) / ((under_lo + m) ** 2))
+            # else: well inside → passthrough (new_xyz[i] already == r)
+
+        # ── Reporting: signed distance of the *raw* target to nearest face ────
         d_lo = raw_xyz - lo
         d_hi = hi - raw_xyz
-        signed_dists = np.minimum(d_lo, d_hi)   # per-axis: positive = inside
-        signed_dist_m = float(np.min(signed_dists))   # most constrained axis
-        d_mm = signed_dist_m * 1000.0
-        inside = bool(np.all(signed_dists >= 0))
+        signed_dists  = np.minimum(d_lo, d_hi)  # per-axis: positive = inside
+        signed_dist_m = float(np.min(signed_dists))
+        d_mm          = signed_dist_m * 1000.0
+        inside        = bool(np.all(signed_dists >= 0))
 
         now = time.monotonic()
         if not inside:
@@ -231,34 +281,13 @@ class SoftClamp:
             self._t_outside = None
             since_ms = 0.0
 
-        # Per-axis: damping ratio if near / outside boundary
-        dx = dx_arm_raw.copy()
-        for i in range(3):
-            d_near_lo = d_lo[i]
-            d_near_hi = d_hi[i]
-            if dx[i] < 0 and d_near_lo < self._margin:
-                # pushing toward lo boundary
-                g = max(0.0, min(1.0, (d_near_lo / self._margin) ** 2))
-                dx[i] *= g
-            elif dx[i] > 0 and d_near_hi < self._margin:
-                # pushing toward hi boundary
-                g = max(0.0, min(1.0, (d_near_hi / self._margin) ** 2))
-                dx[i] *= g
-
-        # Recompute target from damped dx (base_xyz = raw_xyz - dx_arm_raw)
-        base_components = raw_xyz - dx_arm_raw
-        new_xyz = base_components + dx
-        # Hard-clip only as a safety net (should almost never trigger)
-        new_xyz = np.clip(new_xyz, lo, hi)
-
-        outward_normal = np.zeros(3)  # simplified for box
         bs = BoundaryState(
             d_to_boundary_mm = d_mm,
-            outside          = not inside,
+            outside          = not inside,       # raw target OOR (command stays safe)
             since_outside_ms = since_ms,
-            normal           = outward_normal.tolist(),
+            normal           = [0.0, 0.0, 0.0],  # axis-aligned; not used for box
             tangential_gain  = 1.0,
-            normal_gain      = float(np.mean(dx / (dx_arm_raw + 1e-9))),
+            normal_gain      = float(min_gain),
             raw_xyz          = raw_xyz.tolist(),
             clamped_xyz      = new_xyz.tolist(),
         )
@@ -318,23 +347,35 @@ class BoundaryMonitor:
             self._String(data=bs.to_json()))
 
         d = bs.d_to_boundary_mm
+
+        # 本步 target 是否真的被 workspace clamp 改動（raw → clamped）。
+        # 這是「box / mesh 實際觸發」最精準的訊號：只要 soft clamp 有衰減
+        # 掉往邊界方向的位移，clamped 就會 != raw。
+        raw, cl = bs.raw_xyz, bs.clamped_xyz
+        cut_mm  = (max(abs(cl[i] - raw[i]) for i in range(3)) * 1000.0
+                   if raw and cl else 0.0)
+        engaged = cut_mm > 0.1   # >0.1mm 視為 clamp 實際觸發
+
         if bs.outside:
+            # 紅底白字：已超出 workspace（OOR = out of range）
             self._warn_printed = True
             print(
-                f"\r  \033[31m[OOR]\033[0m  {self._arm}  "
-                f"d={d:.0f}mm  since={bs.since_outside_ms:.0f}ms",
+                f"\r  \033[41;97m[OOR]\033[0m {self._arm}  "
+                f"d={d:.0f}mm  cut={cut_mm:.0f}mm  since={bs.since_outside_ms:.0f}ms      ",
                 end="", flush=True,
             )
-        elif d < self.DANGER_MM:
+        elif engaged:
+            # 黃字：soft clamp 正在減速這一步（box 觸發），cut = 被砍掉多少 mm
             self._warn_printed = True
             print(
-                f"\r  \033[33m[NEAR]\033[0m {self._arm}  d={d:.0f}mm",
+                f"\r  \033[93m[BOX]\033[0m {self._arm}  "
+                f"d={d:.0f}mm  cut={cut_mm:.1f}mm  gain={bs.normal_gain:.2f}      ",
                 end="", flush=True,
             )
         elif self._warn_printed and d > self.WARN_MM:
-            # Just recovered — print once then clear flag
+            # 綠字：剛脫離邊界 / clamp 解除，印一次後清旗標
             print(
-                f"\r  \033[32m[OK]\033[0m   {self._arm}  d={d:.0f}mm",
+                f"\r  \033[32m[OK]\033[0m  {self._arm}  d={d:.0f}mm                       ",
                 end="", flush=True,
             )
             self._warn_printed = False
