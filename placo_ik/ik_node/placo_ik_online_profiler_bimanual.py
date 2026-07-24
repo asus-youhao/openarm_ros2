@@ -105,8 +105,8 @@ def _parse_args():
                    dest="calib_yaw_left",
                    help="左臂 tracker→arm yaw 校正 deg（default: 0；"
                         "2026-06-15 修正：舊值 180° 造成 X/Y 反向）")
-    p.add_argument("--ws-clamp", action="store_true", dest="ws_clamp",
-                   help="啟用 workspace clamp（default: off；有 mesh 自動開）")
+    p.add_argument("--ws-clamp", action="store_true", dest="ws_clamp",default=True,
+                   help="啟用 workspace clamp（default: True；有 mesh 自動開）")
     p.add_argument("--ws-mesh-right", default=None, dest="ws_mesh_right",
                    help="右臂 WorkspaceMesh .npz（default: 自動偵測）")
     p.add_argument("--ws-mesh-left",  default=None, dest="ws_mesh_left",
