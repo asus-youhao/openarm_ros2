@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Box Clamp OOR 跳變修復報告</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --muted:#5b6570;
+    --line:#e2e6ea; --accent:#2f6df6; --old:#e5484d; --new:#12a150;
+    --ideal:#98a2b3; --warn-bg:#fff4e5; --warn-ink:#8a5300; --warn-bd:#f5c877;
+    --ok-bg:#e9f7ee; --ok-ink:#1c7c43; --code-bg:#f0f2f5;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f1216; --card:#171b21; --ink:#e6e9ee; --muted:#9aa4b0;
+      --line:#272d36; --accent:#5b8cff; --old:#ff6b6f; --new:#3fd07f;
+      --ideal:#5b6570; --warn-bg:#2c2213; --warn-ink:#f5c877; --warn-bd:#5c4a1e;
+      --ok-bg:#12271b; --ok-ink:#5bd48b; --code-bg:#0c0f13;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1216; --card:#171b21; --ink:#e6e9ee; --muted:#9aa4b0;
+    --line:#272d36; --accent:#5b8cff; --old:#ff6b6f; --new:#3fd07f;
+    --ideal:#5b6570; --warn-bg:#2c2213; --warn-ink:#f5c877; --warn-bd:#5c4a1e;
+    --ok-bg:#12271b; --ok-ink:#5bd48b; --code-bg:#0c0f13;
+  }
+  :root[data-theme="light"]{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1a1d21; --muted:#5b6570;
+    --line:#e2e6ea; --accent:#2f6df6; --old:#e5484d; --new:#12a150;
+    --ideal:#98a2b3; --warn-bg:#fff4e5; --warn-ink:#8a5300; --warn-bd:#f5c877;
+    --ok-bg:#e9f7ee; --ok-ink:#1c7c43; --code-bg:#f0f2f5;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",Roboto,sans-serif;
+    line-height:1.7;margin:0;padding:32px 16px;}
+  .wrap{max-width:920px;margin:0 auto;}
+  header{margin-bottom:28px;}
+  h1{font-size:1.75rem;margin:0 0 6px;letter-spacing:.3px;}
+  .sub{color:var(--muted);font-size:.92rem;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 24px;margin:18px 0;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+  h2{font-size:1.22rem;margin:4px 0 14px;display:flex;align-items:center;gap:9px;}
+  h2 .n{display:inline-flex;align-items:center;justify-content:center;
+    width:26px;height:26px;border-radius:8px;background:var(--accent);color:#fff;
+    font-size:.85rem;font-weight:700;flex:none;}
+  h3{font-size:1.02rem;margin:18px 0 8px;}
+  p{margin:8px 0;}
+  code{background:var(--code-bg);padding:1.5px 6px;border-radius:6px;
+    font-family:"SF Mono",ui-monospace,"Cascadia Code",Menlo,monospace;font-size:.86em;}
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;overflow-x:auto;font-size:.84rem;line-height:1.55;}
+  pre code{background:none;padding:0;}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:.9rem;}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);}
+  th{color:var(--muted);font-weight:600;font-size:.82rem;text-transform:uppercase;letter-spacing:.4px;}
+  td.num{font-variant-numeric:tabular-nums;font-family:ui-monospace,monospace;}
+  .callout{border-radius:12px;padding:14px 18px;margin:14px 0;border:1px solid;}
+  .callout.def{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-bd);}
+  .callout.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:transparent;}
+  .callout b{color:inherit;}
+  .pill{display:inline-block;padding:2px 10px;border-radius:999px;font-size:.78rem;
+    font-weight:600;border:1px solid var(--line);}
+  .pill.old{color:var(--old);border-color:var(--old);}
+  .pill.new{color:var(--new);border-color:var(--new);}
+  .chartwrap{overflow-x:auto;margin:8px 0 4px;}
+  svg{max-width:100%;height:auto;display:block;}
+  .legend{display:flex;gap:20px;flex-wrap:wrap;margin:10px 2px 2px;font-size:.86rem;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .swatch{width:22px;height:3px;border-radius:2px;display:inline-block;}
+  .files{font-size:.86rem;color:var(--muted);}
+  .files code{font-size:.82rem;}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:640px){.grid2{grid-template-columns:1fr;}}
+  .bad{color:var(--old);font-weight:600;}
+  .good{color:var(--new);font-weight:600;}
+  footer{color:var(--muted);font-size:.82rem;text-align:center;margin:26px 0 6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Box Workspace Clamp — OOR 大範圍跳變修復報告</h1>
+  <div class="sub">2026-07-24 · <code>placo_ik/ik_node/ws_boundary.py</code> — <code>SoftClamp._apply_box()</code></div>
+</header>
+
+<div class="callout def">
+  <b>OOR = Out Of Range（超出範圍）</b>　—　VR tracker 換算出的末端目標某一軸超出 workspace box
+  邊界（<code>raw &lt; lo</code> 或 <code>raw &gt; hi</code>）的狀態，程式中即 <code>BoundaryState.outside == True</code>，
+  console 亮紅色 <code>[OOR]</code>。本次修復處理的正是舊版 box clamp 在 OOR 附近的跳變。
+</div>
+
+<div class="card">
+  <h2><span class="n">1</span>症狀</h2>
+  <p>啟用矩形 box clamp（<code>--ws-clamp</code>，未給 <code>--ws-mesh</code>）後，末端目標一旦接近或
+  超出邊界，下令位置會在<span class="bad">「邊界面」與「session 參考點 base」之間大範圍來回跳變</span>。
+  VR tracker 只要在邊界附近輕微抖動，就會被放大成劇烈跳動。</p>
+</div>
+
+<div class="card">
+  <h2><span class="n">2</span>根因（兩缺陷疊加）</h2>
+
+  <h3>缺陷 A — <code>dx *= g</code> 把整段位移往 base 收，而非停在邊界</h3>
+  <p>舊碼 <code>new = base + g·dx</code>。越靠近邊界 <code>g → 0</code>，下令位置不是停在邊界，
+  而是<span class="bad">塌回 base（session 參考點，可能離邊界很遠）</span>。</p>
+  <p class="sub">右手 x 軸範例：base=0.30, hi=0.50, margin=0.05</p>
+  <table>
+    <tr><th>tracker 推到 raw_x</th><th>d_near_hi</th><th>g = (d/0.05)²</th><th>舊版下令 new_x</th></tr>
+    <tr><td class="num">0.45</td><td class="num">0.05</td><td class="num">1.00</td><td class="num">0.450</td></tr>
+    <tr><td class="num">0.48</td><td class="num">0.02</td><td class="num">0.16</td><td class="num bad">0.329</td></tr>
+    <tr><td class="num">0.50（貼邊界）</td><td class="num">0.00</td><td class="num">0.00</td><td class="num bad">0.300</td></tr>
+  </table>
+  <p>手往外多推 3cm（0.45→0.48），下令位置反而<b>往回彈 12cm</b>；推到邊界直接彈回 base。</p>
+
+  <h3>缺陷 B — 平方 gain 非單調，出界後「重新打開」</h3>
+  <p><code>g = (d/margin)²</code> 對 signed distance 是對稱拋物線，最小值 0 在邊界，
+  越過邊界後 <code>d</code> 變負、平方又變大 → clip 回 1.0：</p>
+  <table>
+    <tr><th>距邊界 d</th><th>−margin</th><th>0（邊界）</th><th>+margin</th></tr>
+    <tr><td>g</td><td class="num">1.0（clip）</td><td class="num">0.0</td><td class="num">1.0</td></tr>
+  </table>
+  <p>單步 delta 夠大直接跳到「界外 &gt; margin」時，<code>g</code> 回到 1.0 → 完全不衰減 →
+  <code>new = base + dx</code>（遠在界外）→ 再被 <code>np.clip</code> <span class="bad">硬 snap 回邊界面</span>。</p>
+
+  <h3>疊加 → 跳變</h3>
+  <p>tracker 抖動讓 raw 在「界內 g≈0（塌回 base）」和「界外 g=1（snap 到邊界面）」之間切換，
+  下令位置就在 <b>base ↔ 邊界面</b> 之間大幅來回。</p>
+</div>
+
+<div class="card">
+  <h2><span class="n">3</span>轉移曲線：raw 目標 → 下令位置</h2>
+  <p class="sub">右手 x 軸（base=0.30, hi=0.62, margin=0.05）。橫軸為 tracker raw_x，縱軸為實際下令 new_x。</p>
+  <div class="chartwrap">
+  <svg viewBox="0 0 700 330" role="img" aria-label="舊版與新版 clamp 轉移曲線比較">
+    <defs>
+      <clipPath id="plot"><rect x="60" y="30" width="600" height="280"/></clipPath>
+    </defs>
+    <!-- grid + axes -->
+    <g stroke="var(--line)" stroke-width="1">
+      <line x1="60" y1="30" x2="60" y2="310"/>
+      <line x1="60" y1="310" x2="660" y2="310"/>
+      <line x1="60" y1="67.4" x2="660" y2="67.4" stroke-dasharray="2 4"/>
+      <line x1="400" y1="30" x2="400" y2="310" stroke-dasharray="2 4"/>
+      <line x1="300" y1="30" x2="300" y2="310" stroke-dasharray="2 4"/>
+    </g>
+    <!-- labels -->
+    <g fill="var(--muted)" font-size="11" font-family="ui-monospace,monospace">
+      <text x="404" y="26">hi = 0.62（邊界）</text>
+      <text x="304" y="26" text-anchor="end">hi−margin</text>
+      <text x="52" y="71" text-anchor="end">0.62</text>
+      <text x="52" y="153" text-anchor="end">0.50</text>
+      <text x="52" y="221" text-anchor="end">0.40</text>
+      <text x="52" y="290" text-anchor="end">0.30</text>
+      <text x="160" y="324" text-anchor="middle">0.50</text>
+      <text x="260" y="324" text-anchor="middle">0.55</text>
+      <text x="400" y="324" text-anchor="middle">0.62</text>
+      <text x="560" y="324" text-anchor="middle">0.70</text>
+      <text x="655" y="324" text-anchor="end">raw_x →</text>
+    </g>
+    <g clip-path="url(#plot)" fill="none" stroke-width="2.4">
+      <!-- ideal y=x (unclamped reference) -->
+      <polyline points="60.0,183.7 300.0,101.6 400.0,67.4 660.0,-21.6"
+        stroke="var(--ideal)" stroke-width="1.6" stroke-dasharray="4 4"/>
+      <!-- OLD (broken): climbs, collapses to base, snaps to hi -->
+      <polyline stroke="var(--old)" points="60.0,183.7 100.0,170.0 160.0,149.5 220.0,128.9 280.0,108.4 300.0,101.6 310.0,133.9 330.0,190.8 360.0,253.5 380.0,277.8 400.0,286.3 420.0,277.3 450.0,227.3 470.0,167.3 490.0,84.0 500.0,67.4 660.0,67.4"/>
+      <!-- NEW (fixed): smooth monotonic saturation -->
+      <polyline stroke="var(--new)" points="60.0,183.7 100.0,170.0 160.0,149.5 220.0,128.9 280.0,108.4 300.0,101.6 340.0,91.8 380.0,86.4 420.0,82.9 460.0,80.5 500.0,78.8 560.0,76.9 620.0,75.5 660.0,74.8"/>
+    </g>
+    <!-- OOR zone marker -->
+    <g font-size="11" font-family="ui-monospace,monospace">
+      <text x="410" y="305" fill="var(--old)">← 界內 ｜ 界外(OOR) →</text>
+    </g>
+  </svg>
+  </div>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--old)"></i>舊版（塌回 base 後 snap 到邊界 → 跳變）</span>
+    <span><i class="swatch" style="background:var(--new)"></i>新版（平滑飽和、單調、恆 &lt; hi）</span>
+    <span><i class="swatch" style="background:var(--ideal)"></i>y = x（未 clamp 參考）</span>
+  </div>
+  <p class="sub" style="margin-top:10px">舊版紅線在 raw≈0.62 附近<b class="bad">俯衝到 0.30（塌回 base）</b>，出界後又<b class="bad">垂直 snap 到 0.62</b> —
+  這道 V 形落差就是跳變。新版綠線一路單調上升並飽和收斂於邊界內側。</p>
+</div>
+
+<div class="card">
+  <h2><span class="n">4</span>修復：位置式（position-based）平滑飽和</h2>
+  <p>不再縮放增量位移，改成把 <b>raw 目標位置</b>經過平滑「飽和」映射。每軸獨立，上界為例（下界對稱）：</p>
+  <pre><code>over = raw - (hi - margin)               # &gt;0 一旦進入 margin 帶
+enc  = margin · over / (over + margin)   # ∈ [0, margin)，帶入口斜率 1 → 遠處 → 0
+new  = (hi - margin) + enc               # 嚴格 &lt; hi</code></pre>
+  <div class="grid2">
+    <div>
+      <h3>解決了什麼</h3>
+      <ul>
+        <li><b>不依賴 base/dx</b> → 不塌回參考點（消除 A）</li>
+        <li><b>對 raw 單調</b> → 界外只是更貼邊界，不反跳（消除 B）</li>
+        <li><b>C¹ 連續</b>：帶入口斜率=1，無速度突跳</li>
+        <li><b>恆在界內</b>：<code>enc &lt; margin</code> → 免 <code>np.clip</code> 硬 snap</li>
+        <li><b>切向自由</b>：未貼面的軸原樣通過 → 可沿邊界滑動</li>
+      </ul>
+    </div>
+    <div>
+      <h3>退化保護</h3>
+      <p>若某軸 <code>hi − lo ≤ 2·margin</code>（兩側 margin 帶重疊，本專案 box 不會發生），
+      退回硬 clamp 至中段。</p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">5</span>修復前後對照 &amp; 驗證</h2>
+  <p class="sub">右手 x 軸，hi=0.62, margin=0.05</p>
+  <table>
+    <tr><th>raw_x</th><th>舊版 new_x</th><th>新版 new_x</th><th>outside</th></tr>
+    <tr><td class="num">0.500</td><td class="num">0.500</td><td class="num">0.5000</td><td>False</td></tr>
+    <tr><td class="num">0.570</td><td class="num bad">~0.30（塌回起點）</td><td class="num good">0.5700</td><td>False</td></tr>
+    <tr><td class="num">0.620（貼邊界）</td><td class="num bad">≈ base</td><td class="num good">0.5950</td><td>False</td></tr>
+    <tr><td class="num">0.650（界外 3cm）</td><td class="num bad">snap → 0.620</td><td class="num good">0.6008</td><td>True</td></tr>
+    <tr><td class="num">0.900（界外 28cm）</td><td class="num bad">snap → 0.620</td><td class="num good">0.6134</td><td>True</td></tr>
+    <tr><td class="num">1.500（界外 88cm）</td><td class="num bad">snap → 0.620</td><td class="num good">0.6174</td><td>True</td></tr>
+  </table>
+  <div class="callout ok">
+    ✅ <b>驗證通過</b>：<code>py_compile</code> 無誤；掃描 raw_x ∈ [0.50, 1.50]，
+    下令位置 <b>單調遞增、恆 &lt; hi、無 snap-back</b>。界外 88cm 也只是穩穩貼在 0.6174。
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">6</span>使用方式（cmd 不變）</h2>
+  <p>本次只改內部數學與 console 提示，<b>CLI 參數完全不變</b>：</p>
+  <pre><code>python3 placo_ik/ik_node/placo_ik_online_profiler_ws_mesh.py --arm right --ws-clamp</code></pre>
+  <p><code>--boundary-margin</code>（預設 <code>0.05</code> = 5cm）：飽和帶寬度。調大 → 更早、更緩開始減速。</p>
+  <p>觸發時 console 彩色提示（<code>BoundaryMonitor</code>）：
+    <span class="pill" style="color:var(--warn-ink);border-color:var(--warn-bd)">🟡 [BOX] 減速中</span>
+    <span class="pill old">🔴 [OOR] 目標出界</span>
+    <span class="pill new">🟢 [OK] 解除</span>
+  </p>
+</div>
+
+<div class="card">
+  <h2><span class="n">7</span>已知後續（未在本次範圍）</h2>
+  <p><code>_apply_mesh</code>（<code>--ws-mesh</code> 路徑）數學上有<b>類似潛在問題</b>：near-boundary 時
+  <code>new = base + tangent + g·normal_proj</code>，<code>g→0</code> 時法向分量同樣收向 base。
+  目前無 <code>.npz</code> mesh 被自動偵測（canonical 路徑 <code>results/reachability_&lt;arm&gt;_ws.npz</code> 不存在），
+  故未觸發。若日後改走 mesh，建議比照本次以位置式飽和重寫。</p>
+  <p class="files">相關檔案：<code>ws_boundary.py</code>（本次改動）·
+    <code>placo_ik_node.py:1144</code>（clamp 套用點）·
+    <code>config/arm_config.py</code>（box 範圍）·
+    Markdown 版：<code>box_clamp_oor_jump_fix_20260723.md</code></p>
+</div>
+
+<footer>OpenArm placo_ik · Box Clamp OOR Jump Fix · 2026-07-24</footer>
+
+</div>
+</body>
+</html>
