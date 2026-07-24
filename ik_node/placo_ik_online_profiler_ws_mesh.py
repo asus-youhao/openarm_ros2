@@ -149,12 +149,13 @@ def _parse_args():
                    help="Send arm to home (with TF confirmation) before starting (default: on)")
     p.add_argument("--no-home-first", action="store_false", dest="home_first",
                    help="Skip homing before starting")
-    p.add_argument("--no-ws-clamp", action="store_true", default=True, dest="no_ws_clamp",
-                   help="Disable workspace XYZ clamping (default: on)")
+    p.add_argument("--no-ws-clamp", action="store_true", default=False, dest="no_ws_clamp",
+                   help="Disable workspace XYZ clamping (clamp is ON by default)")
     p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
-                   help="Enable workspace XYZ clamping")
+                   help="Enable workspace XYZ clamping (default; kept for compatibility)")
     p.add_argument("--ws-mesh",   default=None, dest="ws_mesh",
-                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py)")
+                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py). "
+                        "Default: None → auto-detect results/reachability_<arm>_ws.npz")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
