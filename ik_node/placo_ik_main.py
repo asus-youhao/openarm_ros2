@@ -111,6 +111,16 @@ def _parse_args():
                    help="Tracker→arm yaw offset in degrees  (default: 0)")
     p.add_argument("--calib-rpy", default=None, dest="calib_rpy",
                    help="'roll,pitch,yaw' degrees — overrides --calib-yaw")
+    p.add_argument("--ws-clamp",  action="store_true", default=True, dest="ws_clamp",
+                   help="Enable the rectangular workspace soft clamp; box comes "
+                        "from ARM_CONFIG[arm]['workspace'] (default: on). "
+                        "Position-saturating, not a hard clip — see "
+                        "ws_boundary.SoftClamp")
+    p.add_argument("--no-ws-clamp", action="store_false", dest="ws_clamp",
+                   help="Disable the workspace clamp")
+    p.add_argument("--boundary-margin", type=float, default=0.05,
+                   dest="boundary_margin",
+                   help="SoftClamp saturation band width in metres (default: 0.05)")
     p.add_argument("--csv",       default="", help="Output CSV path")
     p.add_argument("--plot",      default="", help="Output plot PNG path")
     p.add_argument("--dry-run",   action="store_true", dest="dry_run",
