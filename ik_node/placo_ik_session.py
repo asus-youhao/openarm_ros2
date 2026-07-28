@@ -25,6 +25,7 @@ _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _ROOT = _os.path.dirname(_HERE)
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
+import threading
 import time
 import numpy as np
 from typing import Dict, List, Optional
@@ -182,6 +183,15 @@ class PlacoSession:
 
         self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
         self._apply_velocity_caps(self._robot)
+
+        # Dedicated FK-only wrapper. fk() is called from the EePosePublisher
+        # timer thread, concurrently with solve_step() in the hot loop; sharing
+        # self._robot would mean two threads writing the same joint state.
+        # A second wrapper costs one extra URDF parse at startup and removes
+        # the race entirely — no lock in the IK hot path.
+        self._fk_robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+        self._fk_lock  = threading.Lock()
+
         cap_str = (f"wrist≤{self._wrist_vel_cap:.1f}rad/s"
                    if self._wrist_vel_cap > 0 else "wrist=URDF")
         if self._arm_vel_cap_deg > 0:
@@ -371,16 +381,18 @@ class PlacoSession:
         Compute FK from joint angles.
 
         Returns [x, y, z, qx, qy, qz, qw] for the EE, or None on error.
-        Uses the cached RobotWrapper built once in __init__.
-        Calling fk() before solve_step() is safe — solve_step() resets joint
-        state from its seed parameter on every call.
+
+        Thread-safe: uses the dedicated _fk_robot wrapper (never the solver's),
+        so it can be called from the EePosePublisher timer thread while
+        solve_step() runs in the hot loop.
         """
         try:
-            robot = self._robot
-            for name, val in zip(self._joint_names, joints):
-                robot.set_joint(name, val)
-            robot.update_kinematics()
-            T   = robot.get_T_world_frame(self._ee_link)
+            with self._fk_lock:
+                robot = self._fk_robot
+                for name, val in zip(self._joint_names, joints):
+                    robot.set_joint(name, val)
+                robot.update_kinematics()
+                T = robot.get_T_world_frame(self._ee_link)
             xyz = T[:3, 3]
             R   = T[:3, :3]
             # Shepperd's numerically-stable R → quaternion (4-branch)
