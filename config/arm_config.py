@@ -11,6 +11,9 @@ base_link     : TF frame of robot base
 ee_link       : TF frame of end-effector
 home_joints   : [q1..q7] goal configuration for "go home" command
 home_pose     : (x,y,z, qx,qy,qz,qw)  FK result at home_joints  ← verified FK
+workspace     : dict {x:(lo,hi), y:(lo,hi), z:(lo,hi)}  rectangular soft-clamp box
+                (see ik_node/ws_boundary.SoftClamp — position-saturating, not a
+                 hard np.clip; margin band starts `--boundary-margin` before each face)
 fwd_cmd_topic : ForwardPositionController ROS2 topic (hot-loop streaming + homing)
 latency_topic : Float32 IK latency topic
 profile_topic : String JSON profiling topic
@@ -24,6 +27,7 @@ ARM_CONFIG = {
         "ee_link":       "openarm_left_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.2160, 0.1535, 0.4780, 0.7071, -0.0000, 0.7071, -0.0000),
+        "workspace":     {"x": (0.00, 0.62), "y": (-0.35, 0.35), "z": (0.25, 0.7)},
         "fwd_cmd_topic": "/left_forward_position_controller/commands",
         "latency_topic": "/left/delta_ik_latency_ms",
         "profile_topic": "/left/placo_profile",
@@ -35,6 +39,7 @@ ARM_CONFIG = {
         "ee_link":       "openarm_right_link7",
         "home_joints":   [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
         "home_pose":     (0.216000, -0.153500, 0.478001,0.7071, 0.0000, 0.7071, 0.0000),
+        "workspace":     {"x": (0.00, 0.62), "y": (-0.35, 0.35), "z": (0.25, 0.7)},
         "fwd_cmd_topic": "/right_forward_position_controller/commands",
         "latency_topic": "/right/delta_ik_latency_ms",
         "profile_topic": "/right/placo_profile",
