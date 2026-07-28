@@ -4,7 +4,7 @@ quantify_teleop.py
 ==================
 Quantitative baseline report for placo IK + VR teleop sessions.
 
-Reads CSVs produced by `placo_ik_online_profiler_ws_mesh.py` and computes the
+Reads CSVs produced by `placo_ik_main.py` and computes the
 four metric families from `docs/vr_realtime_ik_analysis.md`:
 
   1. Realtime         — ik_ms p50/p95/max, loop period jitter, deadline miss%

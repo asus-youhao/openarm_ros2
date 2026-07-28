@@ -6,7 +6,7 @@
 #
 #   ./shell.sh                                  # interactive shell at ik_node/
 #   ./shell.sh ros2 topic list                  # one-off command
-#   ./shell.sh python3 ./placo_ik_online_profiler_ws_mesh.py --help
+#   ./shell.sh python3 ./placo_ik_main.py --help
 #
 # Env overrides:
 #   ROS_DOMAIN_ID=5 ./shell.sh        # default 10 (matches your ~/.bashrc)

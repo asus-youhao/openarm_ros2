@@ -5,7 +5,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 PLACO_IK_ROOT="$(dirname "$HERE")"                 # .../placo_ik
-SCRIPT="$PLACO_IK_ROOT/ik_node/placo_ik_online_profiler_ws_mesh.py"
+SCRIPT="$PLACO_IK_ROOT/ik_node/placo_ik_main.py"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 
 # Source ROS if not already on the path. (set +u: ROS setup.bash trips 'set -u'.)

@@ -157,7 +157,7 @@ print("""
    _DLS_SIGMA_THRESH = 0.12  (was 0.15)
 
 2. Run a test session with same trajectory:
-   python3 placo_ik_online_profiler_ws_mesh.py --arm right [same flags]
+   python3 placo_ik_main.py --arm right [same flags]
 
 3. Analyze new CSV with quantify_teleop.py:
    - Compare iter=15 count (should drop from 259)

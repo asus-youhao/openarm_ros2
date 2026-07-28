@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_deps.sh — install everything placo_ik_online_profiler_ws_mesh.py needs
+# install_deps.sh — install everything placo_ik_main.py needs
 # on a fresh x86_64 machine that already has ROS 2 Humble installed.
 #
 # What it installs:

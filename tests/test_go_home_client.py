@@ -7,7 +7,7 @@ PlacoOnlineProfiler.
 
 The profiler node must already be running, e.g.:
 
-    python3 placo_ik/ik_node/placo_ik_online_profiler_ws_mesh.py --arm right
+    python3 placo_ik/ik_node/placo_ik_main.py --arm right
 
 Then call this client:
 

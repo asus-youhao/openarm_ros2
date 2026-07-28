@@ -1,14 +1,5 @@
 __pycache__/
 *.pyc
 *.pyo
-.ipynb_checkpoints/
-
-# Local-only environment overrides
-.env
-.envrc
-
-# Editor / IDE caches
-.vscode/
-
-# Large profiler artifacts — intentionally not tracked in this standalone repo
 results/
+.vscode/

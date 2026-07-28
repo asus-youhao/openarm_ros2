@@ -6,20 +6,20 @@ placo_ik_solver.py — Placo task-based IK solver for OpenArm O6
 
 特點：
   · Task-based IK: PositionTask + OrientationTask + JointsTask（自然姿勢偏好）
-  · 每個關節獨立 naturalness 權重
+  · 單一合併 JointsTask，所有關節共用低權重 W_JOINTS（位置任務主導）
   · RegularizationTask 防止奇異點
   · 多 seed 策略：last_joints → library seeds
   · 採用速度級 IK（solve(True) 積分多次直到收斂）
 
-安裝（conda pico_teleop_py）：
+安裝：
     pip install placo   # 或 placo-wholearm
 
 URDF 路徑：
-    /home/asus/Desktop/openarm_description/urdf_transform/urdf/openarm_step10.urdf
+    bundled ik_solver/v10_o6.urdf（相對本檔解析）；OPENARM_URDF env 可覆寫。
     (自動剝除 all meshes → kinematics-only URDF)
 
 Self-test:
-    conda run -n pico_teleop_py python3 placo_ik_solver.py
+    python3 placo_ik_solver.py
 """
 
 import math
@@ -33,11 +33,10 @@ import numpy as np
 # ─────────────────────────────────────────────────────────────────────────────
 # URDF helper
 # ─────────────────────────────────────────────────────────────────────────────
-# URDF file paths (in priority order, or override with OPENARM_URDF env var)
+# Bundled URDF lives next to this file (ik_solver/v10_o6.urdf), resolved
+# relative to the script so it works from any CWD. OPENARM_URDF env overrides.
 _URDF_SOURCES = [
-    "/home/asus/openArm_leapHand_urdf/src/openarm_description/usd/v10_o6.urdf",
-    "/home/asus/Desktop/openarm_description/urdf_transform/urdf/openarm_step10.urdf",
-    "./v10_o6.urdf"
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "v10_o6.urdf"),
 ]
 _KIN_URDF_CACHE = "/tmp/openarm_kin_placo.urdf"
 
@@ -77,28 +76,29 @@ def _find_urdf() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Human-like joint configuration
 # ─────────────────────────────────────────────────────────────────────────────
-#   (pref, hard_lo, hard_hi, pos_weight, ori_weight)
-#   — placo JointsTask weight = naturalness stiffness
+#   (pref, hard_lo, hard_hi)
+#   pref = naturalness 偏好角；hard_lo/hi = clip 安全限位。
+#   naturalness 權重為全關節共用的 W_JOINTS（見下），非每關節獨立。
 _HUMAN_RIGHT = {
-    "openarm_right_joint1": (0.000,  -1.396,  1.500, 0.15),  # shoulder yaw  大馬達
-    "openarm_right_joint2": (0.700,   0.000,  2.000, 0.25),  # shoulder pitch  大馬達
-    "openarm_right_joint3": (-0.10,  -1.000,  1.000, 0.80),  # upperarm yaw; pref=-0.1 (away from boundary); hi=0.35 (~20°) allows chest-reach
-    "openarm_right_joint4": (1.5708,  0.250,  2.200, 0.08),  # elbow flex 90°
-    "openarm_right_joint5": (0.000,  -1.571,  1.571, 0.03),  # forearm roll
-    "openarm_right_joint6": (0.000,  -0.785,  0.785, 0.03),  # wrist yaw
-    "openarm_right_joint7": (0.000,  -1.571,  1.571, 0.03),  # wrist pitch palm-fwd
+    "openarm_right_joint1": (0.000,  -1.396,  1.500),  # shoulder yaw  大馬達
+    "openarm_right_joint2": (0.700,   0.000,  2.000),  # shoulder pitch  大馬達
+    "openarm_right_joint3": (-0.10,  -1.000,  1.000),  # upperarm yaw; pref=-0.1 (away from boundary)
+    "openarm_right_joint4": (1.5708,  0.250,  2.200),  # elbow flex 90°
+    "openarm_right_joint5": (0.000,  -1.571,  1.571),  # forearm roll
+    "openarm_right_joint6": (0.000,  -0.785,  0.785),  # wrist yaw
+    "openarm_right_joint7": (0.000,  -1.571,  1.571),  # wrist pitch palm-fwd
 }
 _HUMAN_LEFT = {
     # pref=-0.7 for joint2: LEFT arm URDF is mirrored (j2_left=-j2_right)
     # Safety limits mirrored from RIGHT: j1[-1.500,+1.396] j2[-1.600,0.000] j3[0.000,+1.571] j4 same
-    # Format: (pref, hard_lo, hard_hi, joints_weight)
-    "openarm_left_joint1": (0.000,   -1.500,  1.396, 0.15),  # mirror RIGHT [-1.396,+1.500]
-    "openarm_left_joint2": (-0.700,  -2.000,  0.000, 0.25),  # mirror RIGHT [0.000,+1.600]
-    "openarm_left_joint3": (0.100,   -1.000,  1.000, 0.80),  # mirror RIGHT; pref=+0.1 (away from boundary); lo=-0.35 (~-20°) allows chest-reach
-    "openarm_left_joint4": (1.5708,   0.250,  2.200, 0.08),  # same as right
-    "openarm_left_joint5": (0.000,   -1.571,  1.571, 0.03),  # j5
-    "openarm_left_joint6": (0.000,   -0.785,  0.785, 0.03),  # j6
-    "openarm_left_joint7": (0.000,   -1.571,  1.571, 0.03),  # j7 axis=0 -1 0
+    # Format: (pref, hard_lo, hard_hi)
+    "openarm_left_joint1": (0.000,   -1.500,  1.396),  # mirror RIGHT [-1.396,+1.500]
+    "openarm_left_joint2": (-0.700,  -2.000,  0.000),  # mirror RIGHT [0.000,+1.600]
+    "openarm_left_joint3": (0.100,   -1.000,  1.000),  # mirror RIGHT; pref=+0.1 (away from boundary)
+    "openarm_left_joint4": (1.5708,   0.250,  2.200),  # same as right
+    "openarm_left_joint5": (0.000,   -1.571,  1.571),  # j5
+    "openarm_left_joint6": (0.000,   -0.785,  0.785),  # j6
+    "openarm_left_joint7": (0.000,   -1.571,  1.571),  # j7 axis=0 -1 0
 }
 _ARM_HUMAN = {"right": _HUMAN_RIGHT, "left": _HUMAN_LEFT}
 
@@ -154,7 +154,7 @@ class PlacoIKSolver:
     Task priority (all "soft"):
       1. PositionTask     (EE xyz)     weight = W_POS
       2. OrientationTask  (EE R)       weight = W_ORI (0 if no_rot)
-      3. JointsTask       (naturalness) per-joint weight in _HUMAN_*
+      3. JointsTask       (naturalness) single combined task, weight = W_JOINTS
       4. RegularizationTask             weight = 1e-5  (singularity guard)
 
     Algorithm: iterative velocity-level IK.

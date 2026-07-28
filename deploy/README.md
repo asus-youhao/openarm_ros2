@@ -1,6 +1,6 @@
 # placo_ik — 部署到其他 x86_64 PC
 
-把 `ik_node/placo_ik_online_profiler_ws_mesh.py` 跑起來所需的依賴安裝、Docker 環境，以及
+把 `ik_node/placo_ik_main.py` 跑起來所需的依賴安裝、Docker 環境，以及
 `ros2 launch` 包裝。目標環境：**ROS 2 Humble / Ubuntu 22.04 / Python 3.10**。
 
 > 圖文版（含流程圖、依賴分層）：[`INSTALL.html`](INSTALL.html)
