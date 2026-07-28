@@ -53,6 +53,7 @@ _ROOT = _os.path.dirname(_HERE)
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
 import math
+import threading
 import time
 import numpy as np
 from typing import Dict, List, Optional
@@ -174,6 +175,13 @@ class PlacoBimanualSession:
         #   placo self-collision constraint 無法啟用 → 用 EE 近距節流代替（TODO 見 docs）。
         self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
         self._apply_velocity_caps(self._robot)
+
+        # FK 專用 wrapper。fk() 由 EePosePublisher 的 timer 執行緒呼叫，與 hot
+        # loop 的 solve_step() 併發；共用 self._robot 等於兩個執行緒同時寫同一
+        # 份關節狀態。多開一個 wrapper 只多一次開機時的 URDF 解析，就徹底消掉
+        # 這個競態，且 IK 熱路徑上不需要任何鎖。
+        self._fk_robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+        self._fk_lock  = threading.Lock()
 
         # Jacobian 欄位（per-arm，URDF 固定 → 算一次）
         self._jac_cols = {
@@ -445,15 +453,18 @@ class PlacoBimanualSession:
     def fk(self, arm: str, joints: List[float]) -> Optional[List[float]]:
         """單臂 FK：回傳 [x,y,z,qx,qy,qz,qw]，失敗回 None。
 
-        只設定該臂 7 軸（另一臂維持上次狀態）；solve_step 每步都會重設
-        seed，所以先呼叫 fk 不影響解算。
+        只設定該臂 7 軸（另一臂維持上次狀態；EE pose 只取本臂 link7，不受影響）。
+
+        Thread-safe：走專用的 _fk_robot（不是 solver 那份），因此可由
+        EePosePublisher 的 timer 執行緒在 hot loop 解算期間安全呼叫。
         """
         try:
-            robot = self._robot
-            for name, val in zip(self._names[arm], joints):
-                robot.set_joint(name, val)
-            robot.update_kinematics()
-            T   = robot.get_T_world_frame(self._ee_link[arm])
+            with self._fk_lock:
+                robot = self._fk_robot
+                for name, val in zip(self._names[arm], joints):
+                    robot.set_joint(name, val)
+                robot.update_kinematics()
+                T = robot.get_T_world_frame(self._ee_link[arm])
             xyz = T[:3, 3]
             R   = T[:3, :3]
             # Shepperd 4-branch R→quat（同單臂版 fk）

@@ -75,7 +75,7 @@
 
 <header class="hero">
   <h1>🦾 placo_ik 安裝流程與依賴說明</h1>
-  <p>把 <code>placo_ik_online_profiler_ws_mesh.py</code> 打包到其他 x86_64 PC（ROS&nbsp;2 Humble / Python&nbsp;3.10）</p>
+  <p>把 <code>placo_ik_main.py</code> 打包到其他 x86_64 PC（ROS&nbsp;2 Humble / Python&nbsp;3.10）</p>
   <div class="badges">
     <span class="badge">🐧 Ubuntu 22.04</span>
     <span class="badge">🤖 ROS 2 Humble</span>
@@ -275,7 +275,7 @@ ros2 topic echo --once /ping        <span class="c"># → data: hi</span></pre>
 <h2><span class="ic">▶️</span>實際執行 profiler</h2>
 <pre>./shell.sh                                  <span class="c"># 進容器，落在 ik_node/</span>
 <span class="c"># 容器內：</span>
-python3 ./placo_ik_online_profiler_ws_mesh.py --arm right</pre>
+python3 ./placo_ik_main.py --arm right</pre>
 <div class="note">
   執行 IK 時仍需本機有在跑 <b>robot driver</b>，且 tracker 在發 <code>/ee_delta/{arm}</code>。
   <code>--help</code> 不需要這些；通訊管道本身已驗證 OK。RMW 若改 cyclonedds，用

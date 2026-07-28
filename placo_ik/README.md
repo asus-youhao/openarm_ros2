@@ -19,13 +19,16 @@ ik_controllers/
 │   └── tracker_ee_delta_ik_backend.py  ★ 多 IK 後端統一控制器
 │
 ├── ik_node/               ← ROS IK 節點 + 即時 profiler
-│   ├── placo_ik_node.py                       核心 ROS Node + AsyncCsvWriter + TfPoller
-│   ├── placo_ik_session.py                    純 Python IK session（無 ROS）
-│   ├── kbd_controller.py                      鍵盤 daemon
-│   ├── placo_ik_online_profiler.py            delta 模式 profiler
-│   ├── placo_ik_online_profiler_ws_mesh.py    delta + WorkspaceMesh clamp
-│   ├── placo_ik_absolute_profiler.py          絕對座標 profiler
-│   └── placo_ik_absolute_profiler_ws_mesh.py  絕對 + WorkspaceMesh clamp
+│   ├── placo_ik_main.py                核心入口（單臂 / --arm both 兩個獨立 node）
+│   ├── placo_ik_node.py                單臂 ROS Node
+│   ├── placo_ik_session.py             單臂 IK session（純 Python，無 ROS）
+│   ├── placo_ik_main_bimanual.py       雙臂單一 QP 入口
+│   ├── placo_ik_node_bimanual.py       雙臂 ROS Node（一個 14-DOF QP 解兩臂）
+│   ├── placo_ik_session_bimanual.py    雙臂 IK session
+│   ├── common.py                       兩 node 共用：TfPoller / AsyncCsvWriter /
+│   │                                   quaternion helpers / EePosePublisher
+│   ├── ws_boundary.py                  workspace 位置飽和軟邊界 + ROS 邊界反饋
+│   └── kbd_controller.py               鍵盤 daemon
 │
 ├── ws_mesh/               ← WorkspaceMesh 工具集（離線，無 ROS）
 │   ├── placo_ws_reachability.py    掃描可達空間
@@ -38,10 +41,6 @@ ik_controllers/
 │
 ├── ik_solver/             ← solver 後端
 │   └── placo_ik_solver.py
-│
-├── archive/               ← 舊備份（保留以便回溯）
-│   ├── placo_ik_profiler_copy.py
-│   └── placo_ik_profiler_copy2.py
 │
 └── results/               ← 由 paths.py 統一管理
     ├── YYYYMMDD/                                各日 CSV / PNG

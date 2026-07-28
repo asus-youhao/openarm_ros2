@@ -1,63 +1,44 @@
 #!/usr/bin/env python3
 """
-placo_ik_online_profiler_ws_mesh.py
-===================================
-基於 placo_ik_online_profiler.py，但將矩形 workspace clamp
-替換為由 placo_ws_analyze.WorkspaceMesh (.npz) 驅動的真實形狀 clamp。
+placo_ik_main.py
+================
+Placo IK online profiler。預設雙手 (--arm both)、開機先 home (--home-first)，
+裸跑即可。
 
-  --ws-mesh <path.npz>   載入掃描產生的 WorkspaceMesh（取代矩形 box）
-  --ws-mesh-or  0.0      最低 orient_rate 門檻（若 npz 缺少時從 CSV rebuild）
+深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations。
 
-原有深度 profiling 完全保留：每次 IK 計算都拆解出 setup_ms / loop_ms / iterations，
-並揭露為何原版測到 20-30 ms。
+【RobotWrapper 一律 cache（本檔固定行為，無切換）】
+  RobotWrapper 建立成本昂貴且只需建一次；KinematicsSolver 輕量，每步重建沒問題。
+  每步 = solver_setup(~0.15ms) + early_exit_iters(~0.3ms) ≈ 0.5ms
+  → 200Hz 輕鬆，50Hz deadline miss = 0%。
+  （對比：每步 rebuild RobotWrapper(~5ms) + 跑滿 250 iters(~20ms) ≈ 25ms，
+    50Hz 必爆 deadline——所以本檔不提供 rebuild 模式。）
 
-【為什麼原版是 20-30 ms？】
-  原版 PlacoIKSolver._solve_from_seed() 有兩個問題：
-  1. 每次 solve 都 rebuild RobotWrapper（~5ms overhead）
-  2. _solve_from_seed 跑滿 MAX_ITER=250 iterations，沒有 early exit
-     → 250 iters × ~0.08ms/iter ≈ 20ms + robot_build ≈ 5ms = ~25ms
-
-【online 要 rebuild 還是 cache？→ 一定要 cache！】
-  rebuild (原版行為):
-    每步 = robot_build(~5ms) + solver_setup(~0.1ms) + 250_iters(~20ms) ≈ 25ms
-    → 20Hz 已在 deadline 邊緣，50Hz 不可能 (預算=20ms)
-  cached (本檔預設):
-    每步 = solver_setup(~0.15ms) + early_exit_iters(~0.3ms) ≈ 0.5ms
-    → 200Hz 輕鬆，50Hz deadling miss = 0%
-    原理：RobotWrapper 建立成本昂貴且只需建一次；
-           KinematicsSolver 輕量，每步重建沒問題。
-
-【Early exit（本檔新增，原版缺少）】
+【Early exit】
   每 iteration 後檢查 pos_err < POS_TOL (3mm)，達到即跳出。
   near-target 步通常 1-3 iters 即收斂，比跑滿 250 fast 100×。
 
 Usage（需要 ROS2 + robot driver 執行中）：
-  # 右臂，ee_delta tracker 模式，right 手把
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right
+  # 預設：雙手 + home-first，裸跑即可
+  python3 placo_ik_main.py
 
-  # 左臂
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm left
+  # 單臂（右 / 左）
+  python3 placo_ik_main.py --arm right
+  python3 placo_ik_main.py --arm left
 
-  # 對比原版行為（rebuild + 無 early exit）
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right --rebuild
+  # dry-run（計算 IK 但不送指令）
+  python3 placo_ik_main.py --dry-run
 
-  # 自訂輸出路徑
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py \\
-      --arm right --csv ~/my_profile.csv --plot ~/my_profile.png
-
-  # dry-run（計算 IK 但不送 trajectory）
-  conda run -n pico_teleop_py python3 placo_ik_online_profiler.py --arm right --dry-run
-
-Prerequisites（和 tracker_ee_delta_ik_backend.py 相同）：
+Prerequisites：
   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py
   # tracker 需要在另一個 terminal 發布 /ee_delta/{arm} (PoseStamped)
 
-Published topics（完全相容 tracker_ee_delta_ik_backend.py）：
-  /right_joint_trajectory_controller/joint_trajectory   (JointTrajectory)
-  /right/delta_ik_latency_ms                            (Float32) — total ik_ms
-  /right/placo_profile                                  (String, JSON) — detailed breakdown
+Published topics（每隻手 {arm} ∈ {right,left}）：
+  /{arm}_forward_position_controller/commands           (Float64MultiArray)
+  /{arm}/delta_ik_latency_ms                            (Float32) — total ik_ms
+  /{arm}/placo_profile                                  (String, JSON) — detailed breakdown
 
-CSV columns（延伸自原版）：
+CSV columns：
   t, x, y, z, success, ik_ms, total_ms, dx, dy, dz,
   robot_ms, setup_ms, loop_ms, iterations, iter_ms,
   pos_err_mm, track_err_mm, mem_kb, deadline_missed
@@ -70,17 +51,14 @@ _ROOT = _os.path.dirname(_HERE)                                # project root
 _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, node
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
-_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_ROOT), "scripts"))  # joint_actions_aggregator
 
 import argparse
 import copy
-import os
 import threading
 
 import rclpy
 
-from paths import ws_mesh_path as _ws_mesh_path
 from placo_ik_session import _MAX_ITER
 from placo_ik_node import PlacoOnlineProfiler
 
@@ -95,23 +73,14 @@ except ImportError:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Placo IK online profiler with WorkspaceMesh clamp (ROS2)",
+        description="Placo IK online profiler (ROS2) — bimanual",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--arm",       default="both", choices=["right", "left", "both"])
-    p.add_argument("--config",    default=None,
-                   help="Path to bimanual YAML config (e.g. ../config/bimanual.yaml). "
-                        "Required when --arm both; optional for single-arm use.")
     p.add_argument("--rate",      type=float, default=50.0,
                    help="Control-loop Hz  (default: 50).  Also sets solver dt.")
-    p.add_argument("--horizon",   type=float, default=None,
-                   help="JointTrajectory duration ms  (default: auto = 1.5× period)")
     p.add_argument("--max-iter",  type=int, default=_MAX_ITER, dest="max_iter",
                    help=f"Solver iteration cap  (default: {_MAX_ITER})")
-    p.add_argument("--rebuild",   action="store_true",
-                   help="Rebuild RobotWrapper every step — original ~25 ms behaviour")
-    p.add_argument("--no-vel-limits", action="store_true", dest="no_vel_limits",
-                   help="Disable joint velocity limits in IK solver  (not recommended)")
     p.add_argument("--wrist-vel-cap", type=float, default=4.0, dest="wrist_vel_cap",
                    help="Wrist (joint5-7) velocity cap in rad/s for teleop smoothness. "
                         "URDF default = 20.94 rad/s (1200°/s) lets IK noise pass through. "
@@ -139,8 +108,16 @@ def _parse_args():
                    help="Tracker→arm yaw offset in degrees  (default: 0)")
     p.add_argument("--calib-rpy", default=None, dest="calib_rpy",
                    help="'roll,pitch,yaw' degrees — overrides --calib-yaw")
-    p.add_argument("--tracker-side", default=None, dest="tracker_side",
-                   choices=["left", "right", None])
+    p.add_argument("--ws-clamp",  action="store_true", default=True, dest="ws_clamp",
+                   help="Enable the rectangular workspace soft clamp; box comes "
+                        "from ARM_CONFIG[arm]['workspace'] (default: on). "
+                        "Position-saturating, not a hard clip — see "
+                        "ws_boundary.SoftClamp")
+    p.add_argument("--no-ws-clamp", action="store_false", dest="ws_clamp",
+                   help="Disable the workspace clamp")
+    p.add_argument("--boundary-margin", type=float, default=0.05,
+                   dest="boundary_margin",
+                   help="SoftClamp saturation band width in metres (default: 0.05)")
     p.add_argument("--csv",       default="", help="Output CSV path")
     p.add_argument("--plot",      default="", help="Output plot PNG path")
     p.add_argument("--dry-run",   action="store_true", dest="dry_run",
@@ -149,98 +126,20 @@ def _parse_args():
                    help="Send arm to home (with TF confirmation) before starting (default: on)")
     p.add_argument("--no-home-first", action="store_false", dest="home_first",
                    help="Skip homing before starting")
-    p.add_argument("--no-ws-clamp", action="store_true", default=False, dest="no_ws_clamp",
-                   help="Disable workspace XYZ clamping (clamp is ON by default)")
-    p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
-                   help="Enable workspace XYZ clamping (default; kept for compatibility)")
-    p.add_argument("--ws-mesh",   default=None, dest="ws_mesh",
-                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py). "
-                        "Default: None → auto-detect results/reachability_<arm>_ws.npz")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
                    help="Start in KEYBOARD mode  (w/s/a/d/q/e/i/k/j/l/u/o)")
-    p.add_argument("--boundary-margin", type=float, default=0.05,
-                   dest="boundary_margin",
-                   help="Soft-clamp margin in metres  (default: 0.05 = 5 cm). "
-                        "Distance from workspace boundary where damping begins.")
     p.add_argument("--no-j3j4-couple", action="store_true", default=True, dest="no_j3j4_couple",
                    help="Disable j3/j4 elbow-torso safety coupling (both soft QP guidance "
                         "and hard post-solve clip). Use when testing chest-reach without "
                         "elbow restriction, or to diagnose coupling behaviour. (default: on)")
     p.add_argument("--j3j4-couple", action="store_false", dest="no_j3j4_couple",
                    help="Enable j3/j4 elbow-torso safety coupling")
-    p.add_argument("--success-gate", action="store_true", dest="success_gate",
-                   help="Restore legacy 'freeze on IK failure' behaviour. "
-                        "Default (off) = Set2-D continuous approach: always publish, "
-                        "let velocity_limits saturate the partial solution. "
-                        "Set this flag to revert to the old behaviour where IK "
-                        "pos_err > 10mm causes the arm to stop moving.")
-    p.add_argument("--use-traj",  action="store_true", dest="use_traj",
-                   help="Use JointTrajectoryController (legacy, may vibrate) "
-                        "instead of the default ForwardCommandController. "
-                        "Topic mode is preferred for VR teleop (no JT spline re-plan).")
     return p.parse_args()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
-def _load_yaml_config(config_path):
-    """Load bimanual YAML. Returns dict (keys: 'common', 'right', 'left')."""
-    try:
-        import yaml
-    except ImportError:
-        raise SystemExit("pyyaml not installed — run: pip install pyyaml")
-    with open(config_path) as f:
-        return yaml.safe_load(f) or {}
-
-
-def _apply_yaml_to_args(args, yaml_cfg, arm):
-    """Merge YAML common + arm-specific values onto an args Namespace copy."""
-    merged = dict(yaml_cfg.get("common", {}))
-    merged.update(yaml_cfg.get(arm, {}))
-    for key, val in merged.items():
-        dest = key.replace("-", "_")
-        if hasattr(args, dest):
-            setattr(args, dest, val)
-    return args
-
-
-def _prepare_args(args):
-    """Auto-detect ws_mesh and compute horizon in-place for one arm."""
-    if not args.ws_mesh:
-        _auto = _ws_mesh_path(args.arm)
-        if os.path.isfile(_auto):
-            args.ws_mesh = _auto
-            print(f"  [{args.arm}][ws_mesh] auto-detected: {_auto}")
-    period_ms = 1000.0 / args.rate
-    if args.horizon is None:
-        args.horizon = round(1.5 * period_ms, 1)
-        print(f"  [{args.arm}][horizon] auto → {args.horizon:.1f}ms  (1.5× period @ {args.rate:.0f}Hz)")
-    elif args.horizon < period_ms:
-        print(f"  ⚠ [{args.arm}] --horizon {args.horizon:.1f}ms < period {period_ms:.1f}ms "
-              f"→ clamped to {period_ms:.1f}ms")
-        args.horizon = period_ms
-
-
-def _start_aggregator(executor, arm):
-    """Start JointActionsAggregator for the given arm scope ('both'/'left'/'right').
-
-    Single-arm scope publishes /joint_actions without waiting for the idle
-    arm; output is always the full 26 joints — command-less joints (idle arm,
-    idle hand) are filled from /joint_states.
-    Returns the node (added to executor) or None if unavailable/failed.
-    """
-    if not _AGGREGATOR_AVAILABLE:
-        return None
-    try:
-        node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0,
-                                      arm_config=arm)
-        executor.add_node(node)
-        print(f"  [✓] joint_actions_aggregator started (arm={arm}, o6_both, 50Hz)")
-        return node
-    except Exception as e:
-        print(f"  ⚠  Failed to start aggregator: {e}")
-        return None
 
 
 def _add_reset_pose_service(host_node, nodes):
@@ -311,12 +210,8 @@ def _run_arm(node):
             arm = node.args.arm
             print(f"  [{arm}] Running pre-home unfold sequence...")
             node.joint_unfold_sequence()
-            if node.args.use_traj:
-                print(f"  [{arm}] Moving to home (JointTrajectory)...")
-                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
-            else:
-                print(f"  [{arm}] Moving to home (ForwardCommand ramp)...")
-                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            print(f"  [{arm}] Moving to home (ForwardCommand ramp)...")
+            node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()
     except KeyboardInterrupt:
         pass
@@ -332,20 +227,13 @@ def _run_bimanual(args):
     """
     from rclpy.executors import MultiThreadedExecutor
 
-    yaml_cfg = {}
-    if args.config:
-        yaml_cfg = _load_yaml_config(args.config)
-        print(f"  [config] Loaded: {args.config}")
-    elif not args.config:
-        print("  ⚠  --arm both without --config: both arms use identical CLI defaults")
-
-    args_right = _apply_yaml_to_args(copy.deepcopy(args), yaml_cfg, "right")
+    # Both arms get identical CLI settings. Per-arm overrides used to come from
+    # config/bimanual.yaml, dropped in the v2 merge: most of its keys were
+    # silently ignored and its left calib_yaw contradicted the measured value.
+    args_right = copy.deepcopy(args)
     args_right.arm = "right"
-    args_left  = _apply_yaml_to_args(copy.deepcopy(args), yaml_cfg, "left")
+    args_left  = copy.deepcopy(args)
     args_left.arm  = "left"
-
-    _prepare_args(args_right)
-    _prepare_args(args_left)
 
     rclpy.init()
     node_right = PlacoOnlineProfiler(args_right)
@@ -355,12 +243,20 @@ def _run_bimanual(args):
     executor.add_node(node_right)
     executor.add_node(node_left)
 
-    # Single /reset_robot_pose that homes BOTH arms at once (2026-07-01).
+    # Single /reset_robot_pose that disables teleop then homes BOTH arms.
     _add_reset_pose_service(node_right, [node_right, node_left])
 
-    # Start joint_actions_aggregator if available (both arms + both hands)
-    aggregator_node = _start_aggregator(executor, "both")
-
+    # Start joint_actions_aggregator if available (default: o6_both)
+    aggregator_node = None
+    if _AGGREGATOR_AVAILABLE:
+        try:
+            aggregator_node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0)
+            executor.add_node(aggregator_node)
+            print("  [✓] joint_actions_aggregator started (o6_both, 50Hz)")
+        except Exception as e:
+            print(f"  ⚠  Failed to start aggregator: {e}")
+            aggregator_node = None
+    
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -391,23 +287,18 @@ def main():
         return
 
     # ── Single-arm path ──────────────────────────────────────────────────────
-    _prepare_args(args)
-
+    # MultiThreadedExecutor (not rclpy.spin): the go_home / reset_robot_pose
+    # service callbacks block waiting on the hot loop, so a single-threaded
+    # executor would deadlock (TF / joint_states / client responses stall).
+    from rclpy.executors import MultiThreadedExecutor
     rclpy.init()
     node = PlacoOnlineProfiler(args)
 
-    # 2026-06-12: the /{arm}/go_home service callback blocks waiting for homing
-    # to finish; a single-threaded executor (rclpy.spin) would get stuck
-    # (/joint_states and TF would stall), so use a MultiThreadedExecutor
-    # (consistent with the --arm both path).
-    from rclpy.executors import MultiThreadedExecutor
+    # /reset_robot_pose in single-arm mode homes just this arm.
+    _add_reset_pose_service(node, [node])
+
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
-    # /reset_robot_pose alias — single arm mode homes just this arm.
-    _add_reset_pose_service(node, [node])
-    # Single-arm aggregator: publishes /joint_actions with only this arm's
-    # joints (+ its hand), without waiting for the idle arm.
-    aggregator_node = _start_aggregator(executor, args.arm)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -416,20 +307,14 @@ def main():
             # Safety unfold sequence: joint3 0→90°, joint4 0→90°, joint3 90→0°
             print("  Running pre-home unfold sequence...")
             node.joint_unfold_sequence()
-            if args.use_traj:
-                print("  Moving to home (JointTrajectory)...")
-                node.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=5)
-            else:
-                print("  Moving to home (ForwardCommand ramp)...")
-                node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            print("  Moving to home (ForwardCommand ramp)...")
+            node.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         node.run()
     except KeyboardInterrupt:
         print("\n\n  Ctrl-C — stopping...")
     finally:
         node.print_final_stats()
         node.destroy_node()
-        if aggregator_node:
-            aggregator_node.destroy_node()
         rclpy.shutdown()
 
 

@@ -44,7 +44,6 @@ _ROOT = _os.path.dirname(_HERE)
 _sys.path.insert(0, _ROOT)
 _sys.path.insert(0, _HERE)
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
-_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))
 _sys.path.insert(0, _os.path.join(_ROOT, "config"))
 
 import collections
@@ -67,16 +66,14 @@ from std_srvs.srv import Trigger, SetBool
 from tf2_ros import Buffer, TransformListener
 
 from placo_ik_solver import _find_urdf, _quat_to_rot
-from placo_ws_analyze import WorkspaceMesh
-from placo_ik_session_bimanual import PlacoBimanualSession, ARMS, _MAX_ITER
+from placo_ik_session_bimanual import PlacoBimanualSession, ARMS
 from kbd_controller import KbdController
 from ws_boundary import SoftClamp, BoundaryMonitor
 from paths import csv_path as _csv_path, png_for as _png_for
 from arm_config import ARM_CONFIG
 
-# 共用元件直接取自單臂 node（import 不修改）
-from placo_ik_node import (
-    TfPoller, AsyncCsvWriter,
+from common import (
+    TfPoller, AsyncCsvWriter, EePosePublisher,
     _qmul, _qnorm, _qfrom_rpy, _rotate_vec, _qslerp, _rotate_quat,
     _parse_lpf_alpha,
 )
@@ -154,6 +151,11 @@ class PlacoBimanualNode(Node):
                 # joint / pose 簿記
                 "pose":             list(cfg["home_pose"]),
                 "last_joints":      list(cfg["home_joints"]),
+                # last_joints 預設塞 home 只為了第一步 IK 有 seed；在真正下過
+                # 命令或同步到實測值之前那是個猜測，EePosePublisher 不該把猜
+                # 出來的姿態當成 EE pose 發出去 → 在此旗標翻 True 前它改用
+                # /joint_states 的實測值。
+                "cmd_joints_valid": False,
                 "filt_joints":      None,
                 "target_xyz":       np.array(cfg["home_pose"][:3]),
                 "target_q":         tuple(cfg["home_pose"][3:7]),
@@ -179,7 +181,7 @@ class PlacoBimanualNode(Node):
         self._home_done    = threading.Event()
         self._home_result  = {"ok": False, "msg": ""}
 
-        self._init_workspace(args, ov)
+        self._init_workspace(args)
         self._init_session(args)
         self._init_ros(args)
         self._init_telemetry(args)
@@ -193,21 +195,14 @@ class PlacoBimanualNode(Node):
         self._print_banner()
 
     # ── init ──────────────────────────────────────────────────────────────────
-    def _init_workspace(self, args, ov):
+    def _init_workspace(self, args):
+        """每臂一個矩形 SoftClamp（範圍取自 ARM_CONFIG[arm]["workspace"]）。"""
         for arm in ARMS:
             s = self.S[arm]
-            mesh = None
-            npz  = ov.get(arm, {}).get("ws_mesh")
-            if npz:
-                if not os.path.isfile(npz):
-                    raise FileNotFoundError(f"ws_mesh not found ({arm}): {npz}")
-                mesh = WorkspaceMesh.load(npz)
-            s["ws_mesh"]  = mesh
-            s["ws_clamp"] = bool(args.ws_clamp) or mesh is not None
+            s["ws_clamp"] = bool(args.ws_clamp)
             s["soft_clamp"] = SoftClamp(
-                ws_mesh  = mesh,
+                box_ws   = s["cfg"]["workspace"],
                 margin_m = float(args.boundary_margin),
-                box_ws   = s["cfg"]["workspace"] if mesh is None else None,
             )
 
     def _init_session(self, args):
@@ -236,14 +231,6 @@ class PlacoBimanualNode(Node):
                 Float32, cfg["latency_topic"], 10)
             s["ik_cmd_pub"]  = self.create_publisher(
                 JointState, f"/{arm}_arm_ik_commands", 10)
-            # EE pose 連續輸出（Cartesian PoseStamped，base_link frame）
-            # {arm}_eef_pose    = waypoint：有 delta 發 QP 目標（SoftClamp+SLERP 後）；
-            #                     無 delta 發 FK(命令關節) hold。全程連續。
-            # {arm}_eef_pose_fk = 純 FK(命令關節)，不管有無 delta 一直發。
-            s["eef_pose_pub"]    = self.create_publisher(
-                PoseStamped, f"/{arm}_eef_pose", 10)
-            s["eef_pose_fk_pub"] = self.create_publisher(
-                PoseStamped, f"/{arm}_eef_pose_fk", 10)
             self.create_subscription(
                 PoseStamped, cfg["ee_delta_topic"],
                 lambda msg, a=arm: self._ee_delta_cb(a, msg),
@@ -266,6 +253,34 @@ class PlacoBimanualNode(Node):
             callback_group=self._cbg)
         self._teleop_enable_cli = self.create_client(
             SetBool, "/set_teleop_arm_enabled", callback_group=self._cbg)
+
+        # 連續 EE pose 輸出（/{arm}_eef_pose + /{arm}_eef_pose_fk）。
+        # 自帶 timer，node 一起來就開始發：unfold / homing / idle / teleop 全程
+        # 不中斷，不依賴 hot loop 是否已啟動。兩臂共用 base_link（"world"）。
+        self._eef = EePosePublisher(
+            self,
+            arms      = ARMS,
+            frame_id  = self.S[ARMS[0]]["cfg"]["base_link"],
+            fk_fn     = self._session.fk,
+            joints_fn = self._eef_joints,
+            rate_hz   = self._rate_hz,
+        )
+
+    def _eef_joints(self, arm: str) -> Optional[List[float]]:
+        """EePosePublisher 的關節來源。
+
+        已下過命令 / 完成 startup sync → 用命令關節。還沒有 → 用 /joint_states
+        的實測值；連那個都沒有就回 None（不發，總比發一個猜出來的 home 姿態好）。
+        """
+        with self._joints_lock:
+            s = self.S[arm]
+            if s["cmd_joints_valid"] and s["last_joints"] is not None:
+                return list(s["last_joints"])
+        names = self.S[arm]["cfg"]["joint_names"]
+        with self._js_lock:
+            if all(n in self._joint_states for n in names):
+                return [self._joint_states[n] for n in names]
+        return None
 
     def _init_telemetry(self, args):
         _MAXLEN = 6000
@@ -347,8 +362,12 @@ class PlacoBimanualNode(Node):
             for a in ARMS:
                 cur[a] = [s + alpha * (t - s) for s, t in zip(start[a], target[a])]
                 self._publish_fwd(a, cur[a])
-                # homing：eef_pose_fk + eef_pose(hold) 都用 ramp 命令 FK 連續發
-                self._publish_eef(a, cur[a], eef_pose_done=False)
+                # ramp 本身就是在下命令 → 記進 last_joints，這樣 EePosePublisher
+                # 的 FK 會跟著 ramp 走（unfold / homing 期間 EE pose 不會凍在
+                # 起點）。hot loop 在 homing 期間是阻塞的，不會搶寫。
+                with self._joints_lock:
+                    self.S[a]["last_joints"]      = list(cur[a])
+                    self.S[a]["cmd_joints_valid"] = True
             time.sleep(dt)
         print(f"  [ramp] {label}: done")
         return cur
@@ -423,7 +442,8 @@ class PlacoBimanualNode(Node):
                 s["pose"] = list(s["cfg"]["home_pose"])
                 ok = False
             with self._joints_lock:
-                s["last_joints"] = list(target[a])
+                s["last_joints"]      = list(target[a])
+                s["cmd_joints_valid"] = True
             s["filt_joints"] = None
             s["ori_filt_q"]  = None
             s["target_xyz"]  = np.array(s["pose"][:3])
@@ -440,7 +460,8 @@ class PlacoBimanualNode(Node):
             if all(n in js for n in jnames):
                 real = [js[n] for n in jnames]
                 with self._joints_lock:
-                    s["last_joints"] = real
+                    s["last_joints"]      = real
+                    s["cmd_joints_valid"] = True
                 print(f"  [{a}] joints synced")
             else:
                 real = None
@@ -607,7 +628,7 @@ class PlacoBimanualNode(Node):
                         base_xyz[1] + dx_arm[1],
                         base_xyz[2] + dx_arm[2]])
         if s["ws_clamp"]:
-            new_xyz, _bs = s["soft_clamp"].apply(raw, np.array(dx_arm))
+            new_xyz, _bs = s["soft_clamp"].apply(raw)
             s["bdry"].publish(_bs)
         else:
             new_xyz = raw
@@ -625,46 +646,10 @@ class PlacoBimanualNode(Node):
         s["target_xyz"] = np.asarray(new_xyz, dtype=float)
         s["target_q"]   = new_q
 
-        # teleop 目標 → {arm}_eef_pose（eef_pose_fk 由 hot loop 另發 FK）
-        self._publish_pose(s["eef_pose_pub"], s["cfg"]["base_link"], new_xyz, new_q)
+        # teleop 目標 → {arm}_eef_pose（EePosePublisher 的 timer 負責實際發佈；
+        # 目標過期後它會自動退回 FK hold，不需要在這裡傳「已發過」的旗標）
+        self._eef.set_target(arm, new_xyz, new_q)
         return True
-
-    def _publish_pose(self, pub, frame_id, xyz, quat):
-        """發一筆 PoseStamped（base_link frame）。"""
-        msg = PoseStamped()
-        msg.header.stamp    = self.get_clock().now().to_msg()
-        msg.header.frame_id = frame_id
-        msg.pose.position.x = float(xyz[0])
-        msg.pose.position.y = float(xyz[1])
-        msg.pose.position.z = float(xyz[2])
-        msg.pose.orientation.x = float(quat[0])
-        msg.pose.orientation.y = float(quat[1])
-        msg.pose.orientation.z = float(quat[2])
-        msg.pose.orientation.w = float(quat[3])
-        pub.publish(msg)
-
-    def _publish_eef(self, arm: str, joints: List[float], eef_pose_done: bool):
-        """單臂連續 EE pose 輸出（每臂 FK 只算一次）。
-
-        eef_pose_fk : 一律發 FK(joints)。
-        eef_pose    : eef_pose_done=False（idle/homing）→ 發 FK hold；
-                      True 表示 teleop 已由 _build_target_arm 發過目標。
-        """
-        s  = self.S[arm]
-        fk = self._session.fk(arm, list(joints))
-        if fk is None:
-            return
-        frame_id = s["cfg"]["base_link"]
-        self._publish_pose(s["eef_pose_fk_pub"], frame_id, fk[:3], fk[3:7])
-        if not eef_pose_done:
-            self._publish_pose(s["eef_pose_pub"], frame_id, fk[:3], fk[3:7])
-
-    def _publish_eef_all(self, updated: Dict[str, bool]):
-        """每 tick 由 hot loop 呼叫：兩臂用當下命令關節連續發 EE pose。"""
-        for a in ARMS:
-            with self._joints_lock:
-                joints = list(self.S[a]["last_joints"])
-            self._publish_eef(a, joints, eef_pose_done=updated[a])
 
     # ── 輸出 LPF（per-arm，同單臂版） ─────────────────────────────────────────
     def _filter_joints(self, arm: str, raw: List[float]) -> List[float]:
@@ -719,10 +704,7 @@ class PlacoBimanualNode(Node):
             else:
                 self._print_idle(step_count)
 
-            # 連續 EE pose 輸出：{arm}_eef_pose_fk 一律發 FK；{arm}_eef_pose 在
-            # 沒有效 delta 的臂（idle/首訊息丟棄/pause）發 FK hold，有更新的臂
-            # 已由 _build_target_arm 發過目標。每臂 FK 只算一次。
-            self._publish_eef_all(updated)
+            # EE pose 不在這裡發 —— EePosePublisher 自帶 timer，全程連續。
 
             sleep_sec = dt_sec - (time.perf_counter() - t_step)
             if sleep_sec > 0:
@@ -999,13 +981,14 @@ class PlacoBimanualNode(Node):
               f"  max_iter={a.max_iter}")
         for arm in ARMS:
             s = self.S[arm]
-            ws = (f"mesh({s['ws_mesh'].summary()['n_reachable_voxels']}vox)"
-                  if s["ws_mesh"] is not None
-                  else ("box" if s["ws_clamp"] else "OFF"))
+            ws = (f"box(margin={a.boundary_margin*100:.0f}cm)"
+                  if s["ws_clamp"] else "OFF")
             print(f"  [{arm:>5}] ee_delta={s['cfg']['ee_delta_topic']}"
                   f"  cmd={s['cfg']['fwd_cmd_topic']}")
             print(f"  [{arm:>5}] calib_yaw={s['calib_yaw_deg']:.0f}°  ws={ws}"
                   f"  lpf={'%.2f' % s['lpf_alpha'][0] if s['lpf_active'] else 'OFF'}")
+            print(f"  [{arm:>5}] eef_pose : /{arm}_eef_pose + "
+                  f"/{arm}_eef_pose_fk  ({self._rate_hz:.0f}Hz, 全程連續)")
         print(f"  Δq budget : {a.tick_budget_deg:.1f}°/tick (uniform scaling,"
               f" replaces per-joint jump guard)")
         print(f"  EE guard  : throttle below {a.min_ee_dist*100:.0f}cm"
