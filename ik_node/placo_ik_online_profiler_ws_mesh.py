@@ -149,12 +149,13 @@ def _parse_args():
                    help="Send arm to home (with TF confirmation) before starting (default: on)")
     p.add_argument("--no-home-first", action="store_false", dest="home_first",
                    help="Skip homing before starting")
-    p.add_argument("--no-ws-clamp", action="store_true", default=True, dest="no_ws_clamp",
-                   help="Disable workspace XYZ clamping (default: on)")
+    p.add_argument("--no-ws-clamp", action="store_true", default=False, dest="no_ws_clamp",
+                   help="Disable workspace XYZ clamping (clamp is ON by default)")
     p.add_argument("--ws-clamp", action="store_false", dest="no_ws_clamp",
-                   help="Enable workspace XYZ clamping")
+                   help="Enable workspace XYZ clamping (default; kept for compatibility)")
     p.add_argument("--ws-mesh",   default=None, dest="ws_mesh",
-                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py)")
+                   help="WorkspaceMesh .npz path (from placo_ws_analyze.py). "
+                        "Default: None → auto-detect results/reachability_<arm>_ws.npz")
     p.add_argument("--verbose",   action="store_true",
                    help="Print every IK step  (default: every 5th)")
     p.add_argument("--keyboard",  action="store_true",
@@ -221,6 +222,88 @@ def _prepare_args(args):
         args.horizon = period_ms
 
 
+def _start_aggregator(executor, arm):
+    """Start JointActionsAggregator for the given arm scope ('both'/'left'/'right').
+
+    Single-arm scope publishes /joint_actions without waiting for the idle
+    arm; output is always the full 26 joints — command-less joints (idle arm,
+    idle hand) are filled from /joint_states.
+    Returns the node (added to executor) or None if unavailable/failed.
+    """
+    if not _AGGREGATOR_AVAILABLE:
+        return None
+    try:
+        node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0,
+                                      arm_config=arm)
+        executor.add_node(node)
+        print(f"  [✓] joint_actions_aggregator started (arm={arm}, o6_both, 50Hz)")
+        return node
+    except Exception as e:
+        print(f"  ⚠  Failed to start aggregator: {e}")
+        return None
+
+
+def _add_reset_pose_service(host_node, nodes):
+    """Create a single /reset_robot_pose (std_srvs/Trigger) on host_node that
+    first disables teleop, then homes every node in `nodes`.
+
+    Flow:
+      1. Call /set_teleop_arm_enabled {data: false} as a client so the tracker
+         stops feeding ee_delta (best-effort — skipped if the service is offline).
+      2. Reuse each node's hot-loop homing mechanism (_home_request /
+         _home_done), the same path as /{arm}/go_home and keyboard 'h'.
+
+    Requires a MultiThreadedExecutor + ReentrantCallbackGroup (host_node._cbg),
+    otherwise the client wait / home wait would deadlock the executor.
+    """
+    import time
+    from std_srvs.srv import Trigger, SetBool
+
+    teleop_cli = host_node.create_client(
+        SetBool, "/set_teleop_arm_enabled", callback_group=host_node._cbg)
+
+    def _disable_teleop(timeout_sec=3.0):
+        if not teleop_cli.wait_for_service(timeout_sec=1.0):
+            return "SKIPPED (service /set_teleop_arm_enabled offline)"
+        sb = SetBool.Request()
+        sb.data = False
+        fut = teleop_cli.call_async(sb)
+        t0 = time.time()
+        while not fut.done() and (time.time() - t0) < timeout_sec:
+            time.sleep(0.02)
+        if not fut.done():
+            return "TIMEOUT (no response)"
+        res = fut.result()
+        return f"disabled ({res.message})" if res.success else f"FAILED ({res.message})"
+
+    def _cb(req, resp):
+        arms = ", ".join(n.args.arm for n in nodes)
+        print("\n  [srv] /reset_robot_pose → step1: disable teleop")
+        disable_msg = _disable_teleop()
+        print(f"  [srv] /reset_robot_pose → step2: homing: {arms}  ({disable_msg})")
+        for n in nodes:
+            n._home_done.clear()
+        for n in nodes:
+            n._home_request.set()
+        ok_all = True
+        msgs = []
+        for n in nodes:
+            if n._home_done.wait(timeout=25.0):
+                ok_all = ok_all and n._home_result["ok"]
+                msgs.append(f"{n.args.arm}: {n._home_result['msg']}")
+            else:
+                ok_all = False
+                msgs.append(f"{n.args.arm}: timeout — hot loop not running?")
+        resp.success = ok_all
+        resp.message = f"teleop: {disable_msg} | home: " + " | ".join(msgs)
+        return resp
+
+    host_node.create_service(
+        Trigger, "/reset_robot_pose", _cb,
+        callback_group=host_node._cbg)
+    print("  [✓] service /reset_robot_pose (std_srvs/Trigger) — disable teleop → home all arms")
+
+
 def _run_arm(node):
     """Run one arm's home sequence + IK hot-loop. Designed to run in a thread."""
     try:
@@ -271,18 +354,13 @@ def _run_bimanual(args):
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node_right)
     executor.add_node(node_left)
-    
-    # Start joint_actions_aggregator if available (default: o6_both)
-    aggregator_node = None
-    if _AGGREGATOR_AVAILABLE:
-        try:
-            aggregator_node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0)
-            executor.add_node(aggregator_node)
-            print("  [✓] joint_actions_aggregator started (o6_both, 50Hz)")
-        except Exception as e:
-            print(f"  ⚠  Failed to start aggregator: {e}")
-            aggregator_node = None
-    
+
+    # Single /reset_robot_pose that homes BOTH arms at once (2026-07-01).
+    _add_reset_pose_service(node_right, [node_right, node_left])
+
+    # Start joint_actions_aggregator if available (both arms + both hands)
+    aggregator_node = _start_aggregator(executor, "both")
+
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -318,7 +396,19 @@ def main():
     rclpy.init()
     node = PlacoOnlineProfiler(args)
 
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    # 2026-06-12: the /{arm}/go_home service callback blocks waiting for homing
+    # to finish; a single-threaded executor (rclpy.spin) would get stuck
+    # (/joint_states and TF would stall), so use a MultiThreadedExecutor
+    # (consistent with the --arm both path).
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
+    # /reset_robot_pose alias — single arm mode homes just this arm.
+    _add_reset_pose_service(node, [node])
+    # Single-arm aggregator: publishes /joint_actions with only this arm's
+    # joints (+ its hand), without waiting for the idle arm.
+    aggregator_node = _start_aggregator(executor, args.arm)
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
     try:
@@ -338,6 +428,8 @@ def main():
     finally:
         node.print_final_stats()
         node.destroy_node()
+        if aggregator_node:
+            aggregator_node.destroy_node()
         rclpy.shutdown()
 
 

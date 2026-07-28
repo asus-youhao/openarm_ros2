@@ -63,7 +63,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, Float64MultiArray, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 from tf2_ros import Buffer, TransformListener
 
 from placo_ik_solver import _find_urdf, _quat_to_rot
@@ -236,6 +236,14 @@ class PlacoBimanualNode(Node):
                 Float32, cfg["latency_topic"], 10)
             s["ik_cmd_pub"]  = self.create_publisher(
                 JointState, f"/{arm}_arm_ik_commands", 10)
+            # EE pose 連續輸出（Cartesian PoseStamped，base_link frame）
+            # {arm}_eef_pose    = waypoint：有 delta 發 QP 目標（SoftClamp+SLERP 後）；
+            #                     無 delta 發 FK(命令關節) hold。全程連續。
+            # {arm}_eef_pose_fk = 純 FK(命令關節)，不管有無 delta 一直發。
+            s["eef_pose_pub"]    = self.create_publisher(
+                PoseStamped, f"/{arm}_eef_pose", 10)
+            s["eef_pose_fk_pub"] = self.create_publisher(
+                PoseStamped, f"/{arm}_eef_pose_fk", 10)
             self.create_subscription(
                 PoseStamped, cfg["ee_delta_topic"],
                 lambda msg, a=arm: self._ee_delta_cb(a, msg),
@@ -250,6 +258,14 @@ class PlacoBimanualNode(Node):
         self.create_service(
             Trigger, "/bimanual/go_home", self._home_srv_cb,
             callback_group=self._cbg)
+        # /reset_robot_pose：一鍵重置流程 —— 先 disable teleop（當 client 呼叫
+        # tracker 的 /set_teleop_arm_enabled{false} 停止 ee_delta 發布），再走
+        # 與 /bimanual/go_home 相同的 home 路徑（兩臂一起回 home）。
+        self.create_service(
+            Trigger, "/reset_robot_pose", self._reset_pose_srv_cb,
+            callback_group=self._cbg)
+        self._teleop_enable_cli = self.create_client(
+            SetBool, "/set_teleop_arm_enabled", callback_group=self._cbg)
 
     def _init_telemetry(self, args):
         _MAXLEN = 6000
@@ -331,6 +347,8 @@ class PlacoBimanualNode(Node):
             for a in ARMS:
                 cur[a] = [s + alpha * (t - s) for s, t in zip(start[a], target[a])]
                 self._publish_fwd(a, cur[a])
+                # homing：eef_pose_fk + eef_pose(hold) 都用 ramp 命令 FK 連續發
+                self._publish_eef(a, cur[a], eef_pose_done=False)
             time.sleep(dt)
         print(f"  [ramp] {label}: done")
         return cur
@@ -459,6 +477,38 @@ class PlacoBimanualNode(Node):
             resp.message = "timeout — hot loop not running?"
         return resp
 
+    def _reset_pose_srv_cb(self, req, resp):
+        """/reset_robot_pose (std_srvs/Trigger) — 一鍵重置：
+        1) disable teleop（呼叫 tracker /set_teleop_arm_enabled{false}，停 ee_delta）
+        2) 走 /bimanual/go_home 的同一條 home 路徑（兩臂一起回 home）。
+
+        步驟 1 為 best-effort：tracker service 不在線上時只警告、仍繼續回 home
+        （homing 本身會阻塞 ee_delta 處理並在結束後 reanchor，安全性不受影響）。
+        依賴 MultiThreadedExecutor + ReentrantCallbackGroup，client 回覆才能在本
+        callback 阻塞等待期間由其他 executor thread 服務。
+        """
+        print("\n  [srv] /reset_robot_pose → step1: disable teleop")
+        disable_msg = self._disable_teleop(timeout_sec=3.0)
+        print(f"  [srv] /reset_robot_pose → step2: go home  ({disable_msg})")
+        home_resp = self._home_srv_cb(req, resp)
+        home_resp.message = f"teleop: {disable_msg} | home: {home_resp.message}"
+        return home_resp
+
+    def _disable_teleop(self, timeout_sec: float = 3.0) -> str:
+        """Best-effort：呼叫 /set_teleop_arm_enabled{data:false}。回傳結果字串。"""
+        if not self._teleop_enable_cli.wait_for_service(timeout_sec=1.0):
+            return "SKIPPED (service /set_teleop_arm_enabled offline)"
+        sb_req = SetBool.Request()
+        sb_req.data = False
+        future = self._teleop_enable_cli.call_async(sb_req)
+        t0 = time.time()
+        while not future.done() and (time.time() - t0) < timeout_sec:
+            time.sleep(0.02)
+        if not future.done():
+            return "TIMEOUT (no response)"
+        result = future.result()
+        return f"disabled ({result.message})" if result.success else f"FAILED ({result.message})"
+
     def _execute_home_request(self):
         """在 hot loop 內實際執行回 home（service 與鍵盤 h 的共同路徑）。"""
         ok = self.send_home_fwd_both()
@@ -574,7 +624,47 @@ class PlacoBimanualNode(Node):
 
         s["target_xyz"] = np.asarray(new_xyz, dtype=float)
         s["target_q"]   = new_q
+
+        # teleop 目標 → {arm}_eef_pose（eef_pose_fk 由 hot loop 另發 FK）
+        self._publish_pose(s["eef_pose_pub"], s["cfg"]["base_link"], new_xyz, new_q)
         return True
+
+    def _publish_pose(self, pub, frame_id, xyz, quat):
+        """發一筆 PoseStamped（base_link frame）。"""
+        msg = PoseStamped()
+        msg.header.stamp    = self.get_clock().now().to_msg()
+        msg.header.frame_id = frame_id
+        msg.pose.position.x = float(xyz[0])
+        msg.pose.position.y = float(xyz[1])
+        msg.pose.position.z = float(xyz[2])
+        msg.pose.orientation.x = float(quat[0])
+        msg.pose.orientation.y = float(quat[1])
+        msg.pose.orientation.z = float(quat[2])
+        msg.pose.orientation.w = float(quat[3])
+        pub.publish(msg)
+
+    def _publish_eef(self, arm: str, joints: List[float], eef_pose_done: bool):
+        """單臂連續 EE pose 輸出（每臂 FK 只算一次）。
+
+        eef_pose_fk : 一律發 FK(joints)。
+        eef_pose    : eef_pose_done=False（idle/homing）→ 發 FK hold；
+                      True 表示 teleop 已由 _build_target_arm 發過目標。
+        """
+        s  = self.S[arm]
+        fk = self._session.fk(arm, list(joints))
+        if fk is None:
+            return
+        frame_id = s["cfg"]["base_link"]
+        self._publish_pose(s["eef_pose_fk_pub"], frame_id, fk[:3], fk[3:7])
+        if not eef_pose_done:
+            self._publish_pose(s["eef_pose_pub"], frame_id, fk[:3], fk[3:7])
+
+    def _publish_eef_all(self, updated: Dict[str, bool]):
+        """每 tick 由 hot loop 呼叫：兩臂用當下命令關節連續發 EE pose。"""
+        for a in ARMS:
+            with self._joints_lock:
+                joints = list(self.S[a]["last_joints"])
+            self._publish_eef(a, joints, eef_pose_done=updated[a])
 
     # ── 輸出 LPF（per-arm，同單臂版） ─────────────────────────────────────────
     def _filter_joints(self, arm: str, raw: List[float]) -> List[float]:
@@ -613,20 +703,26 @@ class PlacoBimanualNode(Node):
                     self.S[a]["pending"] = None
                     self.S[a]["pending_t_recv"] = None
 
-            updated_any = False
+            updated = {a: False for a in ARMS}
             if not self._kbd.paused:
                 t_wall = time.time()
                 for a in ARMS:
                     if msgs[a] is not None:
                         if self._build_target_arm(a, msgs[a], t_wall):
-                            updated_any = True
+                            updated[a] = True
 
+            updated_any = any(updated.values())
             if updated_any:
                 self._no_msg_t = time.time()
                 step_count += 1
                 self._solve_and_publish(step_count, t_step)
             else:
                 self._print_idle(step_count)
+
+            # 連續 EE pose 輸出：{arm}_eef_pose_fk 一律發 FK；{arm}_eef_pose 在
+            # 沒有效 delta 的臂（idle/首訊息丟棄/pause）發 FK hold，有更新的臂
+            # 已由 _build_target_arm 發過目標。每臂 FK 只算一次。
+            self._publish_eef_all(updated)
 
             sleep_sec = dt_sec - (time.perf_counter() - t_step)
             if sleep_sec > 0:
@@ -918,6 +1014,8 @@ class PlacoBimanualNode(Node):
               f"  ori_lpf={'%.2f' % self._ori_alpha if self._ori_active else 'OFF'}")
         print(f"  service   : /bimanual/go_home  (std_srvs/Trigger,"
               f" 兩臂同時回 home)")
+        print(f"  service   : /reset_robot_pose  (std_srvs/Trigger,"
+              f" disable teleop → go_home)")
         print(f"  CSV       : {self._csv_path}")
         print(f"{'═'*65}")
         print(f"  1-9=scale(auto re-anchor)  +/-=fine  p=pause  r=reset"

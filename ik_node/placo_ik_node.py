@@ -53,6 +53,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, Float64MultiArray, String
+from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
@@ -390,6 +391,14 @@ class PlacoOnlineProfiler(Node):
         # JointState publisher for arm-specific IK commands (intermediate topic for aggregator)
         ik_cmd_topic = f"/{self.args.arm}_arm_ik_commands"
         self._ik_cmd_pub = self.create_publisher(JointState, ik_cmd_topic, 10)
+        # EE pose 連續輸出（Cartesian PoseStamped，base_link frame）
+        # {arm}_eef_pose    = waypoint：有 delta 發 IK 目標（SoftClamp+LPF 後）；
+        #                     無 delta 發 FK(命令關節) hold。全程連續。
+        # {arm}_eef_pose_fk = 純 FK(命令關節)，不管有無 delta 一直發。
+        self._eef_pose_pub    = self.create_publisher(
+            PoseStamped, f"/{self.args.arm}_eef_pose", 10)
+        self._eef_pose_fk_pub = self.create_publisher(
+            PoseStamped, f"/{self.args.arm}_eef_pose_fk", 10)
 
         self.create_subscription(
             JointState, "/joint_states",
@@ -402,6 +411,18 @@ class PlacoOnlineProfiler(Node):
         self._pending_t_recv = None     # wall-clock recv time of the pending tracker msg
         self._delta_lock     = threading.Lock()
         self._msg_count      = 0
+
+        # ── go-home service (added 2026-06-12, docs/home_service.md) ──────
+        # The callback (executor thread) only raises a flag; homing always
+        # runs in the hot loop (same path as keyboard 'h'). If homing ran
+        # directly in the callback, the hot loop would keep issuing IK
+        # commands during homing and the two command streams would fight.
+        self._home_request = threading.Event()
+        self._home_done    = threading.Event()
+        self._home_result  = {"ok": False, "msg": ""}
+        self.create_service(
+            Trigger, f"/{self.args.arm}/go_home", self._home_srv_cb,
+            callback_group=self._cbg)
 
     def _init_telemetry(self, args):
         """Create async CSV writer and records list.
@@ -689,6 +710,12 @@ class PlacoOnlineProfiler(Node):
             dist     = 999.0
             while time.time() < deadline:
                 time.sleep(poll_sec)
+                # traj 由控制器插值，Python 端無逐步命令 → 用當下 /joint_states FK
+                with self._js_lock:
+                    _js = dict(self._joint_states)
+                if all(n in _js for n in jnames):
+                    _jl = [_js[n] for n in jnames]
+                    self._publish_eef(_jl, eef_pose_done=False)  # 連續 EE pose
                 tf = self._get_tf(0.3)
                 if tf is None:
                     continue
@@ -796,6 +823,7 @@ class PlacoOnlineProfiler(Node):
             msg = Float64MultiArray()
             msg.data = interp
             self._fwd_pub.publish(msg)
+            self._publish_eef(interp, eef_pose_done=False)  # homing 連續 EE pose
 
             if step % max(1, n_steps // 10) == 0:
                 pct = alpha * 100
@@ -938,6 +966,48 @@ class PlacoOnlineProfiler(Node):
         print("  ⚠ TF & FK unavailable — using home_pose "
               "(internal EE reference ≠ real arm state)")
 
+    def _home_srv_cb(self, req, resp):
+        """/{arm}/go_home (std_srvs/Trigger) — raise the flag and wait for the
+        hot loop to finish homing.
+
+        Requires the executor to be a MultiThreadedExecutor (a single-threaded
+        executor would block on this callback's wait, stalling /joint_states
+        and TF). The profiler entry point has been switched accordingly.
+        """
+        if self._home_request.is_set():
+            resp.success, resp.message = False, "homing already in progress"
+            return resp
+        self._home_done.clear()
+        self._home_request.set()
+        print(f"\n  [srv] /{self.args.arm}/go_home requested")
+        if self._home_done.wait(timeout=20.0):
+            resp.success = self._home_result["ok"]
+            resp.message = self._home_result["msg"]
+        else:
+            resp.success = False
+            resp.message = "timeout — hot loop not running?"
+        return resp
+
+    def _execute_home_request(self):
+        """Actually run homing inside the hot loop (shared path for the service
+        and keyboard 'h')."""
+        if self._use_traj:
+            ok = self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
+        else:
+            ok = self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+        # Anti-jump: discard any tracker pending accumulated during homing and
+        # force a reanchor (the service can fire at any time, independent of
+        # gap timing).
+        with self._delta_lock:
+            self._pending          = None
+            self._pending_t_recv   = None
+            self._reanchor_pending = True
+        self._home_result.update(
+            ok=ok, msg=f"{self.args.arm} arm homed" if ok
+                       else "home verification failed")
+        self._home_request.clear()
+        self._home_done.set()
+
     def _handle_kbd_events(self) -> bool:
         """Handle keyboard flags. Returns True if quit was requested."""
         kbd = self._kbd
@@ -947,10 +1017,9 @@ class PlacoOnlineProfiler(Node):
         if kbd.request_home:
             kbd.request_home = False
             print("\n  [kbd] sending home...")
-            if self._use_traj:
-                self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
-            else:
-                self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+            self._home_request.set()   # same execution path as the service
+        if self._home_request.is_set():
+            self._execute_home_request()
         if kbd.reset_ref:
             kbd.reset_ref          = False
             self._ee_delta_ref_xyz = None
@@ -1082,11 +1151,48 @@ class PlacoOnlineProfiler(Node):
         target_xyz = np.array([new_x, new_y, new_z])
         target_R   = _quat_to_rot(*new_q)
 
+        # teleop 目標 → {arm}_eef_pose（eef_pose_fk 由 hot loop 另發 FK）
+        self._publish_pose(self._eef_pose_pub, target_xyz, new_q)
+
         return {
             "target_xyz": target_xyz, "target_R": target_R, "new_q": new_q,
             "dx": dx, "dy": dy, "dz": dz,
             "new_x": new_x, "new_y": new_y, "new_z": new_z,
         }
+
+    def _publish_pose(self, pub, xyz, quat):
+        """發一筆 PoseStamped（base_link frame）。"""
+        msg = PoseStamped()
+        msg.header.stamp    = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.cfg["base_link"]
+        msg.pose.position.x = float(xyz[0])
+        msg.pose.position.y = float(xyz[1])
+        msg.pose.position.z = float(xyz[2])
+        msg.pose.orientation.x = float(quat[0])
+        msg.pose.orientation.y = float(quat[1])
+        msg.pose.orientation.z = float(quat[2])
+        msg.pose.orientation.w = float(quat[3])
+        pub.publish(msg)
+
+    def _publish_eef(self, joints: List[float], eef_pose_done: bool):
+        """連續 EE pose 輸出（FK 只算一次）。
+
+        eef_pose_fk : 一律發 FK(joints)。
+        eef_pose    : eef_pose_done=False（idle/homing）→ 發 FK hold；
+                      True 表示 teleop 已由 _build_target 發過目標。
+        """
+        fk = self._placo_session.fk(list(joints))
+        if fk is None:
+            return
+        self._publish_pose(self._eef_pose_fk_pub, fk[:3], fk[3:7])
+        if not eef_pose_done:
+            self._publish_pose(self._eef_pose_pub, fk[:3], fk[3:7])
+
+    def _publish_eef_tick(self, eef_pose_done: bool):
+        """每 tick 由 hot loop 呼叫：用當下命令關節連續發 EE pose。"""
+        with self._joints_lock:
+            joints = list(self._last_joints)
+        self._publish_eef(joints, eef_pose_done)
 
     def _run_ik_pipeline(self, target: dict, t_step: float) -> dict:
         """
@@ -1312,6 +1418,7 @@ class PlacoOnlineProfiler(Node):
 
             msg, kbd_mode, tracker_t_recv = self._fetch_pending()
 
+            published_target = False
             if msg is None or self._kbd.paused:
                 self._print_idle(step_count, kbd_mode)
             else:
@@ -1325,12 +1432,18 @@ class PlacoOnlineProfiler(Node):
                     tracker_t_stamp = float(s.sec) + float(s.nanosec) * 1e-9
                 target = self._build_target(msg, kbd_mode, t_wall)
                 if target is not None:
+                    published_target = True   # _build_target 已發 {arm}_eef_pose
                     pipeline = self._run_ik_pipeline(target, t_step)
                     step_count += 1
                     self._write_step(target, pipeline, t_wall, step_count,
                                      tracker_t_stamp, tracker_t_recv)
                     if step_count % 50 == 0:
                         self._print_partial_stats()
+
+            # 連續 EE pose 輸出：{arm}_eef_pose_fk 一律發 FK；{arm}_eef_pose 在
+            # 本 tick 無有效目標（idle/pause/首訊息丟棄）時發 FK hold，
+            # 有目標則已由 _build_target 發過。FK 每 tick 只算一次。
+            self._publish_eef_tick(eef_pose_done=published_target)
 
             sleep_sec = dt_sec - (time.perf_counter() - t_step)
             if sleep_sec > 0:
@@ -1546,6 +1659,7 @@ class PlacoOnlineProfiler(Node):
         print(f"  guards   : jump>{self._joint_jump_guard_deg:.1f}°/step (post-IK reject)"
               f"  +  wrist_vel_cap (pre-IK QP)"
               f"  +  gap>{self._ee_delta_gap_sec:.2f}s")
+        print(f"  service  : /{args.arm}/go_home  (std_srvs/Trigger)")
         print(f"{'═'*65}")
         print(f"  1-9=scale  +/-=fine  t=mode  p=pause  r=reset  h=home  ?=help  Ctrl-C=quit")
         print(f"  KEYBOARD: w/s=±Y  a/d=±X  q/e=±Z  i/k=pitch  j/l=yaw  u/o=roll")
