@@ -31,7 +31,6 @@ _ROOT = _os.path.dirname(_HERE)                                # project root
 _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, kbd
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
-_sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze
 _sys.path.insert(0, _os.path.join(_ROOT, "config"))            # arm_config
 
 import collections
@@ -54,16 +53,20 @@ from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32, Float64MultiArray, String
 from std_srvs.srv import Trigger
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from tf2_ros import Buffer, TransformListener, TransformException
 
 from placo_ik_solver import _find_urdf, _quat_to_rot
-from placo_ws_analyze import WorkspaceMesh
 from placo_ik_session import PlacoSession, _MAX_ITER
 from kbd_controller import KbdController
 from ws_boundary import SoftClamp, BoundaryMonitor
 from paths import csv_path as _csv_path, png_for as _png_for
 from arm_config import ARM_CONFIG   # L2-A: single source of truth
+
+from common import (
+    TfPoller, AsyncCsvWriter, EePosePublisher,
+    _qmul, _qnorm, _qfrom_rpy, _rotate_vec, _qslerp, _rotate_quat,
+    _parse_lpf_alpha,
+)
 
 CSV_FIELDS = [
     "t", "x", "y", "z",
@@ -84,173 +87,13 @@ CSV_FIELDS = [
     "tracker_t_stamp", "tracker_t_recv",
 ]
 
-
-# ── Quaternion helpers ────────────────────────────────────────────────────────
-def _qmul(q1, q2):
-    x1, y1, z1, w1 = q1; x2, y2, z2, w2 = q2
-    return (w1*x2+x1*w2+y1*z2-z1*y2, w1*y2-x1*z2+y1*w2+z1*x2,
-            w1*z2+x1*y2-y1*x2+z1*w2, w1*w2-x1*x2-y1*y2-z1*z2)
-
-def _qnorm(q):
-    x, y, z, w = q; n = math.sqrt(x*x+y*y+z*z+w*w)
-    return (x/n, y/n, z/n, w/n) if n > 1e-9 else (0., 0., 0., 1.)
-
-def _qfrom_rpy(r, p, y):
-    cr, cp, cy = math.cos(r/2), math.cos(p/2), math.cos(y/2)
-    sr, sp, sy = math.sin(r/2), math.sin(p/2), math.sin(y/2)
-    return (sr*cp*cy-cr*sp*sy, cr*sp*cy+sr*cp*sy,
-            cr*cp*sy-sr*sp*cy, cr*cp*cy+sr*sp*sy)
-
-def _rotate_vec(v, q):
-    qx, qy, qz, qw = q; vx, vy, vz = v
-    tx = 2*(qy*vz-qz*vy); ty = 2*(qz*vx-qx*vz); tz = 2*(qx*vy-qy*vx)
-    return (vx+qw*tx+qy*tz-qz*ty, vy+qw*ty+qz*tx-qx*tz, vz+qw*tz+qx*ty-qy*tx)
-
-def _qconj(q):
-    x, y, z, w = q
-    return (-x, -y, -z, w)
-
-def _qdot(q1, q2):
-    return sum(a * b for a, b in zip(q1, q2))
-
-def _qslerp(q0, q1, alpha):
-    """SLERP from q0 to q1. alpha=1.0 returns q1."""
-    q0 = _qnorm(q0)
-    q1 = _qnorm(q1)
-    alpha = max(0.0, min(1.0, float(alpha)))
-    dot = _qdot(q0, q1)
-    if dot < 0.0:
-        q1 = tuple(-v for v in q1)
-        dot = -dot
-    if dot > 0.9995:
-        return _qnorm(tuple((1.0 - alpha) * a + alpha * b for a, b in zip(q0, q1)))
-    theta_0 = math.acos(max(-1.0, min(1.0, dot)))
-    sin_theta_0 = math.sin(theta_0)
-    theta = theta_0 * alpha
-    s0 = math.cos(theta) - dot * math.sin(theta) / sin_theta_0
-    s1 = math.sin(theta) / sin_theta_0
-    return _qnorm(tuple(s0 * a + s1 * b for a, b in zip(q0, q1)))
-
-def _rotate_quat(q, frame_q):
-    """Similarity transform: rotate a delta quaternion through frame_q.
-    dq_arm = frame_q * dq * conj(frame_q)"""
-    return _qnorm(_qmul(_qmul(frame_q, _qnorm(q)), _qconj(frame_q)))
-
-
-def _parse_lpf_alpha(spec: str, n_joints: int) -> List[float]:
-    """Parse --lpf-alpha as single float (uniform) or comma list of len n_joints."""
-    parts = [p.strip() for p in str(spec).split(",")]
-    if len(parts) == 1:
-        return [float(parts[0])] * n_joints
-    if len(parts) != n_joints:
-        raise ValueError(
-            f"--lpf-alpha needs 1 or {n_joints} values, got {len(parts)}: {spec!r}"
-        )
-    return [float(p) for p in parts]
-
-
-# ── Fix-1: TF Poller ──────────────────────────────────────────────────────────
-class TfPoller:
-    """
-    Daemon thread that polls TF2 every poll_sec and caches the result.
-
-    The IK hot-loop calls get() which returns instantly from the cache,
-    eliminating the 0–300 ms blocking _get_tf() call that caused jitter.
-    """
-
-    def __init__(
-        self,
-        tf_buffer,
-        base_link: str,
-        ee_link:   str,
-        poll_sec:  float = 0.05,
-    ):
-        self._buf      = tf_buffer
-        self._base     = base_link
-        self._ee       = ee_link
-        self._poll_sec = poll_sec
-        self._pose: Optional[Tuple] = None
-        self._lock     = threading.Lock()
-        self._thread   = threading.Thread(
-            target=self._run, daemon=True, name="tf_poller")
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def get(self) -> Optional[Tuple]:
-        """Instant non-blocking cache read."""
-        with self._lock:
-            return self._pose
-
-    def _run(self) -> None:
-        timeout = rclpy.duration.Duration(seconds=self._poll_sec)
-        while True:
-            try:
-                t  = self._buf.lookup_transform(
-                    self._base, self._ee,
-                    rclpy.time.Time(), timeout=timeout)
-                tr, ro = t.transform.translation, t.transform.rotation
-                with self._lock:
-                    self._pose = (tr.x, tr.y, tr.z, ro.x, ro.y, ro.z, ro.w)
-            except Exception:
-                pass
-            time.sleep(self._poll_sec * 0.5)   # 2× faster than timeout
-
-
-# ── Fix-3: Async CSV Writer ───────────────────────────────────────────────────
-class AsyncCsvWriter:
-    """
-    Daemon thread that drains a row queue to disk.
-
-    The IK hot-loop calls put() which is non-blocking — no disk-I/O stalls.
-    Flushes automatically whenever the queue drains to empty.
-    """
-
-    def __init__(self, filepath: str, fields: List[str]):
-        self._fields = fields
-        self._path   = filepath
-        self._fh     = open(filepath, "w", newline="")
-        self._writer = csv.writer(self._fh)
-        self._writer.writerow(fields)
-        self._q      = queue.Queue(maxsize=2000)
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="csv_writer")
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def put(self, row_dict: Dict) -> None:
-        """Non-blocking enqueue; silently drops if queue is full."""
-        try:
-            self._q.put_nowait([row_dict.get(f, "") for f in self._fields])
-        except queue.Full:
-            pass
-
-    def close(self) -> None:
-        """Drain remaining rows then close the file."""
-        if self._thread.is_alive():
-            self._q.put(None)          # sentinel
-            self._thread.join(timeout=3.0)
-        self._fh.flush()
-        self._fh.close()
-
-    def _run(self) -> None:
-        while True:
-            row = self._q.get()
-            if row is None:
-                break
-            self._writer.writerow(row)
-            if self._q.empty():
-                self._fh.flush()       # flush only when queue drains
-
-
 # ── ROS2 Node ─────────────────────────────────────────────────────────────────
 class PlacoOnlineProfiler(Node):
     """
     Real-time IK controller + profiler.
 
     Input  : /ee_delta/{arm} (PoseStamped)  OR  keyboard XYZ/RPY
-    Output : JointTrajectory + latency + profile JSON topics + CSV
+    Output : Float64MultiArray (ForwardCommandController) + latency + profile JSON topics + CSV
     """
 
     def __init__(self, args):
@@ -261,7 +104,6 @@ class PlacoOnlineProfiler(Node):
 
         # ── Timing (used by sub-inits, set first) ────────────────────────
         self._rate_hz     = float(getattr(args, "rate", 20.0))
-        self._horizon_ms  = float(getattr(args, "horizon", 60.0))
         self._deadline_ms = 1000.0 / self._rate_hz
 
         self._init_pose_state()
@@ -273,7 +115,7 @@ class PlacoOnlineProfiler(Node):
         self._init_telemetry(args)
         self._init_keyboard(args)
 
-        # BoundaryMonitor needs ROS publishers → must be last
+        # BoundaryMonitor needs ROS publishers → must be after _init_ros
         self._bdry_monitor = BoundaryMonitor(self, args.arm)
 
         self._print_banner()
@@ -286,9 +128,29 @@ class PlacoOnlineProfiler(Node):
         hx, hy, hz, hqx, hqy, hqz, hqw = cfg["home_pose"]
         self._pose        = [hx, hy, hz, hqx, hqy, hqz, hqw]
         self._last_joints = list(cfg["home_joints"])
+        # _last_joints is pre-seeded with home so the first IK step always has a
+        # seed, but until we have actually commanded or measured the arm that
+        # value is a guess. EePosePublisher must not present a guessed pose as
+        # the EE pose, so it uses measured /joint_states until this flips True.
+        self._cmd_joints_valid = False
         self._joints_lock = threading.Lock()
         self._joint_states: dict = {}
         self._js_lock     = threading.Lock()
+
+    def _init_workspace(self, args):
+        """Rectangular soft workspace clamp (see ws_boundary.SoftClamp).
+
+        Position-saturating, not a hard np.clip: out-of-range targets glide to
+        the face instead of snapping, and tangential motion passes through so
+        the arm slides along the boundary rather than sticking.
+        """
+        self._ws_clamp        = bool(getattr(args, "ws_clamp", True))
+        self._boundary_margin = float(getattr(args, "boundary_margin", 0.05))
+        self._soft_clamp = SoftClamp(
+            box_ws   = self.cfg["workspace"],
+            margin_m = self._boundary_margin,
+        )
+        self._bdry_monitor = None   # created after publishers are ready
 
     def _init_ee_delta(self, args):
         """Initialise EE-delta session reference, calibration and SLERP filter."""
@@ -318,43 +180,21 @@ class PlacoOnlineProfiler(Node):
         self._ori_lpf_active = self._ori_lpf_alpha < 0.999
         self._ori_filt_q: Optional[Tuple[float, float, float, float]] = None
 
-    def _init_workspace(self, args):
-        """Initialise workspace mesh / box clamp and soft boundary."""
-        self._ws_clamp = not getattr(args, "no_ws_clamp", False)
-        self._ws_mesh: Optional[WorkspaceMesh] = None
-        npz_path = getattr(args, "ws_mesh", None)
-        if npz_path:
-            if not os.path.isfile(npz_path):
-                raise FileNotFoundError(f"--ws-mesh not found: {npz_path}")
-            self._ws_mesh  = WorkspaceMesh.load(npz_path)
-            self._ws_clamp = True
-
-        _soft_margin = float(getattr(args, "boundary_margin", 0.05))
-        # When no ws_mesh is provided, SoftClamp uses the rectangular box_ws
-        # defined in ARM_CONFIG (the "default box" fallback).
-        self._soft_clamp = SoftClamp(
-            ws_mesh  = self._ws_mesh,
-            margin_m = _soft_margin,
-            box_ws   = self.cfg["workspace"] if not self._ws_mesh else None,
-        )
-        self._bdry_monitor = None  # created after publishers are ready
-
     def _init_ik_session(self, args):
         """Build PlacoSession (cached RobotWrapper + KinematicsSolver)."""
         urdf = _find_urdf()
         self._placo_session = PlacoSession(
             urdf          = urdf,
             arm           = args.arm,
-            rebuild       = args.rebuild,
             max_iter      = getattr(args, "max_iter", _MAX_ITER),
             rate_hz       = self._rate_hz,
-            vel_limits    = not getattr(args, "no_vel_limits", False),
+            vel_limits    = True,
             wrist_vel_cap = float(getattr(args, "wrist_vel_cap", 4.0)),
             j3j4_couple   = not getattr(args, "no_j3j4_couple", False),
         )
 
     def _init_motion_pipe(self, args):
-        """Initialise output-side LPF, jump guard, and success-gate state."""
+        """Initialise output-side LPF and jump guard state."""
         n_joints = len(self.cfg["joint_names"])
         self._lpf_alpha: List[float] = _parse_lpf_alpha(
             getattr(args, "lpf_alpha", "1.0"), n_joints)
@@ -362,7 +202,6 @@ class PlacoOnlineProfiler(Node):
         self._filt_joints: Optional[List[float]] = None
 
         self._joint_jump_guard_deg = float(getattr(args, "joint_jump_guard_deg", 15.0))
-        self._success_gate    = bool(getattr(args, "success_gate", False))
         # guard-clamp mode: instead of rejecting the whole step when a joint jump
         # is detected, clamp each joint's delta to the guard threshold and publish
         # the clamped solution.  This lets the arm crawl toward the target instead
@@ -380,12 +219,8 @@ class PlacoOnlineProfiler(Node):
         self._tf_poller   = TfPoller(
             self._tf_buffer, cfg["base_link"], cfg["ee_link"], poll_sec=0.05)
 
-        # JointTrajectory publisher — used ONLY by send_home_confirmed()
-        self._traj_pub = self.create_publisher(JointTrajectory, cfg["traj_topic"], 10)
-        # ForwardCommandController — used for hot-loop streaming
-        self._use_traj = getattr(args, "use_traj", False)
-        self._fwd_pub  = (None if self._use_traj else
-                          self.create_publisher(Float64MultiArray, cfg["fwd_cmd_topic"], 10))
+        # ForwardCommandController — used for hot-loop streaming + homing
+        self._fwd_pub  = self.create_publisher(Float64MultiArray, cfg["fwd_cmd_topic"], 10)
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
         self._profile_pub = self.create_publisher(String,  cfg["profile_topic"], 10)
         # JointState publisher for arm-specific IK commands (intermediate topic for aggregator)
@@ -404,17 +239,60 @@ class PlacoOnlineProfiler(Node):
         self._delta_lock     = threading.Lock()
         self._msg_count      = 0
 
-        # ── go-home service (added 2026-06-12, docs/home_service.md) ──────
-        # The callback (executor thread) only raises a flag; homing always
-        # runs in the hot loop (same path as keyboard 'h'). If homing ran
-        # directly in the callback, the hot loop would keep issuing IK
-        # commands during homing and the two command streams would fight.
+        # ── Service-triggered homing ────────────────────────────────────────────
+        # send_home_fwd must run inside the hot-loop thread (it streams
+        # ForwardCommand ramps). A service/keyboard request only raises the
+        # flag; the hot loop executes it and signals done. Requires a
+        # MultiThreadedExecutor so this callback's wait doesn't stall the loop.
         self._home_request = threading.Event()
         self._home_done    = threading.Event()
         self._home_result  = {"ok": False, "msg": ""}
         self.create_service(
             Trigger, f"/{self.args.arm}/go_home", self._home_srv_cb,
             callback_group=self._cbg)
+
+        # 連續 EE pose 輸出（/{arm}_eef_pose + /{arm}_eef_pose_fk）。自帶 timer，
+        # node 一起來就開始發：unfold / homing / idle / teleop 全程不中斷。
+        self._eef = EePosePublisher(
+            self,
+            arms      = (self.args.arm,),
+            frame_id  = cfg["base_link"],
+            fk_fn     = lambda _arm, joints: self._placo_session.fk(joints),
+            joints_fn = self._eef_joints,
+            rate_hz   = self._rate_hz,
+        )
+
+    def _publish_fwd(self, joints: List[float]) -> None:
+        """Stream one ForwardCommand point and record it as the last command.
+
+        Used by the unfold / homing ramps.  Recording into _last_joints matters
+        for more than seeding: EePosePublisher FKs the last commanded joints, so
+        without this the EE pose would sit frozen at the startup value for the
+        whole ramp.  The hot loop is blocked while a ramp runs, so there is no
+        writer contention.
+        """
+        msg = Float64MultiArray()
+        msg.data = list(joints)
+        self._fwd_pub.publish(msg)
+        with self._joints_lock:
+            self._last_joints      = list(joints)
+            self._cmd_joints_valid = True
+
+    def _eef_joints(self, arm: str) -> Optional[List[float]]:
+        """EePosePublisher 的關節來源。
+
+        已下過命令 / 完成 startup sync → 用命令關節（與實際送給控制器的一致）。
+        還沒有 → 用 /joint_states 的實測值；連那個都沒有就回 None（不發，
+        總比發一個猜出來的 home 姿態好）。
+        """
+        with self._joints_lock:
+            if self._cmd_joints_valid and self._last_joints is not None:
+                return list(self._last_joints)
+        names = self.cfg["joint_names"]
+        with self._js_lock:
+            if all(n in self._joint_states for n in names):
+                return [self._joint_states[n] for n in names]
+        return None
 
     def _init_telemetry(self, args):
         """Create async CSV writer and records list.
@@ -440,8 +318,7 @@ class PlacoOnlineProfiler(Node):
         self._ring_loop = collections.deque(maxlen=_RING)
         self._ring_iter = collections.deque(maxlen=_RING)
 
-        mode  = "cached" if not args.rebuild else "rebuild"
-        csv_p = args.csv or _csv_path("placo_online", args.arm, mode)
+        csv_p = args.csv or _csv_path("placo_online", args.arm, "cached")
         self._csv_writer = AsyncCsvWriter(csv_p, CSV_FIELDS)
         self._csv_path   = csv_p
 
@@ -472,7 +349,7 @@ class PlacoOnlineProfiler(Node):
 
     # ── TF helpers ────────────────────────────────────────────────────────────
     def _get_tf(self, timeout_sec: float = 0.3) -> Optional[Tuple]:
-        """Blocking TF lookup — only for startup init and send_home_confirmed."""
+        """Blocking TF lookup — only for startup init and send_home_fwd."""
         try:
             t = self._tf_buffer.lookup_transform(
                 self.cfg["base_link"], self.cfg["ee_link"],
@@ -528,19 +405,13 @@ class PlacoOnlineProfiler(Node):
             all others (6) : current  →   0 deg
 
         Uses ForwardCommandController (Float64MultiArray) stream.
-        Skips if _fwd_pub is unavailable. Waits up to 3 s for joint states.
+        Waits up to 3 s for joint states.
 
-        Note: called once only (before send_home_confirmed / send_home_fwd).
-        The max_tries=5 inside send_home_confirmed are TF arrival retries
+        Note: called once only (before send_home_fwd).
+        The max_tries inside send_home_fwd are TF arrival retries
         and do NOT re-trigger this unfold sequence.
         """
         print("  [unfold] -- joint_unfold_sequence() start --")
-
-        # ── Guard: ForwardCommandController required ──────────────────────────
-        if self._fwd_pub is None:
-            print("  [unfold] x _fwd_pub is None (--use-traj mode?) "
-                  "-> skip unfold sequence")
-            return
 
         jnames = self.cfg["joint_names"]
         print(f"  [unfold] joint_names = {jnames}")
@@ -596,9 +467,7 @@ class PlacoOnlineProfiler(Node):
                 alpha        = step / max(1, n_steps)
                 alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
                 result[idx]  = start_rad + alpha_smooth * (target_rad - start_rad)
-                msg = Float64MultiArray()
-                msg.data = list(result)
-                self._fwd_pub.publish(msg)
+                self._publish_fwd(result)
                 if step % max(1, n_steps // 5) == 0:
                     print(f"  [unfold]   {label}: {alpha * 100:.0f}%  "
                           f"joint[{idx}]={math.degrees(result[idx]):.1f} deg",
@@ -627,9 +496,7 @@ class PlacoOnlineProfiler(Node):
                 alpha        = step / max(1, n_steps)
                 alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
                 result = [s + alpha_smooth * (t - s) for s, t in zip(start, target)]
-                msg = Float64MultiArray()
-                msg.data = list(result)
-                self._fwd_pub.publish(msg)
+                self._publish_fwd(result)
                 if step % max(1, n_steps // 5) == 0:
                     print(f"  [unfold]   {label}: {alpha * 100:.0f}%  "
                           f"deg={[f'{math.degrees(v):.1f}' for v in result]}",
@@ -673,77 +540,6 @@ class PlacoOnlineProfiler(Node):
         print("  [unfold] unfold sequence complete")
 
     # ── Send home ─────────────────────────────────────────────────────────────
-    def send_home_confirmed(
-        self,
-        pos_tol:    float = 0.025,
-        motion_sec: float = 3.5,
-        max_tries:  int   = 5,
-        poll_sec:   float = 0.3,
-    ) -> bool:
-        """Send home trajectory and wait for TF confirmation."""
-        home_xyz = self.cfg["home_pose"][:3]
-        jnames   = self.cfg["joint_names"]
-
-        for attempt in range(1, max_tries + 1):
-            msg = JointTrajectory()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.joint_names  = list(jnames)
-            pt = JointTrajectoryPoint()
-            pt.positions     = list(self.cfg["home_joints"])
-            pt.velocities    = [0.0] * len(pt.positions)
-            pt.time_from_start.sec = int(motion_sec * 0.85)
-            pt.time_from_start.nanosec = 0
-            msg.points = [pt]
-            self._traj_pub.publish(msg)
-            print(f"  [home] attempt {attempt}/{max_tries} — waiting {motion_sec:.1f}s...")
-
-            deadline = time.time() + motion_sec
-            arrived  = False
-            dist     = 999.0
-            while time.time() < deadline:
-                time.sleep(poll_sec)
-                tf = self._get_tf(0.3)
-                if tf is None:
-                    continue
-                dist = math.sqrt(sum((tf[i] - home_xyz[i])**2 for i in range(3)))
-                print(f"  [home]   dist={dist*100:.1f}cm", end="\r", flush=True)
-                if dist <= pos_tol:
-                    arrived = True
-                    break
-            print()
-
-            if arrived:
-                print(f"  [home] ✓ reached home  dist={dist*100:.1f}cm")
-                tf = self._get_tf(1.0)
-                if tf is not None:
-                    self._pose = list(tf)
-                with self._js_lock:
-                    js = dict(self._joint_states)
-                if all(n in js for n in jnames):
-                    with self._joints_lock:
-                        self._last_joints = [js[n] for n in jnames]
-                self._filt_joints = None    # re-anchor LPF on next IK step
-                self._reset_orientation_filter()
-                return True
-            else:
-                with self._js_lock:
-                    js = dict(self._joint_states)
-                j_err = max(
-                    abs(js.get(n, 0) - self.cfg["home_joints"][i])
-                    for i, n in enumerate(jnames)
-                ) if js else 99.0
-                print(f"  [home] ✗ attempt {attempt} timed out  "
-                      f"j_err={math.degrees(j_err):.1f}°")
-
-        print("  [home] ✗ could not confirm — using home_pose as reference")
-        hx, hy, hz, hqx, hqy, hqz, hqw = self.cfg["home_pose"]
-        self._pose = [hx, hy, hz, hqx, hqy, hqz, hqw]
-        with self._joints_lock:
-            self._last_joints = list(self.cfg["home_joints"])
-        self._filt_joints = list(self._last_joints)
-        self._reset_orientation_filter()
-        return False
-
     def send_home_fwd(
         self,
         pos_tol:    float = 0.025,
@@ -753,17 +549,11 @@ class PlacoOnlineProfiler(Node):
         """
         Ramp arm to home via ForwardCommandController (linear interpolation).
 
-        Unlike send_home_confirmed() which sends a single JointTrajectory,
-        this method publishes intermediate joint positions at `ramp_hz` via
-        Float64MultiArray, suitable for when JointTrajectoryController is not
-        active.
+        Publishes intermediate joint positions at `ramp_hz` via
+        Float64MultiArray.
 
-        Used automatically when --home-first is specified in ForwardCmd mode.
+        Used automatically when --home-first is specified.
         """
-        if self._fwd_pub is None:
-            # Fallback: use trajectory controller
-            return self.send_home_confirmed(pos_tol=pos_tol, motion_sec=motion_sec)
-
         jnames = self.cfg["joint_names"]
         home   = self.cfg["home_joints"]
         home_xyz = self.cfg["home_pose"][:3]
@@ -805,10 +595,7 @@ class PlacoOnlineProfiler(Node):
             # Smooth ease-in-out (cosine interpolation)
             alpha_smooth = 0.5 * (1.0 - math.cos(alpha * math.pi))
             interp = [s + alpha_smooth * (h - s) for s, h in zip(start, home)]
-
-            msg = Float64MultiArray()
-            msg.data = interp
-            self._fwd_pub.publish(msg)
+            self._publish_fwd(interp)
 
             if step % max(1, n_steps // 10) == 0:
                 pct = alpha * 100
@@ -851,24 +638,12 @@ class PlacoOnlineProfiler(Node):
 
     # ── Publish to hardware ────────────────────────────────────────────────────
     def _publish(self, joints: List[float]):
-        if self._fwd_pub is not None:
-            # Solution A: stream directly via ForwardCommandController
-            msg = Float64MultiArray()
-            msg.data = joints
-            self._fwd_pub.publish(msg)
-        else:
-            # Legacy: JointTrajectoryController
-            msg = JointTrajectory()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.joint_names  = list(self.cfg["joint_names"])
-            pt = JointTrajectoryPoint()
-            pt.positions     = list(joints)
-            hs = max(0.001, self._horizon_ms / 1000.0)
-            pt.time_from_start.sec = int(hs)
-            pt.time_from_start.nanosec = int((hs % 1.0) * 1e9)
-            msg.points = [pt]
-            self._traj_pub.publish(msg)
-        
+        # Stream directly via ForwardCommandController
+        msg = Float64MultiArray()
+        msg.data = joints
+        self._fwd_pub.publish(msg)
+
+
         # Publish to arm-specific IK command topic (for aggregator to combine)
         ik_cmd_msg = JointState()
         ik_cmd_msg.header.stamp = self.get_clock().now().to_msg()
@@ -924,7 +699,8 @@ class PlacoOnlineProfiler(Node):
         if js_ok:
             real_joints = [js[n] for n in jnames]
             with self._joints_lock:
-                self._last_joints = real_joints
+                self._last_joints      = real_joints
+                self._cmd_joints_valid = True
             print(f"  joints synced: {[f'{v:.3f}' for v in real_joints]}")
         else:
             real_joints = None
@@ -957,7 +733,7 @@ class PlacoOnlineProfiler(Node):
 
         Requires the executor to be a MultiThreadedExecutor (a single-threaded
         executor would block on this callback's wait, stalling /joint_states
-        and TF). The profiler entry point has been switched accordingly.
+        and TF). The entry point uses MultiThreadedExecutor accordingly.
         """
         if self._home_request.is_set():
             resp.success, resp.message = False, "homing already in progress"
@@ -976,10 +752,7 @@ class PlacoOnlineProfiler(Node):
     def _execute_home_request(self):
         """Actually run homing inside the hot loop (shared path for the service
         and keyboard 'h')."""
-        if self._use_traj:
-            ok = self.send_home_confirmed(pos_tol=0.025, motion_sec=3.5, max_tries=3)
-        else:
-            ok = self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
+        ok = self.send_home_fwd(pos_tol=0.025, motion_sec=3.5)
         # Anti-jump: discard any tracker pending accumulated during homing and
         # force a reanchor (the service can fire at any time, independent of
         # gap timing).
@@ -1054,7 +827,7 @@ class PlacoOnlineProfiler(Node):
         """
         Map tracker/keyboard input → IK target dict.
 
-        Handles session-ref reset, calibration rotation, workspace clamping,
+        Handles session-ref reset, calibration rotation,
         and SLERP orientation filter.
 
         Returns dict with keys:
@@ -1116,25 +889,27 @@ class PlacoOnlineProfiler(Node):
             dx_arm   = _rotate_vec((dx, dy, dz), self._calib_q)
             dq       = _rotate_quat(dq, self._calib_q)   # Fix-8: calib on orientation
 
-        # ── Workspace clamp (SoftClamp: smooth damping instead of hard snap) ──
-        raw_xyz_arr = np.array([base_xyz[0] + dx_arm[0],
-                                base_xyz[1] + dx_arm[1],
-                                base_xyz[2] + dx_arm[2]])
-        dx_arm_arr  = np.array(dx_arm)
-        if self._ws_clamp or self._ws_mesh is not None:
-            new_xyz_arr, _bs = self._soft_clamp.apply(raw_xyz_arr, dx_arm_arr)
-            new_x = float(new_xyz_arr[0])
-            new_y = float(new_xyz_arr[1])
-            new_z = float(new_xyz_arr[2])
+        # ── Workspace clamp (SoftClamp: position-saturating, not a hard clip) ─
+        raw_xyz = np.array([base_xyz[0] + dx_arm[0],
+                            base_xyz[1] + dx_arm[1],
+                            base_xyz[2] + dx_arm[2]])
+        if self._ws_clamp:
+            new_xyz, _bs = self._soft_clamp.apply(raw_xyz)
             self._bdry_monitor.publish(_bs)
         else:
-            new_x, new_y, new_z = float(raw_xyz_arr[0]), float(raw_xyz_arr[1]), float(raw_xyz_arr[2])
+            new_xyz = raw_xyz
+        new_x, new_y, new_z = (float(new_xyz[0]), float(new_xyz[1]),
+                               float(new_xyz[2]))
 
         # ── Orientation filter (input-side SLERP EMA) ─────────────────────────
         new_q_raw  = _qnorm(_qmul(dq, base_q))
         new_q      = base_q if self._no_rot_tracking else self._filter_orientation(new_q_raw)
         target_xyz = np.array([new_x, new_y, new_z])
         target_R   = _quat_to_rot(*new_q)
+
+        # teleop 目標 → /{arm}_eef_pose（EePosePublisher 的 timer 負責發佈，
+        # 目標過期後自動退回 FK hold）
+        self._eef.set_target(self.args.arm, target_xyz, new_q)
 
         return {
             "target_xyz": target_xyz, "target_R": target_R, "new_q": new_q,
@@ -1159,7 +934,6 @@ class PlacoOnlineProfiler(Node):
 
         Set2-D (continuous approach): on IK failure, still publish the partial
         solution; velocity_limits in the controller saturate safely.
-        --success-gate restores the legacy freeze-on-failure behaviour.
 
         Returns merged dict: {r, ik_ms, total_ms, track_err, guard_hit,
                                max_joint_delta_deg, deadline_missed}.
@@ -1230,7 +1004,7 @@ class PlacoOnlineProfiler(Node):
                     print(f"\n  [Set2-D] IK pos_err={r['pos_err_mm']:.1f}mm "
                           f"streak={self._fail_streak} — publishing partial solve")
 
-            if (r["success"] or not self._success_gate) and not self.args.dry_run:
+            if not self.args.dry_run:
                 self._publish(joints_out)
 
         self._latency_pub.publish(Float32(data=float(ik_ms)))
@@ -1274,7 +1048,7 @@ class PlacoOnlineProfiler(Node):
             "success":           r["success"],
             "deadline_missed":   deadline_missed,
             "mem_mb":            round(r["mem_kb"] / 1024.0, 1),
-            "mode":              "rebuild" if self.args.rebuild else "cached",
+            "mode":              "cached",
             "sigma_min":         round(r.get("sigma_min", 0.0), 6),
             "lambda_dls":        round(r.get("lambda_dls", 0.0), 8),
         })))
@@ -1473,8 +1247,7 @@ class PlacoOnlineProfiler(Node):
 
         fig, axes = plt.subplots(4, 2, figsize=(14, 16))
         fig.suptitle(
-            f"Placo Online Profiler  arm={self.args.arm}  "
-            f"{'rebuild' if self.args.rebuild else 'cached'}\n"
+            f"Placo Online Profiler  arm={self.args.arm}  cached\n"
             f"n={len(rows)}  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms",
             fontsize=11,
         )
@@ -1569,29 +1342,22 @@ class PlacoOnlineProfiler(Node):
         cfg  = self.cfg
         print(f"\n{'═'*65}")
         print(f"  Placo Online Profiler")
-        print(f"  arm={args.arm}  mode={'rebuild' if args.rebuild else 'CACHED+early_exit'}")
+        print(f"  arm={args.arm}  mode=CACHED+early_exit")
         print(f"  rate={self._rate_hz:.0f}Hz  deadline={self._deadline_ms:.1f}ms")
         print(f"  ee_delta : {cfg['ee_delta_topic']}")
-        if self._fwd_pub is not None:
-            print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
-        else:
-            print(f"  cmd      : {cfg['traj_topic']}  (JointTrajectoryController)")
+        print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
         print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (for aggregator)")
-        print(f"  horizon  : {self._horizon_ms:.1f}ms")
+        print(f"  eef_pose : /{args.arm}_eef_pose + /{args.arm}_eef_pose_fk"
+              f"  ({self._rate_hz:.0f}Hz, 全程連續)")
+        print(f"  ws_clamp : {'box (margin=%.0fcm)' % (self._boundary_margin * 100) if self._ws_clamp else 'OFF'}")
         print(f"  CSV      : {self._csv_path}")
-        if self._ws_mesh is not None:
-            s = self._ws_mesh.summary()
-            print(f"  ws_mesh  : {s['n_reachable_voxels']} voxels  "
-                  f"step={s['step_m']*100:.0f}cm  vol~{s['total_volume_cm3']:.0f}cm³")
-        else:
-            print(f"  ws_clamp : {'box' if self._ws_clamp else 'OFF'}")
         if self._lpf_active:
             alpha_str = (f"{self._lpf_alpha[0]:.2f}" if len(set(self._lpf_alpha)) == 1
                          else "[" + ",".join(f"{a:.2f}" for a in self._lpf_alpha) + "]")
             print(f"  lpf      : α={alpha_str}  (1st-order on joint cmd)")
         else:
             print(f"  lpf      : OFF")
-        print(f"  publish  : {'success-gate (legacy freeze)' if self._success_gate else 'always (continuous approach, Set2-D)'}")
+        print(f"  publish  : always (continuous approach, Set2-D)")
         if self._ori_lpf_active:
             print(f"  ori_lpf  : α={self._ori_lpf_alpha:.2f}  (SLERP EMA on target quat, test3)")
         else:
@@ -1600,7 +1366,6 @@ class PlacoOnlineProfiler(Node):
         print(f"  guards   : jump>{self._joint_jump_guard_deg:.1f}°/step (post-IK reject)"
               f"  +  wrist_vel_cap (pre-IK QP)"
               f"  +  gap>{self._ee_delta_gap_sec:.2f}s")
-        print(f"  service  : /{args.arm}/go_home  (std_srvs/Trigger)")
         print(f"{'═'*65}")
         print(f"  1-9=scale  +/-=fine  t=mode  p=pause  r=reset  h=home  ?=help  Ctrl-C=quit")
         print(f"  KEYBOARD: w/s=±Y  a/d=±X  q/e=±Z  i/k=pitch  j/l=yaw  u/o=roll")

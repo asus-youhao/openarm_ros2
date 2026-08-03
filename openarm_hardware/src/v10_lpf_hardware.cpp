@@ -42,7 +42,7 @@ hardware_interface::CallbackReturn OpenArm_v10LPF_HW::on_init(
     const hardware_interface::HardwareInfo& info) {
 
   // 1. Run base-class on_init (parses config, generates joint names, inits
-  //    CAN/LEAP/O6, allocates state/command vectors, inits state LPF filters).
+  //    CAN/O6, allocates state/command vectors, inits state LPF filters).
   auto result = OpenArm_v10HW::on_init(info);
   if (result != hardware_interface::CallbackReturn::SUCCESS) {
     return result;
@@ -70,16 +70,11 @@ hardware_interface::CallbackReturn OpenArm_v10LPF_HW::on_init(
   //    e.g. cutoff=10 Hz, sample=500 Hz  →  alpha ≈ 0.111  (smooth)
   //         cutoff=20 Hz, sample=500 Hz  →  alpha ≈ 0.200  (less smooth)
   {
-    const size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
+    const size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
     arm_cmd_filter_.init(arm_size, cmd_filter_cutoff_hz_, CONTROL_WRITE_RATE_HZ);
   }
 
-  // 4. Initialise LEAP Hand command LPF (16 DOF).
-  if (has_leap_hand_) {
-    leap_cmd_filter_.init(LEAP_HAND_DOF, cmd_filter_cutoff_hz_, CONTROL_WRITE_RATE_HZ);
-  }
-
-  // 5. Initialise O6 Hand command LPF (6 active joints only — passive joints
+  // 4. Initialise O6 Hand command LPF (6 active joints only — passive joints
   //    are mechanically coupled and receive no direct commands).
   if (has_o6_hand_) {
     o6_cmd_filter_.init(6, cmd_filter_cutoff_hz_, 60.0);  // O6 runs at ~60 Hz
@@ -90,12 +85,10 @@ hardware_interface::CallbackReturn OpenArm_v10LPF_HW::on_init(
               "  cmd_filter_cutoff_hz : %.1f Hz\n"
               "  state_filter_cutoff  : %.1f Hz  (inherited, state_read_loop)\n"
               "  arm cmd filter size  : %zu joints\n"
-              "  LEAP cmd filter      : %s\n"
               "  O6  cmd filter       : %s",
               cmd_filter_cutoff_hz_,
               STATE_FILTER_CUTOFF_HZ,
-              ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0),
-              has_leap_hand_ ? "enabled (16 DOF)" : "disabled",
+              ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0),
               has_o6_hand_   ? "enabled (6 active DOF)" : "disabled");
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -110,7 +103,7 @@ hardware_interface::CallbackReturn OpenArm_v10LPF_HW::on_activate(
   // 1. Run base-class on_activate:
   //    - sets motor callback mode
   //    - enables all motors
-  //    - connects LEAP / O6 hands
+  //    - connects O6 hand
   //    - calls return_to_zero() (arm moves to zero position)
   //    - starts arm_control_thread_, state_read_thread_, health_monitor_thread_
   auto result = OpenArm_v10HW::on_activate(previous_state);
@@ -134,8 +127,8 @@ hardware_interface::CallbackReturn OpenArm_v10LPF_HW::on_activate(
     }
   }
 
-  // LEAP / O6 command filters are left at 0.0 because the base class already
-  // sends an open-position command to those hands during activation.
+  // The O6 command filter is left at 0.0 because the base class already
+  // sends an open-position command to the hand during activation.
 
   RCLCPP_INFO(rclcpp::get_logger("OpenArm_v10LPF_HW"),
               "Command LPF seeded with current arm position (avoids initial ramp)");
@@ -167,7 +160,7 @@ hardware_interface::return_type OpenArm_v10LPF_HW::write(
   // =========================================================================
   {
     std::lock_guard<std::mutex> lock(arm_command_mutex_);
-    const size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
+    const size_t arm_size = ARM_DOF + (hand_ && !has_o6_hand_ ? 1 : 0);
 
     // Build raw command vector, applying joint-direction sign correction.
     // Vel/tau are written directly (no LPF).
@@ -194,35 +187,14 @@ hardware_interface::return_type OpenArm_v10LPF_HW::write(
   }
 
   // =========================================================================
-  // [2] LEAP Hand — Command LPF on position (16 joints)
-  // =========================================================================
-  if (has_leap_hand_ && leap_connected_) {
-    std::lock_guard<std::mutex> lock(leap_command_mutex_);
-    const size_t leap_start =
-        ARM_DOF + (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0);
-
-    std::vector<double> raw_leap_cmd(LEAP_HAND_DOF);
-    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-      raw_leap_cmd[i] = pos_commands_[leap_start + i];
-    }
-
-    leap_cmd_filter_.update(raw_leap_cmd);
-    const std::vector<double>& filtered_leap = leap_cmd_filter_.get();
-    for (size_t i = 0; i < LEAP_HAND_DOF; ++i) {
-      leap_pos_cmd_buffer_[i] = filtered_leap[i];
-    }
-  }
-
-  // =========================================================================
-  // [3] O6 Hand — Command LPF on position (6 active joints only)
+  // [2] O6 Hand — Command LPF on position (6 active joints only)
   //     Passive/coupled joints (indices 6-10) receive no direct commands.
   // =========================================================================
   if (has_o6_hand_ && o6_connected_) {
     std::lock_guard<std::mutex> lock(o6_command_mutex_);
     const size_t o6_start =
         ARM_DOF +
-        (hand_ && !has_o6_hand_ && !has_leap_hand_ ? 1 : 0) +
-        (has_leap_hand_ ? LEAP_HAND_DOF : 0);
+        (hand_ && !has_o6_hand_ ? 1 : 0);
 
     std::vector<double> raw_o6_cmd(6);
     for (size_t i = 0; i < 6; ++i) {

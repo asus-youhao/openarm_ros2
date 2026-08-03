@@ -25,6 +25,7 @@ _HERE = _os.path.dirname(_os.path.abspath(__file__))
 _ROOT = _os.path.dirname(_HERE)
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 
+import threading
 import time
 import numpy as np
 from typing import Dict, List, Optional
@@ -141,7 +142,6 @@ class PlacoSession:
     ----------
     urdf       : absolute path to the robot URDF  (from _find_urdf())
     arm        : "right" | "left"
-    rebuild    : True → rebuild RobotWrapper every step (original ~25 ms behaviour)
     max_iter   : solver iteration cap
     rate_hz    : actual control-loop rate; dt is set to 1/rate_hz  [Fix-2]
     vel_limits : enable joint velocity limits in the solver         [Fix-2]
@@ -151,7 +151,6 @@ class PlacoSession:
         self,
         urdf:           str,
         arm:            str,
-        rebuild:        bool  = False,
         max_iter:       int   = _MAX_ITER,
         rate_hz:        float = 20.0,
         vel_limits:     bool  = True,
@@ -164,7 +163,6 @@ class PlacoSession:
         self._placo      = placo
         self._urdf       = urdf
         self._arm        = arm
-        self._rebuild    = rebuild
         self._max_iter   = max_iter
         self._dt         = 1.0 / rate_hz   # Fix-2: actual control period
         self._vel_limits = vel_limits      # Fix-2
@@ -183,29 +181,31 @@ class PlacoSession:
         self._j3_inward_sign = 1.0 if arm == "right" else -1.0
         self._j3j4_couple    = j3j4_couple and (_J3_J4_COUPLE_RATE > 0.0)
 
-        if not rebuild:
-            self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
-            self._apply_velocity_caps(self._robot)
-            cap_str = (f"wrist≤{self._wrist_vel_cap:.1f}rad/s"
-                       if self._wrist_vel_cap > 0 else "wrist=URDF")
-            if self._arm_vel_cap_deg > 0:
-                _arm_cap_rad = np.radians(self._arm_vel_cap_deg) / self._dt
-                cap_str += (f"  arm(j1-4)≤{self._arm_vel_cap_deg:.1f}°/it"
-                            f"={_arm_cap_rad:.2f}rad/s")
-            print(
-                f"[PlacoSession] cached  arm={arm}  max_iter={max_iter}"
-                f"  dt={self._dt*1000:.1f}ms  vel_limits={vel_limits}  {cap_str}"
-            )
-        else:
-            self._robot = None
-            print(f"[PlacoSession] rebuild mode  arm={arm}  "
-                  f"wrist_vel_cap={self._wrist_vel_cap:.1f}rad/s")
+        self._robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+        self._apply_velocity_caps(self._robot)
+
+        # Dedicated FK-only wrapper. fk() is called from the EePosePublisher
+        # timer thread, concurrently with solve_step() in the hot loop; sharing
+        # self._robot would mean two threads writing the same joint state.
+        # A second wrapper costs one extra URDF parse at startup and removes
+        # the race entirely — no lock in the IK hot path.
+        self._fk_robot = placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
+        self._fk_lock  = threading.Lock()
+
+        cap_str = (f"wrist≤{self._wrist_vel_cap:.1f}rad/s"
+                   if self._wrist_vel_cap > 0 else "wrist=URDF")
+        if self._arm_vel_cap_deg > 0:
+            _arm_cap_rad = np.radians(self._arm_vel_cap_deg) / self._dt
+            cap_str += (f"  arm(j1-4)≤{self._arm_vel_cap_deg:.1f}°/it"
+                        f"={_arm_cap_rad:.2f}rad/s")
+        print(
+            f"[PlacoSession] cached  arm={arm}  max_iter={max_iter}"
+            f"  dt={self._dt*1000:.1f}ms  vel_limits={vel_limits}  {cap_str}"
+        )
 
         # Cache Jacobian column indices for Adaptive DLS (方案 C).
-        # v_offsets are URDF-fixed — compute once from any robot instance.
-        _probe = self._robot if self._robot is not None else \
-            placo.RobotWrapper(urdf, placo.Flags.ignore_collisions)
-        self._jac_cols = [_probe.get_joint_v_offset(n) for n in self._joint_names]
+        # v_offsets are URDF-fixed — compute once from the cached robot instance.
+        self._jac_cols = [self._robot.get_joint_v_offset(n) for n in self._joint_names]
         print(f"[PlacoSession] adaptive-DLS  σ_thresh={_DLS_SIGMA_THRESH}  "
               f"λ_max={_DLS_LAMBDA_MAX}  jac_cols={self._jac_cols}")
 
@@ -258,15 +258,9 @@ class PlacoSession:
         placo   = self._placo
         t_wall0 = time.perf_counter()
 
-        # ── Robot (build once or reuse) ───────────────────────────────────────
+        # ── Robot (cached, built once in __init__) ────────────────────────────
         t0 = time.perf_counter()
-        if self._rebuild or self._robot is None:
-            robot  = placo.RobotWrapper(self._urdf, placo.Flags.ignore_collisions)
-            self._apply_velocity_caps(robot)
-            cached = False
-        else:
-            robot  = self._robot
-            cached = True
+        robot = self._robot
         robot_ms = (time.perf_counter() - t0) * 1000.0
 
         # ── Solver + tasks ────────────────────────────────────────────────────
@@ -329,15 +323,14 @@ class PlacoSession:
             solver.solve(True)
             robot.update_kinematics()
             iters_used += 1
-            if not self._rebuild:
-                T_ee = robot.get_T_world_frame(self._ee_link)
-                pos_err = float(np.linalg.norm(T_ee[:3, 3] - target_xyz))
-                if pos_err < _POS_TOL:
-                    if no_rot:
-                        break   # position-only: converged
-                    ori_err = _rot_error_rad(T_ee[:3, :3], target_R)
-                    if ori_err < _ORI_TOL:
-                        break   # both pos AND ori converged
+            T_ee = robot.get_T_world_frame(self._ee_link)
+            pos_err = float(np.linalg.norm(T_ee[:3, 3] - target_xyz))
+            if pos_err < _POS_TOL:
+                if no_rot:
+                    break   # position-only: converged
+                ori_err = _rot_error_rad(T_ee[:3, :3], target_R)
+                if ori_err < _ORI_TOL:
+                    break   # both pos AND ori converged
         loop_ms = (time.perf_counter() - t0) * 1000.0
 
         # ── Final state (reuse T_ee already computed in last early-exit check) ─
@@ -377,7 +370,7 @@ class PlacoSession:
             "success":          success,
             "joints":           joints,
             "ee_xyz":           list(T_ee[:3, 3]),
-            "robot_was_cached": cached,
+            "robot_was_cached": True,
             "sigma_min":        sigma_min,
             "lambda_dls":       lambda_dls,
         }
@@ -388,18 +381,18 @@ class PlacoSession:
         Compute FK from joint angles.
 
         Returns [x, y, z, qx, qy, qz, qw] for the EE, or None on error.
-        Uses the cached RobotWrapper (rebuild=False) or builds a temp one.
-        Calling fk() before solve_step() is safe — solve_step() resets joint
-        state from its seed parameter on every call.
+
+        Thread-safe: uses the dedicated _fk_robot wrapper (never the solver's),
+        so it can be called from the EePosePublisher timer thread while
+        solve_step() runs in the hot loop.
         """
         try:
-            placo = self._placo
-            robot = (self._robot if self._robot is not None
-                     else placo.RobotWrapper(self._urdf, placo.Flags.ignore_collisions))
-            for name, val in zip(self._joint_names, joints):
-                robot.set_joint(name, val)
-            robot.update_kinematics()
-            T   = robot.get_T_world_frame(self._ee_link)
+            with self._fk_lock:
+                robot = self._fk_robot
+                for name, val in zip(self._joint_names, joints):
+                    robot.set_joint(name, val)
+                robot.update_kinematics()
+                T = robot.get_T_world_frame(self._ee_link)
             xyz = T[:3, 3]
             R   = T[:3, :3]
             # Shepperd's numerically-stable R → quaternion (4-branch)

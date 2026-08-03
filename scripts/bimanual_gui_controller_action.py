@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-GUI Controller for OpenArm Bimanual System with LEAP Hands.
+GUI Controller for OpenArm Bimanual System.
 
 Features:
-- Slider controls for all joints (7+7 arms + 16 right hand)
+- Slider controls for all joints (7+7 arms)
 - Real-time joint state display
 - Continuous command sending at 20Hz
 - Predefined poses
@@ -61,30 +61,6 @@ class BimanualGUIController:
             'openarm_right_joint5': (-1.571, 1.571),
             'openarm_right_joint6': (-0.785, 0.785),
             'openarm_right_joint7': (-1.571, 1.571),
-            
-            # LEAP Hand - Index Finger
-            'right_index_mcp_side': (-1.047, 1.047),
-            'right_index_mcp_forward': (-0.314, 2.23),
-            'right_index_pip': (-0.506, 1.885),
-            'right_index_dip': (-0.366, 2.042),
-            
-            # LEAP Hand - Middle Finger
-            'right_middle_mcp_side': (-1.047, 1.047),
-            'right_middle_mcp_forward': (-0.314, 2.23),
-            'right_middle_pip': (-0.506, 1.885),
-            'right_middle_dip': (-0.366, 2.042),
-            
-            # LEAP Hand - Ring Finger
-            'right_ring_mcp_side': (-0.436, 0.436),
-            'right_ring_mcp_forward': (0.0, 1.571),
-            'right_ring_pip': (0.0, 1.571),
-            'right_ring_dip': (0.0, 1.571),
-            
-            # LEAP Hand - Thumb (corrected from URDF)
-            'right_thumb_mcp_side': (-0.349, 2.094),
-            'right_thumb_mcp_forward': (-0.47, 2.443),
-            'right_thumb_pip_joint': (-1.20, 1.90),
-            'right_thumb_dip_joint': (-1.34, 1.88),
         }
         
         self.create_ui()
@@ -118,18 +94,9 @@ class BimanualGUIController:
         self.status_label.pack(side='left', padx=20)
         
         # Preset buttons
-        tk.Button(control_frame, text='Home Position', 
+        tk.Button(control_frame, text='Home Position',
                  command=self.send_home_pose).pack(side='left', padx=5)
-        tk.Button(control_frame, text='Grasp Hand', 
-                 command=self.send_grasp_pose).pack(side='left', padx=5)
-        tk.Button(control_frame, text='Open Hand', 
-                 command=self.send_open_hand).pack(side='left', padx=5)
-        
-        # Test Hand Interpolation button
-        tk.Button(control_frame, text='Test Hand Interpolation',
-                  bg='#FFEB3B', fg='black', font=('Arial', 10, 'bold'),
-                  command=self.test_send_hand_interpolation_btn).pack(side='left', padx=5)
-        
+
         # Position recording section
         recording_frame = tk.Frame(self.root, bg='lightblue', padx=10, pady=10)
         recording_frame.pack(fill='x')
@@ -196,13 +163,9 @@ class BimanualGUIController:
                                self.ros_node.left_arm_joints)
         
         # Right Arm Section
-        self.create_joint_group(scrollable_frame, 'Right Arm (7 joints)', 
+        self.create_joint_group(scrollable_frame, 'Right Arm (7 joints)',
                                self.ros_node.right_arm_joints)
-        
-        # Right Hand Section
-        self.create_joint_group(scrollable_frame, 'Right Hand (16 joints)', 
-                               self.ros_node.right_hand_joints)
-    
+
     def create_joint_group(self, parent, title, joint_names):
         """Create a group of joint sliders."""
         group_frame = tk.LabelFrame(parent, text=title, font=('Arial', 11, 'bold'),
@@ -275,17 +238,15 @@ class BimanualGUIController:
         # Get target positions from sliders
         target_left = [self.joint_sliders[j].get() for j in self.ros_node.left_arm_joints]
         target_right = [self.joint_sliders[j].get() for j in self.ros_node.right_arm_joints]
-        target_hand = [self.joint_sliders[j].get() for j in self.ros_node.right_hand_joints]
-        
+
         # Send to controllers
         self.ros_node.publish_positions('left_arm', target_left)
         self.ros_node.publish_positions('right_arm', target_right)
-        self.ros_node.publish_positions('right_hand', target_hand)
-        
+
         # Update status
         self.status_label.config(text='Status: Command Sent', fg='green')
         self.root.after(1000, lambda: self.status_label.config(text='Status: READY', fg='blue'))
-        
+
         self.ros_node.get_logger().info('Sent target positions to all controllers')
     
     def update_joint_states_scheduled(self):
@@ -305,29 +266,7 @@ class BimanualGUIController:
         """Set all sliders to home (0.0)."""
         for slider in self.joint_sliders.values():
             slider.set(0.0)
-    
-    def send_grasp_pose(self):
-        """Set hand to grasp pose."""
-        grasp_positions = {
-            'right_index_mcp_side': 0.00159, 'right_index_mcp_forward': 1.46159,
-            'right_index_pip': 0.17559, 'right_index_dip': 0.52159,
-            'right_middle_mcp_side': 0.00159, 'right_middle_mcp_forward': 1.46159,
-            'right_middle_pip': 0.17559, 'right_middle_dip': 0.52159,
-            'right_ring_mcp_side': 0.00159, 'right_ring_mcp_forward': 1.46159,
-            'right_ring_pip': 0.17559, 'right_ring_dip': 0.52159,
-            'right_thumb_mcp_forward': 1.70159, 'right_thumb_mcp_side': 0.00159,
-            'right_thumb_pip_joint': 0.43759, 'right_thumb_dip_joint': 0.17159,
-        }
-        for joint_name, position in grasp_positions.items():
-            if joint_name in self.joint_sliders:
-                self.joint_sliders[joint_name].set(position)
-    
-    def send_open_hand(self):
-        """Set hand to open pose."""
-        for joint_name in self.ros_node.right_hand_joints:
-            if joint_name in self.joint_sliders:
-                self.joint_sliders[joint_name].set(0.0)
-    
+
     def save_current_position(self):
         """Save current joint positions."""
         import datetime
@@ -337,11 +276,9 @@ class BimanualGUIController:
             'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'left_arm': [self.joint_sliders[j].get() for j in self.ros_node.left_arm_joints],
             'right_arm': [self.joint_sliders[j].get() for j in self.ros_node.right_arm_joints],
-            'right_hand': [self.joint_sliders[j].get() for j in self.ros_node.right_hand_joints],
             'joint_names': {
                 'left_arm': self.ros_node.left_arm_joints,
-                'right_arm': self.ros_node.right_arm_joints,
-                'right_hand': self.ros_node.right_hand_joints
+                'right_arm': self.ros_node.right_arm_joints
             }
         }
         
@@ -468,14 +405,7 @@ class BimanualGUIController:
                 'controller': 'right_arm',
                 'positions': pos_data['right_arm']
             })
-            
-            # Add right LEAP Hand command (same timestamp for simultaneous movement)
-            recordings.append({
-                'timestamp': current_time,
-                'controller': 'right_leaphand',
-                'positions': pos_data['right_hand']
-            })
-            
+
             current_time += duration
         
         replay_data = {
@@ -499,10 +429,6 @@ class BimanualGUIController:
             f'Total duration: {current_time:.1f}s, Commands: {len(recordings)}'
         )
     
-    def test_send_hand_interpolation_btn(self):
-        # Run interpolation in a thread to avoid blocking GUI
-        threading.Thread(target=self.ros_node.test_send_hand_interpolation, args=(16,), daemon=True).start()
-    
     def run(self):
         """Run the GUI."""
         self.root.mainloop()
@@ -524,14 +450,7 @@ class ROSNode(Node):
             'openarm_right_joint4', 'openarm_right_joint5', 'openarm_right_joint6',
             'openarm_right_joint7'
         ]
-        
-        self.right_hand_joints = [
-            'right_index_mcp_side', 'right_index_mcp_forward', 'right_index_pip', 'right_index_dip',
-            'right_middle_mcp_side', 'right_middle_mcp_forward', 'right_middle_pip', 'right_middle_dip',
-            'right_ring_mcp_side', 'right_ring_mcp_forward', 'right_ring_pip', 'right_ring_dip',
-            'right_thumb_mcp_side', 'right_thumb_mcp_forward', 'right_thumb_pip_joint', 'right_thumb_dip_joint'
-        ]
-        
+
         # Action clients for all controllers
         self.left_arm_client = ActionClient(
             self, FollowJointTrajectory, '/left_joint_trajectory_controller/follow_joint_trajectory'
@@ -539,10 +458,7 @@ class ROSNode(Node):
         self.right_arm_client = ActionClient(
             self, FollowJointTrajectory, '/right_joint_trajectory_controller/follow_joint_trajectory'
         )
-        self.right_hand_client = ActionClient(
-            self, FollowJointTrajectory, '/right_hand_controller/follow_joint_trajectory'
-        )
-        
+
         # Joint state storage
         self.current_joint_states = {}
         self.create_subscription(JointState, '/joint_states', self.joint_state_callback, 10)
@@ -571,9 +487,6 @@ class ROSNode(Node):
         elif controller == 'right_arm':
             goal_msg.trajectory.joint_names = self.right_arm_joints
             action_client = self.right_arm_client
-        elif controller == 'right_hand':
-            goal_msg.trajectory.joint_names = self.right_hand_joints
-            action_client = self.right_hand_client
         else:
             return
         
@@ -586,30 +499,8 @@ class ROSNode(Node):
         
         # Send goal asynchronously (non-blocking)
         action_client.send_goal_async(goal_msg)
-    
-    def test_send_hand_interpolation(self, steps=16):
-        import numpy as np
-        from trajectory_msgs.msg import JointTrajectoryPoint
-        from builtin_interfaces.msg import Duration
 
-        open_pose = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.03, 0.0, 0.0, 0.0])
-        closed_pose = np.array([0.00159, 1.46159, 0.17559, 0.52159, 0.00159, 1.46159, 0.17559, 0.52159, 0.00159, 1.46159, 0.17559, 0.52159, 1.70159, 0.00159, 0.43759, 0.17159])
 
-        points = []
-        for i in range(steps):
-            alpha = i / (steps - 1)
-            interp_pose = (1 - alpha) * open_pose + alpha * closed_pose
-            point = JointTrajectoryPoint()
-            point.positions = interp_pose.tolist()
-            point.time_from_start = Duration(sec=0, nanosec=int(1e9 * i / 32))  # 16fps
-            points.append(point)
-
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory.joint_names = self.right_hand_joints
-        goal_msg.trajectory.points = points
-
-        self.right_hand_client.send_goal_async(goal_msg)
-        self.get_logger().info(f'Sent trajectory with {steps} points to right_hand_controller')
 def main(args=None):
     rclpy.init(args=args)
     

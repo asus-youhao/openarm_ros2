@@ -26,7 +26,6 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
-find_package(dynamixel_sdk REQUIRED)
 find_package(kdl_parser REQUIRED)
 find_package(orocos_kdl REQUIRED)
 find_package(urdf REQUIRED)
@@ -75,7 +74,6 @@ endif()
 add_library(${PROJECT_NAME} SHARED
   src/v10_simple_hardware.cpp
   src/v10_lpf_hardware.cpp
-  src/leap_hand_hardware.cpp
 )
 
 # Conditionally add O6 hand hardware if SDK is found
@@ -102,7 +100,6 @@ ament_target_dependencies(${PROJECT_NAME}
   pluginlib
   rclcpp
   rclcpp_lifecycle
-  dynamixel_sdk
   kdl_parser
   orocos_kdl
   urdf
@@ -124,12 +121,6 @@ DESTINATION include
 # Install config files (parameters.yaml, etc.)
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
-)
-
-# Install Python scripts
-install(PROGRAMS
-  scripts/test_leap_serial_port.py
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_export_include_directories(

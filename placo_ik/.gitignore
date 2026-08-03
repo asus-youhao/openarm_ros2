@@ -11,3 +11,6 @@ __pycache__/
 # Comment out if you want to track results/
 # results/*/*.csv
 # results/*/*.png
+
+# VSCode C/C++ IntelliSense cache (binary browse.vc.db, ~1GB) — regenerable
+.vscode/

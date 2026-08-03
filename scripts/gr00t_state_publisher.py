@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GR00T State Publisher for OpenArm Bimanual System with LEAP Hand.
+GR00T State Publisher for OpenArm Bimanual System.
 
 This node collects joint states from the hardware interface and publishes them
 at a configurable rate (default 50Hz) suitable for GR00T N1.5 VLA model input.
@@ -119,14 +119,7 @@ class GR00TStatePublisher(Node):
         'openarm_right_joint4', 'openarm_right_joint5', 'openarm_right_joint6',
         'openarm_right_joint7'
     ]
-    
-    RIGHT_HAND_JOINTS = [
-        'right_index_mcp_side', 'right_index_mcp_forward', 'right_index_pip', 'right_index_dip',
-        'right_middle_mcp_side', 'right_middle_mcp_forward', 'right_middle_pip', 'right_middle_dip',
-        'right_ring_mcp_side', 'right_ring_mcp_forward', 'right_ring_pip', 'right_ring_dip',
-        'right_thumb_mcp_side', 'right_thumb_mcp_forward', 'right_thumb_pip_joint', 'right_thumb_dip_joint'
-    ]
-    
+
     def __init__(self):
         super().__init__('gr00t_state_publisher')
         
@@ -138,8 +131,8 @@ class GR00TStatePublisher(Node):
         self.feedback_rate = self.get_parameter('feedback_rate_hz').value
         self.health_check_interval = self.get_parameter('health_check_interval_s').value
         
-        # Calculate total joints: 7 (left arm) + 7 (right arm) + 16 (right hand) = 30
-        self.total_joints = len(self.LEFT_ARM_JOINTS) + len(self.RIGHT_ARM_JOINTS) + len(self.RIGHT_HAND_JOINTS)
+        # Calculate total joints: 7 (left arm) + 7 (right arm) = 14
+        self.total_joints = len(self.LEFT_ARM_JOINTS) + len(self.RIGHT_ARM_JOINTS)
         
         # Current state storage
         self.current_states: Dict[str, float] = {}
@@ -252,11 +245,7 @@ class GR00TStatePublisher(Node):
             # Right arm joints (7)
             for name in self.RIGHT_ARM_JOINTS:
                 positions.append(self.current_states.get(name, 0.0))
-            
-            # Right hand joints (16)
-            for name in self.RIGHT_HAND_JOINTS:
-                positions.append(self.current_states.get(name, 0.0))
-            
+
             return positions
     
     def health_check_callback(self):

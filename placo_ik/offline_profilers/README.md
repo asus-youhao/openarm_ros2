@@ -1,6 +1,6 @@
 # `placo_ik/offline_profilers/` — Teleop Analysis Toolkit
 
-五個離線分析工具，從 `placo_ik_online_profiler_ws_mesh.py` 跑出來的 CSV 計算量化指標。
+五個離線分析工具，從 `placo_ik_main.py` 跑出來的 CSV 計算量化指標。
 
 | 工具 | 回答的問題 | 輸出 |
 |---|---|---|
