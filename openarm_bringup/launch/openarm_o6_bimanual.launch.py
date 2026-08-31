@@ -39,12 +39,20 @@ Example usage:
 """
 
 import os
+import sys
+
 import xacro
 
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription, LaunchContext, conditions
-from launch.actions import DeclareLaunchArgument, RegisterEventHandler, TimerAction, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    RegisterEventHandler,
+    TimerAction,
+    OpaqueFunction,
+)
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -57,6 +65,40 @@ def namespace_from_context(context, arm_prefix):
     if arm_prefix_str:
         return arm_prefix_str.strip('/')
     return None
+
+
+# Repository root, resolved through the symlink that colcon --symlink-install
+# creates for this launch file, so the standalone scripts/ tree stays reachable.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+DEFAULT_AGGREGATOR_SCRIPT = os.path.join(
+    REPO_ROOT, "scripts", "data_collection", "joint_actions_aggregator.py"
+)
+
+
+def joint_actions_aggregator_spawner(context: LaunchContext, script, arm_config,
+                                     hand_config, publish_rate):
+    """Run scripts/data_collection/joint_actions_aggregator.py as a plain process.
+
+    It lives outside any ROS package, so it is started with the interpreter
+    directly instead of through a Node action.
+    """
+    script_str = context.perform_substitution(script)
+    if not os.path.isfile(script_str):
+        raise FileNotFoundError(
+            f"joint_actions_aggregator script not found: {script_str}. "
+            "Pass aggregator_script:=/abs/path/to/joint_actions_aggregator.py"
+        )
+
+    return [ExecuteProcess(
+        cmd=[
+            sys.executable, script_str,
+            "--arm_config", context.perform_substitution(arm_config),
+            "--hand_config", context.perform_substitution(hand_config),
+            "--publish_rate", context.perform_substitution(publish_rate),
+        ],
+        name="joint_actions_aggregator",
+        output="screen",
+    )]
 
 
 def generate_robot_description(context: LaunchContext, description_package, description_file,
@@ -263,6 +305,38 @@ def generate_launch_description():
             default_value="true",
             description="Start RViz automatically with this launch file.",
         ),
+        DeclareLaunchArgument(
+            "launch_joint_actions_aggregator",
+            default_value="true",
+            description="Start scripts/data_collection/joint_actions_aggregator.py, "
+                        "which merges arm and hand commands into /joint_actions.",
+        ),
+        DeclareLaunchArgument(
+            "aggregator_script",
+            default_value=DEFAULT_AGGREGATOR_SCRIPT,
+            description="Path to joint_actions_aggregator.py.",
+        ),
+        DeclareLaunchArgument(
+            "aggregator_arm_config",
+            default_value="both",
+            choices=["both", "left", "right"],
+            description="Arms subscribed for /joint_actions. The other arm still "
+                        "occupies its columns, filled from /joint_states.",
+        ),
+        DeclareLaunchArgument(
+            "aggregator_hand_config",
+            default_value="o6_both",
+            choices=["none", "o6_left", "o6_right", "o6_both"],
+            description="Hands subscribed for /joint_actions. Unsubscribed hands "
+                        "still occupy their columns; the vector is always 26 joints.",
+        ),
+        DeclareLaunchArgument(
+            "aggregator_publish_rate",
+            default_value="50.0",
+            description="Expected arm command rate in Hz, used to seed the "
+                        "staleness window. /joint_actions is published on arm "
+                        "command arrival, not at this rate.",
+        ),
     ]
 
     # Initialize launch configurations
@@ -324,6 +398,19 @@ def generate_launch_description():
         condition=conditions.IfCondition(launch_rviz),
     )
 
+    # joint_actions_aggregator (lives in scripts/, not a ROS package)
+    joint_actions_aggregator_func = OpaqueFunction(
+        function=joint_actions_aggregator_spawner,
+        args=[
+            LaunchConfiguration("aggregator_script"),
+            LaunchConfiguration("aggregator_arm_config"),
+            LaunchConfiguration("aggregator_hand_config"),
+            LaunchConfiguration("aggregator_publish_rate"),
+        ],
+        condition=conditions.IfCondition(
+            LaunchConfiguration("launch_joint_actions_aggregator")),
+    )
+
     # Timing and sequencing
     LAUNCH_DELAY_SECONDS = 2.0
     
@@ -342,12 +429,19 @@ def generate_launch_description():
         actions=[o6_hand_controller_spawner_func],
     )
 
+    # Started after the controllers so its subscriptions find the command topics.
+    delayed_joint_actions_aggregator = TimerAction(
+        period=LAUNCH_DELAY_SECONDS * 2,
+        actions=[joint_actions_aggregator_func],
+    )
+
     nodes = [
         *declared_arguments,
         robot_nodes,
         delayed_joint_state_broadcaster,
         delayed_arm_controller,
         delayed_o6_hand_controller,
+        delayed_joint_actions_aggregator,
         rviz_node,
     ]
 

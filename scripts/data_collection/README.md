@@ -50,68 +50,115 @@
 
 使用 `--hand_config` 參數選擇手掌配置：
 
+`--hand_config` 只決定**訂閱哪些手掌**，不決定輸出維度。`/joint_actions` 永遠是
+固定的 26 維（7+7+6+6），沒訂閱的手掌一樣佔欄位，用 `/joint_states` 的實測值填。
+
 | 配置 | 說明 | 總關節數 |
 |------|------|----------|
-| `o6_both` | 雙臂 + O6 雙手（預設） | 26 (7+7+6+6) |
-| `o6_left` | 雙臂 + O6 左手 | 20 (7+7+6) |
-| `o6_right` | 雙臂 + O6 右手 | 20 (7+7+6) |
-| `none` | 僅雙臂，無手掌 | 14 (7+7) |
+| `o6_both` | 雙臂 + O6 雙手（預設） | 26 |
+| `o6_left` | 只訂閱左手，右手用實測值填 | 26 |
+| `o6_right` | 只訂閱右手，左手用實測值填 | 26 |
+| `none` | 兩手都不訂閱，都用實測值填 | 26 |
+
+維度固定是**必要的**：下游 `data_collector` 依關節名稱查表，只要少一個預期的名稱
+就會丟棄整筆樣本（`joint_action=None`），結果是整場錄不到任何一幀而且不報錯。
+`--arm_config` 同理，閒置的手臂一樣佔 7 個欄位。
+
+## 發布條件
+
+**事件驅動，沒有固定頻率的 timer** —— 每當所有 active 手臂都送來新命令時發布一次，
+所以 `/joint_actions` 直接繼承 IK 節點的頻率與相位，不會多做一次重取樣
+（下游 collector 還會再依自己的 `control_hz` 取樣一次）。
+
+每個 limb 第一次收到命令時「latch」成 active，之後整場維持。關鍵區別：
+
+| limb 狀態 | 該欄位的值 | 擋不擋整組 |
+|---|---|---|
+| config 沒選中（不訂閱） | `/joint_states` | 不擋 |
+| 有訂閱、**從沒收到過** | `/joint_states` + 持續 warn | 不擋 |
+| 有訂閱、收到過、**新鮮** | command | — |
+| 有訂閱、收到過、**stale** | — | **擋，整組不發** |
+| 兩臂都沒 latch 過 | — | **擋，整組不發** |
+
+- **從沒收到過** = 上游沒開 → 該 limb 物理上靜止，用實測值填是誠實的，不列管。
+- **收到過然後靜默** = 上游故障或暫停 → **停止發布**，而不是重發凍住的舊值。
+
+停止發布是刻意的：collector 量的是「最後一則 `/joint_actions` 的年齡」，
+持續重發凍住的值會讓它誤判成全程即時；靜默才能讓它正確把該 episode 標記為
+非即時（`_episode_stale_ticks`）。停止發布不會在資料裡打洞 —— collector 會沿用
+上一筆湊滿 tick，obs/action 陣列仍然對齊。
+
+stale 門檻依各來源**實測**的到達間隔自動推導（3 個週期，下限 30 ms），
+所以 50 Hz 的手臂與 100 Hz 的手掌各自有合理的窗口，不需手動設定。
+必要時可用 `--stale_timeout` 覆寫成固定值。
+
+**不會**用 `/joint_states` 去頂替故障的來源：collector 的 observation 也是
+`/joint_states`，替代進去的 action 會變成 observation 的逐欄位複製，
+訓練出「輸出 = 當前狀態」的原地不動 policy。
 
 ## 使用方法
 
 ### 1. 雙臂 + O6 雙手（預設配置）
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py
+python3 scripts/data_collection/joint_actions_aggregator.py
 # 或明確指定
-ros2 run openarm_ros2 joint_actions_aggregator.py --hand_config o6_both
+python3 scripts/data_collection/joint_actions_aggregator.py --hand_config o6_both
 ```
 
 ### 2. 雙臂 + O6 左手
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py --hand_config o6_left
+python3 scripts/data_collection/joint_actions_aggregator.py --hand_config o6_left
 ```
 
 ### 3. 雙臂 + O6 右手
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py --hand_config o6_right
+python3 scripts/data_collection/joint_actions_aggregator.py --hand_config o6_right
 ```
 
 ### 4. 僅雙臂（無手掌）
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py --hand_config none
+python3 scripts/data_collection/joint_actions_aggregator.py --hand_config none
 ```
 
-### 5. 自定義發佈頻率（預設 50 Hz）
+### 5. 調整 stale 門檻
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py --publish_rate 100.0
+# --publish_rate 只用來在量測到實際頻率前預設 stale 窗口，不決定發布頻率
+python3 scripts/data_collection/joint_actions_aggregator.py --publish_rate 50.0
+
+# 覆寫成固定的 stale 窗口（秒），停用自動推導
+python3 scripts/data_collection/joint_actions_aggregator.py --stale_timeout 0.1
 ```
 
 ## 完整工作流
 
 ### 啟動順序
 
-1. **啟動左臂 IK 節點**
+1. **啟動 IK 節點**（雙臂單一 QP，會同時發布兩臂的 `*_arm_ik_commands`）
    ```bash
-   ros2 run openarm_ros2 placo_ik_node.py --arm left
+   python3 placo_ik/ik_node/placo_ik_main_bimanual.py
    ```
 
-2. **啟動右臂 IK 節點**
+   注意：這個入口本身就會 in-process 起一個 aggregator。若同時用 launch 起
+   獨立的 aggregator，`/joint_actions` 會有兩個 publisher —— 擇一即可。
+
+2. **啟動機器人與手掌控制器**
    ```bash
-   ros2 run openarm_ros2 placo_ik_node.py --arm right
+   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py
    ```
 
-3. **啟動手掌控制器**（根據您的配置）
+   這支 launch 預設就會一併帶起 aggregator
+   （`launch_joint_actions_aggregator:=true`），組態用 `aggregator_*` 參數調整：
    ```bash
-   # O6 雙手示例
-   ros2 launch openarm_bringup o6_bimanual_hardware.launch.py
+   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py \
+       aggregator_hand_config:=o6_right
    ```
 
-4. **啟動聚合節點**
+3. **單獨啟動聚合節點**（只有在上一步關掉它時才需要）
    ```bash
-   ros2 run openarm_ros2 joint_actions_aggregator.py --hand_config o6_both
+   python3 scripts/data_collection/joint_actions_aggregator.py --hand_config o6_both
    ```
 
-5. **驗證輸出**
+4. **驗證輸出**
    ```bash
    ros2 topic echo /joint_actions
    ```
@@ -148,17 +195,34 @@ ros2 run openarm_ros2 joint_actions_aggregator.py --publish_rate 100.0
    ros2 topic echo /ee_delta/right
    ```
 
-### 問題：手掌關節都是 0.0
+### 問題：`/joint_actions` 中途停止發布
 
-**原因**：手掌控制器還沒有發佈命令，或者配置錯誤
+**原因**：某個已 latch 的來源超時（上游故障、暫停、或斷流）。這是設計行為。
 
-**解決方案**：
-1. 確認手掌控制器正在運行
-2. 檢查手掌命令 topic：
-   ```bash
-   ros2 topic list | grep hand_forward_position_controller
-   ```
-3. 確認 `--hand_config` 參數與實際硬體配置匹配
+**解決方案**：看 log，會直接指出是哪個 limb、多久沒更新：
+```
+[WARN] stale: right_hand=140ms — /joint_actions paused until it recovers
+```
+來源恢復後會自動繼續發布。注意 placo_ik 的 keyboard pause 也會讓手臂停止送
+command，因此按 pause 期間 `/joint_actions` 會靜默。
+
+### 問題：一直 warn 某個 limb "no command since startup"
+
+**原因**：該來源訂閱了但從未發布過 —— 上游沒啟動。該 limb 的欄位正在用
+`/joint_states` 的實測值填。
+
+**解決方案**：如果是刻意不開，用 `--hand_config` / `--arm_config` 明確宣告即可
+（維度不變）。如果是忘了啟動上游，這個警告就是在提醒你 —— 它會持續出現，
+因為「刻意不開」和「忘了開」在程式眼裡一模一樣。
+
+### 問題：完全不發布，log 說 withholding
+
+**原因**：某個要用實測值填的 limb，其關節根本不在 `/joint_states` 裡
+（例如手掌硬體/控制器沒起來）。此時沒有任何誠實的值可填，因此不發布，
+而不是捏造 0.0。
+
+**解決方案**：確認該關節有出現在 `/joint_states`。註：這種情況下 collector
+的 observation 也組不出來，本來就錄不到東西。
 
 ### 問題：關節數量不符合預期
 
@@ -186,10 +250,19 @@ ros2 run openarm_ros2 joint_actions_aggregator.py --publish_rate 100.0
 
 ## 性能考量
 
-- **發佈頻率**：預設 50 Hz，可以通過 `--publish_rate` 調整
-- **延遲**：聚合節點會立即轉發最新的命令（< 1ms 延遲）
-- **缺失數據處理**：如果某個手掌來源暫時沒有數據，會用 0.0 填充（避免阻塞）
-- **時間戳**：所有發佈的消息都使用當前時間戳，確保時序同步
+- **發佈頻率**：等於手臂命令的頻率（事件驅動），不是固定 timer。兩臂會 rendezvous
+  在同一個 IK solve step 上，因此兩臂的值必定同源，不會跨兩個 step。
+- **延遲**：在手臂命令的 callback 裡直接發布，不額外排隊等 timer。
+- **手掌 100 Hz**：發布仍由手臂觸發，手掌只取當下最新值（最多 10 ms 舊，比手臂自己的
+  20 ms 週期還新）。刻意不由手掌觸發 —— 那會讓 `/joint_actions` 變成 100 Hz，
+  其中一半是手臂值的重複幀，而 collector 還是只取自己的 30 Hz。
+- **缺失數據處理**：從未啟動的來源用 `/joint_states` 填；已 latch 的來源 stale 則
+  停止發布。任何情況都不會捏造數值。
+- **訊息驗證**：手臂命令優先依 `msg.name` 對應（發布端改順序不會靜默錯位），
+  沒帶 name 時退回位置對應但檢查長度；手掌的 `Float64MultiArray` 檢查長度。
+  不合格的訊息會被丟棄並 warn，不會污染輸出。
+- **時間戳**：`header.stamp` 填的是**最舊那個來源**的時間，不是發布當下，
+  因此讀 `header.stamp` 的消費端看到的是這筆樣本的真實年齡。
 
 ## 相關文件
 
@@ -308,7 +381,7 @@ ros2 topic delay /joint_actions
 ### 壓力測試
 ```bash
 # 同時運行雙臂 + aggregator
-ros2 run openarm_ros2 placo_ik_online_profiler_ws_mesh.py --arm both
+python3 scripts/ik_reachability/ik_controllers/placo_ik_online_profiler_ws_mesh.py --arm both
 
 # 觀察 IK latency（應該保持在正常範圍）
 ros2 topic echo /left/delta_ik_latency_ms
@@ -329,7 +402,7 @@ ros2 topic echo /right/delta_ik_latency_ms
 ### Q3: 能不能讓 aggregator 更快？
 **A:** 可以，使用 `--publish_rate` 參數：
 ```bash
-ros2 run openarm_ros2 joint_actions_aggregator.py --publish_rate 100.0
+python3 scripts/data_collection/joint_actions_aggregator.py --publish_rate 100.0
 ```
 但通常 50Hz 已經足夠，因為：
 - VLA 訓練的典型頻率：10-50Hz
