@@ -50,7 +50,7 @@ u22（Humble）在這台 u24 上用 Docker 跑（第一次會建 image，需要�
 ```
 
 改到 xacro、launch 或測試時，u24 與 u22 都要跑；commit 的門檻是兩邊都 `FULL TEST PASSED`
-（10 這一批 u22 還有已知的 U1，是唯一的例外，記錄在 doc 裡）。
+（10 那一批 u22 還有已知的 U1，在 11 修好）。
 
 | 步驟 | 內容 | 失敗條件 |
 |---|---|---|
@@ -70,6 +70,7 @@ u22（Humble）在這台 u24 上用 Docker 跑（第一次會建 image，需要�
 | M1 | URDF 引用的每個 mesh 都在安裝後的 package 裡 |
 | F1 / F2 | fake 模式用 `mock_components/GenericSystem`、傳 `mock_sensor_commands` |
 | F3 | URDF 裡是 mimic、又沒標 `mimic="false"` 的 ros2_control 關節，不能有 command interface（Jazzy 的解析規則） |
+| F4 | fake 模式的 mimic 關節帶 `mimic` / `multiplier` 參數，且跟 URDF 的 `<mimic>` 一致（Humble 的 mock 只讀這兩個參數） |
 | G1 | 跟 `test/golden.json` 一致：整份 URDF 的雜湊，加上 ros2_control 的逐行摘要 |
 
 `fake_smoke.py`（case：`bimanual_default`（不指定 `ee_type`）、`bimanual_o6`、`real_o6_parse_probe`；每個 case 用一個沒有任何 process 在用的 `ROS_DOMAIN_ID`（60–101）、只在 localhost discovery、`ulimit -l 64`）：
@@ -92,4 +93,5 @@ u22（Humble）在這台 u24 上用 Docker 跑（第一次會建 image，需要�
 - `package.xml` 的執行期依賴剛好是實際用到的 package，且在 Humble 與 Jazzy 都解析得到。（D1、D2）
 - fake 模式只用 `mock_components`；兩種模式都沒有「未標 `mimic="false"` 的 mimic 關節」帶 command interface。（F1–F3）
 - 真機模式的 O6 URDF 能通過 Jazzy 的 ros2_control 解析。（H1）
+- u22（Humble）與 u24（Jazzy）的完整測試都通過；fake 的 O6 dip 在兩個版本都照倍率跟隨。（S4、F4）
 - O6 雙臂與預設（openarm_hand）雙臂的 fake 都能起來、會照軌跡動，O6 dip 照 URDF 倍率跟隨。（S1–S4）

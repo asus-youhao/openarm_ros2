@@ -12,6 +12,10 @@ Called by run_full_test.sh. Checks per combination (IDs referenced from docs/):
       with the value of the fake_sensor_commands xacro arg
   F3  Jazzy's URDF parser rule: a ros2_control joint that is a <mimic> joint in
       the URDF and not marked mimic="false" must not have command interfaces
+  F4  fake mode: every ros2_control joint that is a URDF <mimic> joint carries
+      <param name="mimic"> / <param name="multiplier"> equal to the URDF
+      <mimic> (Humble's mock_components only reads these params; Jazzy's reads
+      the URDF), so the two never drift apart
   G1  the rendered URDF matches test/golden.json. The golden file stores a
       hash of the whole canonicalized URDF plus a one-line-per-joint summary
       of the ros2_control blocks, so an intended change to what the hardware
@@ -118,6 +122,31 @@ def mimic_violations(root):
                   and j.findall('command_interface'))
 
 
+def mimic_param_mismatches(root):
+    """List fake-mode mimic joints whose params disagree with the URDF <mimic>."""
+    urdf_mimic = {}
+    for j in root.findall('joint'):
+        m = j.find('mimic')
+        if m is not None:
+            urdf_mimic[j.get('name')] = (m.get('joint'), float(m.get('multiplier', 1.0)))
+    bad = []
+    for _, j in ros2_control_joints(root):
+        name = j.get('name')
+        if name not in urdf_mimic:
+            continue
+        params = {p.get('name'): (p.text or '').strip() for p in j.findall('param')}
+        parent, mult = urdf_mimic[name]
+        try:
+            ok = (params.get('mimic') == parent
+                  and abs(float(params.get('multiplier', 'nan')) - mult) < 1e-9)
+        except ValueError:
+            ok = False
+        if not ok:
+            bad.append(f'{name}: params mimic={params.get("mimic")} '
+                       f'multiplier={params.get("multiplier")}, URDF {parent} x{mult}')
+    return bad
+
+
 def missing_meshes(root, install):
     """Return [(filename, known_id or None)] for meshes that do not resolve."""
     out = []
@@ -142,7 +171,11 @@ def ros2_control_summary(root):
             cmd = ','.join(c.get('name') for c in j.findall('command_interface'))
             state = ','.join(c.get('name') for c in j.findall('state_interface'))
             mimic = f" mimic={j.get('mimic')}" if j.get('mimic') is not None else ''
-            lines.append(f"  joint {j.get('name')}{mimic} cmd={cmd or '-'} state={state or '-'}")
+            params = ','.join(f"{p.get('name')}={(p.text or '').strip()}"
+                              for p in j.findall('param'))
+            params = f' params={params}' if params else ''
+            lines.append(f"  joint {j.get('name')}{mimic} cmd={cmd or '-'} "
+                         f"state={state or '-'}{params}")
     return lines
 
 
@@ -247,6 +280,10 @@ def run(install, golden_path, update):
                 if params.get('mock_sensor_commands', '').lower() != want:
                     bad.append(f"mock_sensor_commands={params.get('mock_sensor_commands')}")
             rep.check(not bad, 'F2', case, f'want mock_sensor_commands={want}: {bad}')
+
+        if fake:
+            bad = mimic_param_mismatches(root)
+            rep.check(not bad, 'F4', case, f'{bad[:3]}{" ..." if len(bad) > 3 else ""}')
 
         bad = mimic_violations(root)
         rep.check(not bad, 'F3', case, f'mimic joints with command interfaces: {bad}')

@@ -59,9 +59,11 @@
            so in fake mode it only gets state interfaces. Real hardware keeps the full set
            (same as configure_joint) and is marked mimic="false": OpenArm_v10HW exports and
            drives these joints itself. Humble ignores the attribute. -->
-      <xacro:macro name="configure_mimic_joint" params="joint_name initial_position">
+      <xacro:macro name="configure_mimic_joint" params="joint_name initial_position mimic_of multiplier">
         <xacro:if value="${use_fake_hardware}">
           <joint name="${joint_name}">
+            <param name="mimic">${mimic_of}</param>
+            <param name="multiplier">${multiplier}</param>
             <state_interface name="position">
               <param name="initial_value">${initial_position}</param>
             </state_interface>
@@ -112,28 +114,28 @@
       <xacro:if value="${ee_type == 'o6_left'}">
         <xacro:configure_joint joint_name="L_thumb_cmc_yaw" initial_position="0.0"/>
         <xacro:configure_joint joint_name="L_thumb_cmc_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0" mimic_of="L_thumb_cmc_pitch" multiplier="2.29"/>
         <xacro:configure_joint joint_name="L_index_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0" mimic_of="L_index_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_middle_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0" mimic_of="L_middle_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_ring_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0" mimic_of="L_ring_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_pinky_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0" mimic_of="L_pinky_mcp_pitch" multiplier="0.89"/>
       </xacro:if>
       <xacro:if value="${ee_type == 'o6'}">
         <xacro:configure_joint joint_name="L_thumb_cmc_yaw" initial_position="0.0"/>
         <xacro:configure_joint joint_name="L_thumb_cmc_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0" mimic_of="L_thumb_cmc_pitch" multiplier="2.29"/>
         <xacro:configure_joint joint_name="L_index_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0" mimic_of="L_index_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_middle_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0" mimic_of="L_middle_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_ring_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0" mimic_of="L_ring_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="L_pinky_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0" mimic_of="L_pinky_mcp_pitch" multiplier="0.89"/>
       </xacro:if>
     </ros2_control>
 
@@ -201,28 +203,28 @@
       <xacro:if value="${ee_type == 'o6_right'}">
         <xacro:configure_joint joint_name="R_thumb_cmc_yaw" initial_position="0.0"/>
         <xacro:configure_joint joint_name="R_thumb_cmc_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0" mimic_of="R_thumb_cmc_pitch" multiplier="1.86"/>
         <xacro:configure_joint joint_name="R_index_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0" mimic_of="R_index_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_middle_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0" mimic_of="R_middle_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_ring_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0" mimic_of="R_ring_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_pinky_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0" mimic_of="R_pinky_mcp_pitch" multiplier="0.89"/>
       </xacro:if>
       <xacro:if value="${ee_type == 'o6'}">
         <xacro:configure_joint joint_name="R_thumb_cmc_yaw" initial_position="0.0"/>
         <xacro:configure_joint joint_name="R_thumb_cmc_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0" mimic_of="R_thumb_cmc_pitch" multiplier="1.86"/>
         <xacro:configure_joint joint_name="R_index_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0" mimic_of="R_index_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_middle_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0" mimic_of="R_middle_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_ring_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0" mimic_of="R_ring_mcp_pitch" multiplier="0.89"/>
         <xacro:configure_joint joint_name="R_pinky_mcp_pitch" initial_position="0.0"/>
-        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0" mimic_of="R_pinky_mcp_pitch" multiplier="0.89"/>
       </xacro:if>
     </ros2_control>
 
