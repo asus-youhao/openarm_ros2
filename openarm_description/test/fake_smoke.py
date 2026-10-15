@@ -10,6 +10,8 @@ Called by run_full_test.sh with the test workspace sourced. Per case:
       it finishes every commanded joint sits at its target
   S4  every URDF <mimic> joint on /joint_states equals
       multiplier * parent + offset (checked after S3, so parents are not 0)
+  C1  the ros2 control CLI (ros2controlcli) is available, as the README's
+      verification step uses it; checked with -h, which starts no daemon
   H1  (real-hardware parse probe) with use_fake_hardware:=false the URDF gets
       through ros2_control parsing and the launch stops only because the
       hardware plugin is not installed. Runs only when openarm_hardware is
@@ -391,11 +393,16 @@ def main():
     ap.add_argument('--case', action='append', help='run only these cases')
     a = ap.parse_args()
     os.makedirs(a.log_dir, exist_ok=True)
+    cli = subprocess.run(['ros2', 'control', '-h'], capture_output=True, text=True)
+    cli_ok = cli.returncode == 0
+    print(f'[ros2 control CLI]\n  {"PASS" if cli_ok else "FAIL"} C1 '
+          + ('ros2 control -h works' if cli_ok
+             else (cli.stderr.strip().splitlines() or ['failed'])[-1][:160]))
     cases = [c for c in CASES if not a.case or c['name'] in a.case]
     domains = free_domains(len(cases))
     print(f'fake_smoke: ROS_DOMAIN_IDs in use by other processes skipped: '
           f'{sorted(d for d in domains_in_use() if 60 <= d <= 101) or "none"}')
-    ok = True
+    ok = cli_ok
     for case, domain in zip(cases, domains):
         ok &= run_case(case, domain, a.log_dir)
     print('fake_smoke: ' + ('all cases passed' if ok else 'FAILED'))

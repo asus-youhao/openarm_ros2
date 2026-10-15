@@ -22,6 +22,7 @@
 | 09 | [09-ee-arguments-k2-k6.md](09-ee-arguments-k2-k6.md) | K2、K6 的分析紀錄（未修） |
 | 10 | [10-humble-docker-test.md](10-humble-docker-test.md) | 在 Docker 裡跑 u22（Humble）的完整測試；找到 U1 |
 | 11 | [11-humble-fake-mimic.md](11-humble-fake-mimic.md) | U1：fake 的 O6 dip 加 Humble 用的 mimic 參數；新增 F4 |
+| 12 | [12-bringup-ros2controlcli.md](12-bringup-ros2controlcli.md) | P2：`openarm_bringup` 依賴 `ros2controlcli`，README 的 `ros2 control` 指令才能用；新增 C1 |
 
 ## 問題 ID 對照
 
@@ -32,6 +33,7 @@
 | J3 | fake 模式的 O6 dip（URDF mimic）帶 command interface，Jazzy 解析時 abort | 匯入前已在舊 repo 修好 |
 | P1 | `package.xml` 宣告了沒用到的 `ros_gz`（整套 Gazebo）、`realsense2_description`，卻沒宣告實際用到的 `robot_state_publisher` | 已修（02） |
 | U1 | u22 / Humble：fake 模式的 O6 dip 停在 0，不會跟著動（Humble 的 mock 不讀 URDF 的 `<mimic>`） | 已修（11） |
+| P2 | 照 README 用 rosdep 安裝後沒有 `ros2 control` 指令（`ros2controlcli` 沒被宣告） | 已修（12） |
 | K1 | `ee_type` 不是 `openarm_hand` 時，ros2_control 仍宣告 URDF 裡沒有的 `finger_joint1` | 已知，未修 |
 | K2 | `ee_type:=o6_left` / `o6_right` 渲染失敗：會找 `o6_left_arguments.xacro`，實際檔名是 `o6_hand_left_arguments.xacro`；單臂 O6 另外缺 ros2_control 分支 | 已知，未修（09） |
 | K3 | 真機模式的 O6 dip 仍帶 command interface，Jazzy 上真機會在解析時 abort | 已修（04），待上機驗證 |

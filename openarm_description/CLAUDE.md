@@ -81,6 +81,7 @@ u22（Humble）在這台 u24 上用 Docker 跑（第一次會建 image，需要�
 | S2 | `/joint_states` 的關節剛好是 ros2_control 宣告的關節，頻率不低於下限 |
 | S3 | 每個 JointTrajectoryController 都能把關節帶到目標 |
 | S4 | URDF mimic 關節都等於「倍率 × 跟隨的關節 + offset」 |
+| C1 | `ros2 control` CLI 可以用（README 的驗證步驟需要；用 `-h`，不會啟動 daemon） |
 | H1 | 真機模式（`use_fake_hardware:=false`）的 URDF 能通過 ros2_control 解析，停在載入硬體 plugin。只在**沒有**安裝 `openarm_hardware` 時執行，有裝就 SKIP，不會啟動真機 |
 
 工作區配置（這台 NB）：測試工作區 `~/openarm_descint_ws`，`src/openarm_ros2` 是 openarm_ros2 的 worktree

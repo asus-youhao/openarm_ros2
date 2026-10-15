@@ -26,6 +26,8 @@
 
   <exec_depend>ros2_controllers</exec_depend>
   <exec_depend>controller_manager</exec_depend>
+  <!-- ros2 control CLI (list/switch controllers); not pulled in by controller_manager -->
+  <exec_depend>ros2controlcli</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
