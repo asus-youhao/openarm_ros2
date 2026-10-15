@@ -48,8 +48,9 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 | 2 | `colcon build --cmake-clean-first`：`openarm_description`、`openarm_bringup` | 編譯失敗 |
 | 3 | `urdf/` 裡所有 `.xacro` / `.urdf` 跑 `xmllint --noout` | 任何一個不是合法 XML |
 | 4 | 兩個 package 的 ament linters，跟 `test/lint_baseline.txt` 比 | 任何一項比基準線多 |
-| 5 | `test/urdf_checks.py`：24 組參數的渲染與檢查 | 見下表；K* 只回報 |
-| 6 | `test/fake_smoke.py`：用 `openarm_bringup` 實際啟動 fake | 見下表 |
+| 5 | `test/deps_check.py`：`package.xml` 的依賴 | D1 宣告與實際使用不一致；D2 有依賴在 Humble（jammy）或 Jazzy（noble）解析不到 |
+| 6 | `test/urdf_checks.py`：24 組參數的渲染與檢查 | 見下表；K* 只回報 |
+| 7 | `test/fake_smoke.py`：用 `openarm_bringup` 實際啟動 fake | 見下表 |
 
 `urdf_checks.py`：
 
@@ -77,5 +78,6 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 
 - 匯入後的 package 渲染出來的 URDF，跟 `openArm_leapHand_urdf@6b8d6a7` 完全一樣，除非 golden 有明示的更新。（G1）
 - URDF 引用的 mesh 都存在，已知問題除外。（M1）
+- `package.xml` 的執行期依賴剛好是實際用到的 package，且在 Humble 與 Jazzy 都解析得到。（D1、D2）
 - fake 模式只用 `mock_components`，沒有 mimic 關節帶 command interface。（F1–F3）
 - O6 雙臂與 openarm_hand 雙臂的 fake 都能起來、會照軌跡動，O6 dip 照 URDF 倍率跟隨。（S1–S4）

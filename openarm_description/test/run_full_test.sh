@@ -103,12 +103,16 @@ sys.exit(0 if ok else 1)
 PY
 
 # ---------------------------------------------------------------------------
-step 5 "URDF checks (render matrix, meshes, fake rules, golden)"
+step 5 "package.xml dependencies (test/deps_check.py)"
+python3 "$HERE/deps_check.py" --package "$PKG" || fail "dependency checks"
+
+# ---------------------------------------------------------------------------
+step 6 "URDF checks (render matrix, meshes, fake rules, golden)"
 python3 "$HERE/urdf_checks.py" --install "$WS/install" --golden "$HERE/golden.json" \
   || fail "urdf checks"
 
 # ---------------------------------------------------------------------------
-step 6 "fake launch smoke tests (test/fake_smoke.py)"
+step 7 "fake launch smoke tests (test/fake_smoke.py)"
 if ! (
   set +u
   # shellcheck disable=SC1091

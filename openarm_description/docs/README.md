@@ -12,6 +12,7 @@
 | # | 文件 | 內容 |
 |---|---|---|
 | 01 | [01-import.md](01-import.md) | 匯入；只帶需要的檔案；測試框架、golden 與 mesh 檢查；記錄 K4、K5 |
+| 02 | [02-package-deps.md](02-package-deps.md) | P1：`package.xml` 依賴對齊實際使用，Humble / Jazzy 都可安裝 |
 
 ## 問題 ID 對照
 
@@ -20,6 +21,7 @@
 | J1 | fake 模式的 plugin 是 Jazzy 沒有的 `fake_components/GenericSystem` | 匯入前已在舊 repo 修好 |
 | J2 | fake 模式傳 `fake_sensor_commands`，Jazzy 的 mock 只讀 `mock_sensor_commands` | 匯入前已在舊 repo 修好 |
 | J3 | fake 模式的 O6 dip（URDF mimic）帶 command interface，Jazzy 解析時 abort | 匯入前已在舊 repo 修好 |
+| P1 | `package.xml` 宣告了沒用到的 `ros_gz`（整套 Gazebo）、`realsense2_description`，卻沒宣告實際用到的 `robot_state_publisher` | 已修（02） |
 | K1 | `ee_type` 不是 `openarm_hand` 時，ros2_control 仍宣告 URDF 裡沒有的 `finger_joint1` | 已知，未修 |
 | K2 | `ee_type:=o6_left` / `o6_right` 渲染失敗：`o6_left_arguments.xacro` 不存在 | 已知，未修 |
 | K3 | 真機模式的 O6 dip 仍帶 command interface，Jazzy 上真機會在解析時 abort | 未修 |
