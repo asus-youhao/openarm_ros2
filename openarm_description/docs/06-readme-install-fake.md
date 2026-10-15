@@ -49,7 +49,7 @@ openarm.bimanual.launch.py use_fake_hardware:=true
   /joint_states average rate: 99.999
 ```
 
-結束後沒有殘留的 `ros2_control_node` 或 ros2 daemon。
+結束後沒有殘留的 `ros2_control_node`。（原本這裡寫「也沒有殘留 ros2 daemon」是錯的，見 08 的更正。）
 
 這台沒有裝 `ros-jazzy-ros2-controllers`（rosdep 顯示會補裝），所以 `openarm.bimanual.launch.py` 的
 `left/right_gripper_controller` 沒有起來；README 表格列的是照 README 用 rosdep 裝好之後應有的狀態，

@@ -15,7 +15,9 @@ Called by run_full_test.sh with the test workspace sourced. Per case:
       hardware plugin is not installed. Runs only when openarm_hardware is
       NOT installed, so it can never start real hardware; otherwise SKIP.
 
-Each case runs on its own ROS_DOMAIN_ID with discovery limited to localhost,
+Each case runs on its own ROS_DOMAIN_ID (one no running process uses, read
+from /proc/*/environ, so a fake robot someone is using is never touched),
+with discovery limited to localhost,
 under 'ulimit -l 64': Jazzy's controller_manager defaults to lock_memory:=true,
 and on machines with a large memlock limit the mlockall succeeds and later
 allocations fail with EAGAIN (docs/README.md, X2). With a small
@@ -24,6 +26,7 @@ no ros2 CLI daemon is left behind. Launch output goes to --log-dir.
 """
 
 import argparse
+import glob
 import os
 import signal
 import subprocess
@@ -314,7 +317,8 @@ def run_case(case, domain_id, log_dir):
     log_path = os.path.join(log_dir, f'fake_smoke_{case["name"]}.log')
     if case.get('kind') == 'real_parse':
         verdict, text = run_parse_probe(case, domain_id, log_path)
-        print(f'[{case["name"]}] {case["launch"]} {" ".join(case["args"])}  (log: {log_path})')
+        print(f'[{case["name"]}] {case["launch"]} {" ".join(case["args"])}  '
+              f'(domain {domain_id}, log: {log_path})')
         print(f'  {verdict} H1 {text}')
         return verdict != 'FAIL'
     results = []
@@ -330,7 +334,8 @@ def run_case(case, domain_id, log_dir):
     finally:
         probe.close()
         stop(proc)
-    print(f'[{case["name"]}] {case["launch"]} {" ".join(case["args"])}  (log: {log_path})')
+    print(f'[{case["name"]}] {case["launch"]} {" ".join(case["args"])}  '
+          f'(domain {domain_id}, log: {log_path})')
     for verdict, check_id, text in results:
         print(f'  {verdict} {check_id} {text}' if check_id else f'  {verdict} {text}')
     return ok
@@ -353,18 +358,46 @@ def stop(proc):
             time.sleep(0.2)
 
 
+def domains_in_use():
+    """Return every ROS_DOMAIN_ID set in the environment of a running process."""
+    used = set()
+    for path in glob.glob('/proc/[0-9]*/environ'):
+        try:
+            with open(path, 'rb') as f:
+                items = f.read().split(b'\0')
+        except OSError:
+            continue
+        for item in items:
+            if item.startswith(b'ROS_DOMAIN_ID='):
+                try:
+                    used.add(int(item.split(b'=', 1)[1]))
+                except ValueError:
+                    pass
+    return used
+
+
+def free_domains(count, low=60, high=101):
+    """Pick count domain IDs in [low, high] that no running process uses."""
+    used = domains_in_use()
+    free = [d for d in range(low, high + 1) if d not in used]
+    if len(free) < count:
+        raise SystemExit(f'fake_smoke: only {len(free)} free ROS_DOMAIN_IDs in {low}-{high}')
+    return free[:count]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     ap.add_argument('--log-dir', required=True)
     ap.add_argument('--case', action='append', help='run only these cases')
     a = ap.parse_args()
     os.makedirs(a.log_dir, exist_ok=True)
-    base_domain = 60 + os.getpid() % 30
+    cases = [c for c in CASES if not a.case or c['name'] in a.case]
+    domains = free_domains(len(cases))
+    print(f'fake_smoke: ROS_DOMAIN_IDs in use by other processes skipped: '
+          f'{sorted(d for d in domains_in_use() if 60 <= d <= 101) or "none"}')
     ok = True
-    for i, case in enumerate(CASES):
-        if a.case and case['name'] not in a.case:
-            continue
-        ok &= run_case(case, base_domain + i, a.log_dir)
+    for case, domain in zip(cases, domains):
+        ok &= run_case(case, domain, a.log_dir)
     print('fake_smoke: ' + ('all cases passed' if ok else 'FAILED'))
     sys.exit(0 if ok else 1)
 

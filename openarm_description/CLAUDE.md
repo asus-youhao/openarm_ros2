@@ -63,7 +63,7 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 | F3 | URDF 裡是 mimic、又沒標 `mimic="false"` 的 ros2_control 關節，不能有 command interface（Jazzy 的解析規則） |
 | G1 | 跟 `test/golden.json` 一致：整份 URDF 的雜湊，加上 ros2_control 的逐行摘要 |
 
-`fake_smoke.py`（case：`bimanual_default`（不指定 `ee_type`）、`bimanual_o6`、`real_o6_parse_probe`；每個 case 獨立 `ROS_DOMAIN_ID`、只在 localhost discovery、`ulimit -l 64`）：
+`fake_smoke.py`（case：`bimanual_default`（不指定 `ee_type`）、`bimanual_o6`、`real_o6_parse_probe`；每個 case 用一個沒有任何 process 在用的 `ROS_DOMAIN_ID`（60–101）、只在 localhost discovery、`ulimit -l 64`）：
 
 | ID | 內容 |
 |---|---|

@@ -42,7 +42,7 @@ ros2 topic hz /joint_states             →  average rate: 500.020
 left_joint1/4: 0.4 0.8   L_thumb_cmc_pitch/dip: 0.6 1.374     （1.374 = 0.6 × 2.29）
 ```
 
-第 1 步的 `sudo` 指令沒有執行（這台已經裝好）。結束後沒有殘留 domain 96 的 process 或 ros2 daemon。
+第 1 步的 `sudo` 指令沒有執行（這台已經裝好）。結束後沒有殘留 domain 96 的 launch 與 `ros2_control_node`。（原本這裡寫「也沒有 ros2 daemon」是錯的，見 08 的更正。）
 
 完整測試：FULL TEST PASSED（結果同 05）。
 
