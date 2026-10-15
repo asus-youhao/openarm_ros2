@@ -46,7 +46,7 @@ FAILED=()
 step() { printf '\n=== [%s] %s\n' "$1" "$2"; }
 fail() { echo "FAIL: $1"; FAILED+=("$1"); }
 
-echo "repo     : $REPO ($(git -C "$REPO" rev-parse --short HEAD), $(git -C "$REPO" branch --show-current))"
+echo "repo     : $REPO ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "git n/a"), $(git -C "$REPO" branch --show-current 2>/dev/null))"
 echo "workspace: $WS"
 echo "ROS      : $DISTRO"
 

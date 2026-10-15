@@ -43,6 +43,15 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 
 用 `env -i` 重新執行自己，只 source `/opt/ros/<distro>`（`OPENARM_ROS_DISTRO` 可指定 humble / jazzy）。
 
+u22（Humble）在這台 u24 上用 Docker 跑（第一次會建 image，需要網路）：
+
+```bash
+~/openarm_descint_ws/src/openarm_ros2/openarm_description/test/run_in_docker.sh humble
+```
+
+改到 xacro、launch 或測試時，u24 與 u22 都要跑；commit 的門檻是兩邊都 `FULL TEST PASSED`
+（10 這一批 u22 還有已知的 U1，是唯一的例外，記錄在 doc 裡）。
+
 | 步驟 | 內容 | 失敗條件 |
 |---|---|---|
 | 1 | preflight | 工作區裡的 `openarm_description` 不只一個，或不是這一份 |
