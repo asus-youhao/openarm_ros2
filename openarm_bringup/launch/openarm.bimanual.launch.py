@@ -148,8 +148,8 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument(
             "ee_type",
-            default_value="default",
-            description="Type of end-effector (ee), e.g., 'none', 'default', etc.",
+            default_value="openarm_hand",
+            description="End-effector: 'openarm_hand', 'o6', 'leap_hand_right/left' or 'none'.",
         ),
         DeclareLaunchArgument(
             "description_package",

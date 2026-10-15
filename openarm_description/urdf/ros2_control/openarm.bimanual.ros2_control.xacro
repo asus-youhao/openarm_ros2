@@ -1,0 +1,231 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:macro name="openarm_bimanual_ros2_control"
+         params="arm_type
+             left_can_interface:=^|can1
+             right_can_interface:=^|can0
+             use_fake_hardware:=^|false
+             fake_sensor_commands:=^|false
+             hand:=^|false
+             left_arm_prefix:=^|left_
+             right_arm_prefix:=^|right_
+             can_fd:=^|true
+             ee_type:=^|default">
+
+    <!-- Left Arm Hardware Interface -->
+    <ros2_control name="openarm_left_hardware_interface" type="system">
+        <hardware>
+          <param name="arm_type">${arm_type}</param>
+          <xacro:if value="${use_fake_hardware}">
+            <!-- Jazzy only ships mock_components (fake_components was its Humble-era name) -->
+            <plugin>mock_components/GenericSystem</plugin>
+            <param name="mock_sensor_commands">${fake_sensor_commands}</param>
+            <param name="state_following_offset">0.0</param>
+          </xacro:if>
+          <xacro:unless value="${use_fake_hardware}">
+            <plugin>openarm_hardware/OpenArm_v10HW</plugin>
+            <param name="can_interface">${left_can_interface}</param>
+            <param name="arm_prefix">${left_arm_prefix}</param>
+            <param name="hand">${hand}</param>
+            <param name="can_fd">${can_fd}</param>
+            <param name="ee_type">${ee_type}</param>
+            <param name="use_gravity_compensation">true</param>
+          </xacro:unless>
+        </hardware>
+
+      <xacro:macro name="configure_joint" params="joint_name initial_position">
+        <joint name="${joint_name}">
+          <command_interface name="position"/>
+          <command_interface name="velocity"/>
+          <command_interface name="effort"/>
+
+          <state_interface name="position">
+            <param name="initial_value">${initial_position}</param>
+          </state_interface>
+
+          <state_interface name="velocity">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+
+          <state_interface name="effort">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+        </joint>
+      </xacro:macro>
+
+      <!-- O6 *_dip joints are <mimic> joints in the URDF. Jazzy refuses command interfaces
+           on an active mimic joint, and the mock computes it from the URDF <mimic> anyway,
+           so in fake mode it only gets state interfaces. Real hardware keeps the full set
+           (same as configure_joint) and is marked mimic="false": OpenArm_v10HW exports and
+           drives these joints itself. Humble ignores the attribute. -->
+      <xacro:macro name="configure_mimic_joint" params="joint_name initial_position">
+        <xacro:if value="${use_fake_hardware}">
+          <joint name="${joint_name}">
+            <state_interface name="position">
+              <param name="initial_value">${initial_position}</param>
+            </state_interface>
+
+            <state_interface name="velocity">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+
+            <state_interface name="effort">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+          </joint>
+        </xacro:if>
+        <xacro:unless value="${use_fake_hardware}">
+          <joint name="${joint_name}" mimic="false">
+            <command_interface name="position"/>
+            <command_interface name="velocity"/>
+            <command_interface name="effort"/>
+
+            <state_interface name="position">
+              <param name="initial_value">${initial_position}</param>
+            </state_interface>
+
+            <state_interface name="velocity">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+
+            <state_interface name="effort">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+          </joint>
+        </xacro:unless>
+      </xacro:macro>
+
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint1" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint2" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint3" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint4" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint5" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint6" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${left_arm_prefix}joint7" initial_position="0.0"/>
+
+      <!-- Only add simple gripper joint if hand=true AND not using advanced hands -->
+      <xacro:if value="${hand and ee_type != 'o6' and ee_type != 'o6_left' and ee_type != 'o6_right' and ee_type != 'leap_hand_right'}">
+        <xacro:configure_joint joint_name="openarm_${left_arm_prefix}finger_joint1" initial_position="0.0" />
+      </xacro:if>
+      <!-- Add o6 finger joints for left hand (o6_left or bimanual o6) -->
+      <xacro:if value="${ee_type == 'o6_left'}">
+        <xacro:configure_joint joint_name="L_thumb_cmc_yaw" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_thumb_cmc_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_index_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_middle_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_ring_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_pinky_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0"/>
+      </xacro:if>
+      <xacro:if value="${ee_type == 'o6'}">
+        <xacro:configure_joint joint_name="L_thumb_cmc_yaw" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_thumb_cmc_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_index_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_index_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_middle_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_middle_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_ring_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_ring_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="L_pinky_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="L_pinky_dip" initial_position="0.0"/>
+      </xacro:if>
+    </ros2_control>
+
+    <!-- Right Arm Hardware Interface -->
+    <ros2_control name="openarm_right_hardware_interface" type="system">
+        <hardware>
+          <param name="arm_type">${arm_type}</param>
+          <xacro:if value="${use_fake_hardware}">
+            <!-- Jazzy only ships mock_components (fake_components was its Humble-era name) -->
+            <plugin>mock_components/GenericSystem</plugin>
+            <param name="mock_sensor_commands">${fake_sensor_commands}</param>
+            <param name="state_following_offset">0.0</param>
+          </xacro:if>
+          <xacro:unless value="${use_fake_hardware}">
+            <plugin>openarm_hardware/OpenArm_v10HW</plugin>
+            <param name="can_interface">${right_can_interface}</param>
+            <param name="arm_prefix">${right_arm_prefix}</param>
+            <param name="hand">${hand}</param>
+            <param name="can_fd">${can_fd}</param>
+            <param name="ee_type">${ee_type}</param>
+            <param name="use_gravity_compensation">true</param>
+          </xacro:unless>
+        </hardware>
+
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint1" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint2" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint3" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint4" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint5" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint6" initial_position="0.0"/>
+      <xacro:configure_joint joint_name="openarm_${right_arm_prefix}joint7" initial_position="0.0"/>
+
+      <!-- Only add simple gripper joint if hand=true AND not using advanced hands -->
+      <xacro:if value="${hand and ee_type != 'o6' and ee_type != 'o6_left' and ee_type != 'o6_right' and ee_type != 'leap_hand_right'}">
+        <xacro:configure_joint joint_name="openarm_${right_arm_prefix}finger_joint1" initial_position="0.0" />
+      </xacro:if>
+
+      <!-- Add leap_hand finger joints for right hand only -->
+      <xacro:if value="${ee_type == 'leap_hand_right'}">
+        <!-- Index finger -->
+        <xacro:configure_joint joint_name="right_index_mcp_forward" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_index_mcp_side" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_index_pip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_index_dip" initial_position="0.0"/>
+        
+        <!-- Middle finger -->
+        <xacro:configure_joint joint_name="right_middle_mcp_forward" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_middle_mcp_side" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_middle_pip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_middle_dip" initial_position="0.0"/>
+        
+        <!-- Ring finger -->
+        <xacro:configure_joint joint_name="right_ring_mcp_forward" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_ring_mcp_side" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_ring_pip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_ring_dip" initial_position="0.0"/>
+        
+        <!-- Thumb -->
+        <xacro:configure_joint joint_name="right_thumb_mcp_side" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_thumb_mcp_forward" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_thumb_pip_joint" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="right_thumb_dip_joint" initial_position="0.0"/>
+      </xacro:if>
+      <!-- Add o6 finger joints for right hand (o6_right or bimanual o6) -->
+      <xacro:if value="${ee_type == 'o6_right'}">
+        <xacro:configure_joint joint_name="R_thumb_cmc_yaw" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_thumb_cmc_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_index_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_middle_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_ring_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_pinky_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0"/>
+      </xacro:if>
+      <xacro:if value="${ee_type == 'o6'}">
+        <xacro:configure_joint joint_name="R_thumb_cmc_yaw" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_thumb_cmc_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_thumb_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_index_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_index_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_middle_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_middle_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_ring_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_ring_dip" initial_position="0.0"/>
+        <xacro:configure_joint joint_name="R_pinky_mcp_pitch" initial_position="0.0"/>
+        <xacro:configure_mimic_joint joint_name="R_pinky_dip" initial_position="0.0"/>
+      </xacro:if>
+    </ros2_control>
+
+  </xacro:macro>
+
+</robot>
