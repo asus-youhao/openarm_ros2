@@ -2,6 +2,7 @@
 
 把 `asus-youhao/openArm_leapHand_urdf` 的 `src/openarm_description` 整合進 openarm_ros2，
 只帶 URDF 需要的東西，並讓它在 Ubuntu 22.04（ROS 2 Humble）與 24.04（ROS 2 Jazzy）都能用。
+01–09 在 `feat/integrate-openarm-description`（已 merge 進 `develop`，b170a61）；10–13 在 `feat/humble-support`。
 
 - 分支起點：openarm_ros2 `origin/develop` `c47a870`
 - 匯入來源：`openArm_leapHand_urdf` 的 `fix/jazzy-fake-hardware` `6b8d6a7`（已含 J1–J3 的修正，細節見該分支的 `docs/jazzy_fake/`）
@@ -23,6 +24,7 @@
 | 10 | [10-humble-docker-test.md](10-humble-docker-test.md) | 在 Docker 裡跑 u22（Humble）的完整測試；找到 U1 |
 | 11 | [11-humble-fake-mimic.md](11-humble-fake-mimic.md) | U1：fake 的 O6 dip 加 Humble 用的 mimic 參數；新增 F4 |
 | 12 | [12-bringup-ros2controlcli.md](12-bringup-ros2controlcli.md) | P2：`openarm_bringup` 依賴 `ros2controlcli`，README 的 `ros2 control` 指令才能用；新增 C1 |
+| 13 | [13-readme-u22.md](13-readme-u22.md) | README：u22 的安裝與 fake 步驟；差異表改成實測結果 |
 
 ## 問題 ID 對照
 

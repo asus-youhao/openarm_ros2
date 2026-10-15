@@ -17,7 +17,7 @@ URDF（`openarm_description`）已經整合進這個 repo，**不需要再 clone
 
 fake 模式只需要 `openarm_description` 和 `openarm_bringup`。`openarm_hardware`、`openarm_can`、LinkerHand SDK
 都不需要；`openarm_hardware` 沒有 LinkerHand SDK 會編不過，所以只編這兩個 package。
-u22（Humble）的步驟還沒實測，之後補上。
+u22 的步驟見下一節，只差在 `jazzy` 換成 `humble`。
 
 **1. 前置（每台機器做一次）**：已裝好 ROS 2 Jazzy（`ros-jazzy-ros-base` 或 `ros-jazzy-desktop`）。
 
@@ -34,8 +34,6 @@ mkdir -p ~/openarm_ws/src && cd ~/openarm_ws/src
 git clone -b develop https://github.com/asus-youhao/openarm_ros2.git
 ```
 
-（`feat/integrate-openarm-description` merge 進 `develop` 之前，改用 `-b feat/integrate-openarm-description`。）
-
 **3. 安裝依賴**
 
 ```bash
@@ -45,7 +43,7 @@ rosdep install --from-paths src/openarm_ros2/openarm_description src/openarm_ros
 ```
 
 會裝 `xacro`、`robot_state_publisher`、`rviz2`、`joint_state_publisher_gui`、`controller_manager`、
-`ros2_controllers`（含夾爪 controller）等，不會裝 Gazebo 或 RealSense。
+`ros2_controllers`（含夾爪 controller）、`ros2controlcli`（`ros2 control` 指令）等，不會裝 Gazebo 或 RealSense。
 
 **4. Build**
 
@@ -110,21 +108,73 @@ ros2 topic pub --once -w 1 /left_hand_controller/joint_trajectory trajectory_msg
 **`~/.bashrc` 有 source 其他 openarm 工作區時**：一定要最後 source `~/openarm_ws/install/setup.bash`，並用
 `ros2 pkg prefix openarm_description` 確認用到的是這一份。
 
+### u22（Ubuntu 22.04 + ROS 2 Humble）：安裝與開啟 fake
+
+步驟跟 u24 一樣，只是 `jazzy` 換成 `humble`。已在 `ros:humble-ros-base` 容器裡照這些指令實測過（見下方「測試」）。
+
+**1. 前置（每台機器做一次）**：已裝好 ROS 2 Humble（`ros-humble-ros-base` 或 `ros-humble-desktop`）。
+
+```bash
+sudo apt install python3-rosdep python3-colcon-common-extensions
+sudo rosdep init        # 這台第一次用 rosdep 才需要
+rosdep update
+```
+
+**2. 取得原始碼**
+
+```bash
+mkdir -p ~/openarm_ws/src && cd ~/openarm_ws/src
+git clone -b develop https://github.com/asus-youhao/openarm_ros2.git
+```
+
+**3. 安裝依賴**
+
+```bash
+cd ~/openarm_ws
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src/openarm_ros2/openarm_description src/openarm_ros2/openarm_bringup --ignore-src -y
+```
+
+**4. Build**
+
+```bash
+cd ~/openarm_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select openarm_description openarm_bringup
+```
+
+**5. Launch fake（會一起開 RViz）**
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/openarm_ws/install/setup.bash
+ulimit -l 64
+ros2 launch openarm_bringup openarm_o6_bimanual.launch.py use_fake_hardware:=true
+```
+
+**6. 確認與讓它動**：跟 u24 第 6 步的指令完全一樣（另開終端機時 `source /opt/ros/humble/setup.bash`）。
+
+Humble 的 launch log 會多幾行 `[Deprecated]` 警告（例如 robot description 參數、`allow_nonzero_velocity_at_trajectory_end`），
+來自 `openarm_bringup` 的設定寫法，不影響 fake。
+
 ### u22 與 u24 的差異
 
 同一個分支、同一份檔案，兩個版本都能用。差異都在 ros2_control 的處理方式：
 
 | 項目 | u22 / Humble | u24 / Jazzy | 這個 repo 的做法 |
 |---|---|---|---|
-| fake 的硬體 plugin | `mock_components` 與舊名 `fake_components` 都有 | 只有 `mock_components` | 一律用 `mock_components/GenericSystem`、參數 `mock_sensor_commands` |
-| URDF 的 `<mimic>` 關節（O6 每隻手 5 個 `*_dip`） | ros2_control 不讀 URDF 的 mimic | 會讀；mimic 關節不能有 command interface，否則解析時 abort | 見下兩列 |
-| fake 模式的 O6 dip | 只有 state interface，dip 停在 0 | 只有 state interface，mock 依 URDF 倍率自動算出 dip | dip 只宣告 state interface |
-| 真機模式的 O6 dip（K3） | 忽略 `mimic` 屬性，行為不變 | **需要** `mimic="false"` 才能通過解析 | 保留 command interface，加 `mimic="false"`，由 `OpenArm_v10HW` 自己驅動 dip |
-| controller_manager 記憶體鎖定 | — | 預設 `lock_memory: true` | 啟動前 `ulimit -l 64` |
-| 夾爪 controller 套件 | `ros-humble-gripper-controllers` | `ros-jazzy-gripper-controllers` | 由 `ros2_controllers` 帶進來 |
+| fake 的硬體 plugin | `mock_components`（舊名 `fake_components` 也還在） | 只有 `mock_components` | 一律用 `mock_components/GenericSystem`、參數 `mock_sensor_commands` |
+| mock 怎麼知道 O6 dip 要跟著動 | 讀 ros2_control 關節裡的 `<param name="mimic">` / `multiplier` | 讀 URDF 的 `<mimic>` | fake 模式的 dip 兩種都有，而且由測試（F4）保證一致；dip 只宣告 state interface |
+| URDF mimic 關節帶 command interface | 不檢查 | 解析時 abort | fake 的 dip 不帶 command interface |
+| 真機模式的 O6 dip（K3） | 忽略 `mimic` 屬性 | **需要** `mimic="false"` 才能通過解析 | 保留 command interface，加 `mimic="false"`，由 `OpenArm_v10HW` 自己驅動 dip |
+| controller_manager 記憶體鎖定 | 一樣加 `ulimit -l 64`，無害 | 預設 `lock_memory: true` | 啟動前 `ulimit -l 64` |
+| `ros2 control` 指令、夾爪 controller | `ros-humble-ros2controlcli`、`ros-humble-gripper-controllers` | `ros-jazzy-ros2controlcli`、`ros-jazzy-gripper-controllers` | 都由 rosdep 依 `package.xml` 裝好 |
 
-目前的驗證狀態：u24 / Jazzy 已用完整測試驗證（見下方「測試」）；u22 / Humble 的編譯與啟動**尚未實測**，
-表中 Humble 欄位是依 ros2_control 在兩個版本間的差異推論。
+目前的驗證狀態（2026-10-15）：u24 / Jazzy 在本機、u22 / Humble 在 `ros:humble-ros-base` 容器裡，完整測試都是
+`FULL TEST PASSED`：兩個版本渲染出來的 URDF 完全相同；O6 fake 5 個 controller active、36 個關節約 500 Hz、
+手臂與手照軌跡動、dip 依倍率跟隨；openarm_hand 版在 u22 容器裡 5 個 controller（含夾爪）active（u24 這台沒裝夾爪
+controller，所以只驗到手臂的 3 個）；真機模式的 O6 URDF 能通過解析。
+接上真機的部分兩個版本都還沒驗證。
 
 O6 dip 的連動倍率（URDF）：`L_thumb_dip` = 2.29 × `L_thumb_cmc_pitch`、`R_thumb_dip` = 1.86 × `R_thumb_cmc_pitch`，
 其他四指 = 0.89 × 同一指的 `*_mcp_pitch`。
@@ -154,6 +204,12 @@ colcon list --packages-select openarm_description
 腳本會用乾淨的環境（只 source `/opt/ros/<distro>`）編譯 `openarm_description` 與 `openarm_bringup`，跑 lint、
 `package.xml` 依賴檢查、URDF 檢查（24 組參數），並實際啟動 fake 確認 controller、關節與動作，最後要出現 `FULL TEST PASSED`。
 機器上同時有好幾個 ROS 版本時，用 `OPENARM_ROS_DISTRO=humble` 或 `jazzy` 指定。
+
+在 u24 機器上測 u22（Humble），用 Docker 跑同一套測試（第一次會建 image，需要網路）：
+
+```bash
+~/openarm_ws/src/openarm_ros2/openarm_description/test/run_in_docker.sh humble
+```
 檢查項目與每個修正的紀錄在 [openarm_description/docs/](openarm_description/docs/README.md)。
 
 ## Related links
