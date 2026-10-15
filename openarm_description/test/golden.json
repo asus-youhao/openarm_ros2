@@ -38,15 +38,15 @@
   },
   "bimanual:=false ee_type:=openarm_hand use_fake_hardware:=false ros2_control:=true": {
    "ros2_control": "176ab4cc70f7",
-   "sha256": "b5c4c77e163dc27ec1de4372e2df02d1287f6f2fedc2d0a440ed90220261ec2b"
+   "sha256": "ca3e407d4ed7b303c6f60aad6c0f277a50825cf425ff2becd7a3c77a7247397e"
   },
   "bimanual:=false ee_type:=openarm_hand use_fake_hardware:=true fake_sensor_commands:=true ros2_control:=true": {
    "ros2_control": "b4ca2d828d58",
-   "sha256": "d5c6b8d9ccef8684d7ba1f2cb32cebccc1e121556e49fa224bec40067897975c"
+   "sha256": "999a8ea61efbe4270401741820f7549011ee2f0b31fffdec246667e3158d3395"
   },
   "bimanual:=false ee_type:=openarm_hand use_fake_hardware:=true ros2_control:=true": {
    "ros2_control": "5c633aec5174",
-   "sha256": "0ba46238b2840993bff7792ace3556265d9e6210ed69f700c6d9e17f2583f583"
+   "sha256": "15d3f302e3bcc9160ff4bf2f157c71a878020f3575a1bbe86c311fd8a3bb24b6"
   },
   "bimanual:=true ee_type:=leap_hand_left use_fake_hardware:=false ros2_control:=true": {
    "ros2_control": "75b7d66d5d1e",
@@ -86,15 +86,15 @@
   },
   "bimanual:=true ee_type:=openarm_hand use_fake_hardware:=false ros2_control:=true": {
    "ros2_control": "270675fd5dce",
-   "sha256": "4f92fcc5f6d1482b1518ac1b865de3c142db596188cac63b3e38378a1aa154d7"
+   "sha256": "4a0c2e34da0296d0f234aafbfe0b218b32ce7ddae5e0208ff03b745fe3e75805"
   },
   "bimanual:=true ee_type:=openarm_hand use_fake_hardware:=true fake_sensor_commands:=true ros2_control:=true": {
    "ros2_control": "07b7fa000f25",
-   "sha256": "1a1bef4d09d6e43b8b213316d8a294d9da8519c64e3f254984a4936e9c90a851"
+   "sha256": "fd8abbea707e4daa6ebcdbaf6d3d61709df97086b612d54f3723ecd84e1b9392"
   },
   "bimanual:=true ee_type:=openarm_hand use_fake_hardware:=true ros2_control:=true": {
    "ros2_control": "c47d76cb742f",
-   "sha256": "8969849d5c5f8351262aa403234c4709f87c0c438f607fb873e41cee7ed07be8"
+   "sha256": "d6b69453285dc9a0f283c9155a0581807c6cfc2ad6ba15c1e3a9b82d4ce8555e"
   }
  },
  "ros2_control": {

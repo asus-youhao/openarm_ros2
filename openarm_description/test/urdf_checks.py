@@ -22,7 +22,6 @@ Known issues are reported as KNOWN and do not fail the run:
   K1  ros2_control declares openarm_*finger_joint1 although the URDF has no
       openarm_hand (hand:=true default with ee_type other than openarm_hand)
   K3  F3 in real-hardware mode (O6 dip joints keep command interfaces)
-  K4  openarm_hand collision meshes point at package://openarm_descriptions/
   K5  leap_hand_left uses meshes/leap_hand/visual/mcp_joint_left.obj, which
       does not exist anywhere
 """
@@ -48,7 +47,6 @@ FAKE_PLUGIN = 'mock_components/GenericSystem'
 EE_TYPES = ['openarm_hand', 'o6', 'leap_hand_right', 'leap_hand_left', 'none']
 
 KNOWN_MISSING_MESHES = {
-    'package://openarm_descriptions/': 'K4',
     'meshes/leap_hand/visual/mcp_joint_left.obj': 'K5',
 }
 

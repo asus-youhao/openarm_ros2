@@ -33,7 +33,7 @@
       <collision name="${prefix}${name}_collision">
         <xacro:openarm-ee-kinematics-link config="${ee_kinematics_link}" name="${name}" />
         <geometry>
-          <mesh filename="package://${description_pkg}s/meshes/ee/${ee_type}/collision/${name}.stl" scale="0.001 0.001 0.001" />
+          <mesh filename="package://${description_pkg}/meshes/ee/${ee_type}/collision/${name}.stl" scale="0.001 0.001 0.001" />
         </geometry>
       </collision>
       <xacro:ee-inertials name="${name}" />
