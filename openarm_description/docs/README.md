@@ -17,6 +17,7 @@
 | 04 | [04-o6-mimic-real-hardware.md](04-o6-mimic-real-hardware.md) | K3：真機 O6 dip 標 `mimic="false"`，Jazzy 真機能過 URDF 解析；新增 H1 |
 | 05 | [05-bimanual-launch-default-ee.md](05-bimanual-launch-default-ee.md) | X1：`openarm.bimanual.launch.py` 預設 `ee_type` 改成 `openarm_hand` |
 | 06 | [06-readme-install-fake.md](06-readme-install-fake.md) | README：安裝、fake 使用流程、u22 / u24 差異、K3 說明 |
+| 07 | [07-readme-u24-steps.md](07-readme-u24-steps.md) | README：u24 一步一步的安裝、build、launch 與讓它動 |
 
 ## 問題 ID 對照
 
