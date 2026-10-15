@@ -1,0 +1,15 @@
+# ament linter failures per package, measured on the import commit.
+# run_full_test.sh fails when any linter reports more failures than listed here.
+#
+# openarm_description flake8 40: all in launch/display_openarm.launch.py
+#   (37 x Q000 double quotes, I100/I101/I201 import order), imported unchanged
+#   from openArm_leapHand_urdf. test/*.py are clean.
+# openarm_bringup: as on origin/develop c47a870.
+openarm_description flake8 40
+openarm_description pep257 0
+openarm_description lint_cmake 0
+openarm_description xmllint 0
+openarm_bringup flake8 743
+openarm_bringup pep257 20
+openarm_bringup lint_cmake 0
+openarm_bringup xmllint 0
