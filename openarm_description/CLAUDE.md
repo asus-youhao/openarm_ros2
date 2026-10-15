@@ -30,8 +30,9 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 3. **每次 commit 前都跑完整測試**，必須出現 `FULL TEST PASSED`。修 bug 時先讓測試在舊版上失敗，
    修好再跑一次；修前／修後的證據寫進 doc。
 4. **只在本機做**：不要 push、不要開 PR，除非使用者明確要求。
-5. **真機看得到的改動要明示**：ros2_control 區塊的任何變化都會讓 G1 失敗。刻意的改動用
-   `--update-golden` 重產 `test/golden.json`，讓 diff 出現在同一個 commit，並在 doc 寫清楚、標註需要上機驗證。
+5. **真機看得到的改動要明示**：ros2_control 區塊的任何變化都會讓 G1 失敗，測試輸出會印出逐行差異。
+   刻意的改動用 `--update-golden` 重產 `test/golden.json` 並放進同一個 commit（區塊以內容雜湊為 key，
+   檔案 diff 會是整段換掉），逐行差異寫進 doc，並標註需要上機驗證。
 6. 過程中新發現的問題寫進 doc；跟當前主題無關的記成已知問題，不要順手改。
 
 ## 完整測試
@@ -62,7 +63,7 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 | F3 | URDF 裡是 mimic、又沒標 `mimic="false"` 的 ros2_control 關節，不能有 command interface（Jazzy 的解析規則） |
 | G1 | 跟 `test/golden.json` 一致：整份 URDF 的雜湊，加上 ros2_control 的逐行摘要 |
 
-`fake_smoke.py`（每個 case 獨立 `ROS_DOMAIN_ID`、只在 localhost discovery、`ulimit -l 64`）：
+`fake_smoke.py`（case：`bimanual_openarm_hand`、`bimanual_o6`、`real_o6_parse_probe`；每個 case 獨立 `ROS_DOMAIN_ID`、只在 localhost discovery、`ulimit -l 64`）：
 
 | ID | 內容 |
 |---|---|
@@ -70,6 +71,7 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 | S2 | `/joint_states` 的關節剛好是 ros2_control 宣告的關節，頻率不低於下限 |
 | S3 | 每個 JointTrajectoryController 都能把關節帶到目標 |
 | S4 | URDF mimic 關節都等於「倍率 × 跟隨的關節 + offset」 |
+| H1 | 真機模式（`use_fake_hardware:=false`）的 URDF 能通過 ros2_control 解析，停在載入硬體 plugin。只在**沒有**安裝 `openarm_hardware` 時執行，有裝就 SKIP，不會啟動真機 |
 
 工作區配置（這台 NB）：測試工作區 `~/openarm_descint_ws`，`src/openarm_ros2` 是 openarm_ros2 的 worktree
 （分支 `feat/integrate-openarm-description`）。主 repo `~/openarm_ws/src/openarm_ros2` 停在 `feature/placo_ik`，不要動。
@@ -79,5 +81,6 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 - 匯入後的 package 渲染出來的 URDF，跟 `openArm_leapHand_urdf@6b8d6a7` 完全一樣，除非 golden 有明示的更新。（G1）
 - URDF 引用的 mesh 都存在，已知問題除外。（M1）
 - `package.xml` 的執行期依賴剛好是實際用到的 package，且在 Humble 與 Jazzy 都解析得到。（D1、D2）
-- fake 模式只用 `mock_components`，沒有 mimic 關節帶 command interface。（F1–F3）
+- fake 模式只用 `mock_components`；兩種模式都沒有「未標 `mimic="false"` 的 mimic 關節」帶 command interface。（F1–F3）
+- 真機模式的 O6 URDF 能通過 Jazzy 的 ros2_control 解析。（H1）
 - O6 雙臂與 openarm_hand 雙臂的 fake 都能起來、會照軌跡動，O6 dip 照 URDF 倍率跟隨。（S1–S4）

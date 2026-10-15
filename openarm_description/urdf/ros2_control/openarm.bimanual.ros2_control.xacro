@@ -56,8 +56,9 @@
 
       <!-- O6 *_dip joints are <mimic> joints in the URDF. Jazzy refuses command interfaces
            on an active mimic joint, and the mock computes it from the URDF <mimic> anyway,
-           so in fake mode it only gets state interfaces. Real hardware keeps the full set:
-           OpenArm_v10HW exports and drives these joints itself. -->
+           so in fake mode it only gets state interfaces. Real hardware keeps the full set
+           (same as configure_joint) and is marked mimic="false": OpenArm_v10HW exports and
+           drives these joints itself. Humble ignores the attribute. -->
       <xacro:macro name="configure_mimic_joint" params="joint_name initial_position">
         <xacro:if value="${use_fake_hardware}">
           <joint name="${joint_name}">
@@ -75,7 +76,23 @@
           </joint>
         </xacro:if>
         <xacro:unless value="${use_fake_hardware}">
-          <xacro:configure_joint joint_name="${joint_name}" initial_position="${initial_position}"/>
+          <joint name="${joint_name}" mimic="false">
+            <command_interface name="position"/>
+            <command_interface name="velocity"/>
+            <command_interface name="effort"/>
+
+            <state_interface name="position">
+              <param name="initial_value">${initial_position}</param>
+            </state_interface>
+
+            <state_interface name="velocity">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+
+            <state_interface name="effort">
+              <param name="initial_value">0.0</param>
+            </state_interface>
+          </joint>
         </xacro:unless>
       </xacro:macro>
 

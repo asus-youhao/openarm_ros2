@@ -21,7 +21,6 @@ Called by run_full_test.sh. Checks per combination (IDs referenced from docs/):
 Known issues are reported as KNOWN and do not fail the run:
   K1  ros2_control declares openarm_*finger_joint1 although the URDF has no
       openarm_hand (hand:=true default with ee_type other than openarm_hand)
-  K3  F3 in real-hardware mode (O6 dip joints keep command interfaces)
   K5  leap_hand_left uses meshes/leap_hand/visual/mcp_joint_left.obj, which
       does not exist anywhere
 """
@@ -250,8 +249,7 @@ def run(install, golden_path, update):
             rep.check(not bad, 'F2', case, f'want mock_sensor_commands={want}: {bad}')
 
         bad = mimic_violations(root)
-        rep.check(not bad, 'F3', case, f'mimic joints with command interfaces: {bad}',
-                  known=None if fake else 'K3')
+        rep.check(not bad, 'F3', case, f'mimic joints with command interfaces: {bad}')
 
         entry = golden_entry(urdf_xml, root)
         new_golden[case] = entry

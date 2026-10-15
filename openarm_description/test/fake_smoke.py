@@ -10,6 +10,10 @@ Called by run_full_test.sh with the test workspace sourced. Per case:
       it finishes every commanded joint sits at its target
   S4  every URDF <mimic> joint on /joint_states equals
       multiplier * parent + offset (checked after S3, so parents are not 0)
+  H1  (real-hardware parse probe) with use_fake_hardware:=false the URDF gets
+      through ros2_control parsing and the launch stops only because the
+      hardware plugin is not installed. Runs only when openarm_hardware is
+      NOT installed, so it can never start real hardware; otherwise SKIP.
 
 Each case runs on its own ROS_DOMAIN_ID with discovery limited to localhost,
 under 'ulimit -l 64': Jazzy's controller_manager defaults to lock_memory:=true,
@@ -71,7 +75,18 @@ CASES = [
                                    'right_hand_controller'],
         'mimic_joints': 10,  # five *_dip joints per hand
     },
+    {
+        'name': 'real_o6_parse_probe',
+        'kind': 'real_parse',
+        'launch': 'openarm_o6_bimanual.launch.py',
+        'args': ['use_fake_hardware:=false', 'launch_rviz:=false'],
+    },
 ]
+
+HW_PACKAGE = 'openarm_hardware'
+HW_PLUGIN = 'openarm_hardware/OpenArm_v10HW'
+MIMIC_ERROR = 'Activated mimic joints cannot have command interfaces'
+
 
 FATAL_PATTERNS = ['terminate called', 'LibraryLoadException', 'Caught exception']
 POS_TOL = 1e-3
@@ -262,15 +277,49 @@ def check_case(case, probe, results):
         results.append(('PASS', 'S4', f'{checked} mimic joints follow their parent'))
 
 
-def run_case(case, domain_id, log_dir):
-    log_path = os.path.join(log_dir, f'fake_smoke_{case["name"]}.log')
+def start_launch(case, domain_id, log_path):
     env = dict(os.environ, ROS_DOMAIN_ID=str(domain_id), ROS_AUTOMATIC_DISCOVERY_RANGE='LOCALHOST')
     cmd = 'ulimit -l 64; exec ros2 launch openarm_bringup {} {}'.format(
         case['launch'], ' '.join(case['args']))
-    results = []
     with open(log_path, 'w') as log:
-        proc = subprocess.Popen(['bash', '-c', cmd], stdout=log, stderr=subprocess.STDOUT,
+        return subprocess.Popen(['bash', '-c', cmd], stdout=log, stderr=subprocess.STDOUT,
                                 env=env, start_new_session=True)
+
+
+def run_parse_probe(case, domain_id, log_path):
+    """H1: return (verdict, text)."""
+    try:
+        get_package_share_directory(HW_PACKAGE)
+        return 'SKIP', f'{HW_PACKAGE} is installed here; refusing to start real hardware'
+    except PackageNotFoundError:
+        pass
+    proc = start_launch(case, domain_id, log_path)
+    try:
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            with open(log_path, errors='replace') as f:
+                text = f.read()
+            if MIMIC_ERROR in text:
+                return 'FAIL', 'ros2_control rejected the URDF: ' + MIMIC_ERROR
+            if 'LibraryLoadException' in text and HW_PLUGIN in text:
+                return 'PASS', f'URDF parsed; stopped at loading {HW_PLUGIN} (not installed)'
+            if proc.poll() is not None:
+                break
+            time.sleep(0.5)
+        return 'FAIL', first_fatal_line(log_path) or 'neither parse error nor plugin load seen'
+    finally:
+        stop(proc)
+
+
+def run_case(case, domain_id, log_dir):
+    log_path = os.path.join(log_dir, f'fake_smoke_{case["name"]}.log')
+    if case.get('kind') == 'real_parse':
+        verdict, text = run_parse_probe(case, domain_id, log_path)
+        print(f'[{case["name"]}] {case["launch"]} {" ".join(case["args"])}  (log: {log_path})')
+        print(f'  {verdict} H1 {text}')
+        return verdict != 'FAIL'
+    results = []
+    proc = start_launch(case, domain_id, log_path)
     case['_launch'], case['_log'] = proc, log_path
     probe = Probe(domain_id)
     ok = True
