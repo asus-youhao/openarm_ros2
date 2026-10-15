@@ -15,6 +15,7 @@
 | 02 | [02-package-deps.md](02-package-deps.md) | P1：`package.xml` 依賴對齊實際使用，Humble / Jazzy 都可安裝 |
 | 03 | [03-openarm-hand-collision-path.md](03-openarm-hand-collision-path.md) | K4：openarm_hand 碰撞 mesh 路徑 |
 | 04 | [04-o6-mimic-real-hardware.md](04-o6-mimic-real-hardware.md) | K3：真機 O6 dip 標 `mimic="false"`，Jazzy 真機能過 URDF 解析；新增 H1 |
+| 05 | [05-bimanual-launch-default-ee.md](05-bimanual-launch-default-ee.md) | X1：`openarm.bimanual.launch.py` 預設 `ee_type` 改成 `openarm_hand` |
 
 ## 問題 ID 對照
 
@@ -29,6 +30,6 @@
 | K3 | 真機模式的 O6 dip 仍帶 command interface，Jazzy 上真機會在解析時 abort | 已修（04），待上機驗證 |
 | K4 | openarm_hand 的碰撞 mesh 路徑是 `package://openarm_descriptions/`（多一個 s），載不到 | 已修（03） |
 | K5 | `leap_hand_left` 用 `meshes/leap_hand/visual/mcp_joint_left.obj`，這個檔案在新舊 repo 都不存在 | 已知，不猜幾何，未修 |
-| X1 | `openarm.launch.py` / `openarm.bimanual.launch.py` 預設 `ee_type:=default`，沒有對應的 xacro | 未修 |
+| X1 | `openarm.bimanual.launch.py` 預設 `ee_type:=default`，沒有對應的 xacro（單臂 `openarm.launch.py` 沒有這個參數，不受影響） | 已修（05） |
 | X2 | Jazzy 的 controller_manager 預設 `lock_memory: true`；memlock 上限大到 mlockall 會成功、但又不是無限時，之後配置會失敗（`Resource temporarily unavailable`）。用 `ulimit -l 64` 避開 | 執行環境，只記錄 |
 | X3 | `openarm.bimanual.launch.py` 的夾爪 controller 需要 apt 套件 `ros-<distro>-gripper-controllers` | 執行環境，只記錄 |

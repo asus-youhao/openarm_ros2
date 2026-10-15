@@ -63,7 +63,7 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 | F3 | URDF 裡是 mimic、又沒標 `mimic="false"` 的 ros2_control 關節，不能有 command interface（Jazzy 的解析規則） |
 | G1 | 跟 `test/golden.json` 一致：整份 URDF 的雜湊，加上 ros2_control 的逐行摘要 |
 
-`fake_smoke.py`（case：`bimanual_openarm_hand`、`bimanual_o6`、`real_o6_parse_probe`；每個 case 獨立 `ROS_DOMAIN_ID`、只在 localhost discovery、`ulimit -l 64`）：
+`fake_smoke.py`（case：`bimanual_default`（不指定 `ee_type`）、`bimanual_o6`、`real_o6_parse_probe`；每個 case 獨立 `ROS_DOMAIN_ID`、只在 localhost discovery、`ulimit -l 64`）：
 
 | ID | 內容 |
 |---|---|
@@ -83,4 +83,4 @@ OpenArm V10 的 URDF（xacro）、mesh 與設定。原本放在獨立的 repo `a
 - `package.xml` 的執行期依賴剛好是實際用到的 package，且在 Humble 與 Jazzy 都解析得到。（D1、D2）
 - fake 模式只用 `mock_components`；兩種模式都沒有「未標 `mimic="false"` 的 mimic 關節」帶 command interface。（F1–F3）
 - 真機模式的 O6 URDF 能通過 Jazzy 的 ros2_control 解析。（H1）
-- O6 雙臂與 openarm_hand 雙臂的 fake 都能起來、會照軌跡動，O6 dip 照 URDF 倍率跟隨。（S1–S4）
+- O6 雙臂與預設（openarm_hand）雙臂的 fake 都能起來、會照軌跡動，O6 dip 照 URDF 倍率跟隨。（S1–S4）

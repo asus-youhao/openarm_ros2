@@ -43,11 +43,10 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 CASES = [
     {
-        'name': 'bimanual_openarm_hand',
+        'name': 'bimanual_default',
         'launch': 'openarm.bimanual.launch.py',
-        # ee_type must be given: the launch default 'default' has no
-        # urdf/ee/default_arguments.xacro (docs/README.md, X1)
-        'args': ['use_fake_hardware:=true', 'ee_type:=openarm_hand', 'launch_rviz:=false'],
+        # no ee_type on purpose: the launch default must render (docs/README.md, X1)
+        'args': ['use_fake_hardware:=true', 'launch_rviz:=false'],
         'controllers': ['joint_state_broadcaster',
                         'left_joint_trajectory_controller',
                         'right_joint_trajectory_controller'],
