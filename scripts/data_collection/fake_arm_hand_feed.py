@@ -9,7 +9,8 @@ from /joint_states, on the same topics the real upstream uses:
   - hands -> /{left,right}_hand_forward_position_controller/commands  --hand_hz
 
 Each controller's slot order is read from its `joints` parameter, like the
-aggregator does, so the feed never assumes an order either.
+aggregator does, so the feed never assumes an order either. Every command is
+clamped to the joint limits in /robot_description.
 
 It refuses to run unless every controller_manager hardware component it can see
 is a mock (mock_components/GenericSystem), so it cannot move a real arm.
@@ -24,14 +25,16 @@ import math
 import signal
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 from controller_manager_msgs.srv import ListHardwareComponents
 from rcl_interfaces.srv import GetParameters
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String
 
 ARM_CONTROLLERS = ['left_forward_position_controller', 'right_forward_position_controller']
 HAND_CONTROLLERS = ['left_hand_forward_position_controller',
@@ -47,11 +50,15 @@ class FakeFeed(Node):
         self.home = None
         self.t0 = None
         self.order = {}
+        self.limits = None   # joint -> (lower, upper), from /robot_description
         self.ready = False   # set once every controller's `joints` has been read
         controllers = ARM_CONTROLLERS + (HAND_CONTROLLERS if hands else [])
         self.pubs = {c: self.create_publisher(Float64MultiArray, f'/{c}/commands', 10)
                      for c in controllers}
         self.create_subscription(JointState, '/joint_states', self._on_js, 10)
+        self.create_subscription(
+            String, '/robot_description', self._on_description,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_timer(1.0 / arm_hz, lambda: self._tick(ARM_CONTROLLERS, False))
         if hands:
             self.create_timer(1.0 / hand_hz, lambda: self._tick(HAND_CONTROLLERS, True))
@@ -84,8 +91,25 @@ class FakeFeed(Node):
             if resp is None or not resp.values:
                 return f'/{c} is not loaded (robot_controller:=forward_position_controller?)'
             self.order[c] = list(resp.values[0].string_array_value)
+        end = time.monotonic() + 5.0
+        while self.limits is None and time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        if self.limits is None:
+            return 'no /robot_description (needed for the joint limits)'
         self.ready = True
         return None
+
+    def _on_description(self, msg):
+        limits = {}
+        for j in ET.fromstring(msg.data).findall('joint'):
+            lim = j.find('limit')
+            if lim is not None and lim.get('lower') is not None:
+                limits[j.get('name')] = (float(lim.get('lower')), float(lim.get('upper')))
+        self.limits = limits
+
+    def _clamp(self, name, value):
+        lo, hi = self.limits.get(name, (-math.inf, math.inf))
+        return min(max(value, lo), hi)
 
     def _on_js(self, msg):
         # /joint_states is already spun while the orders are read; wait for all.
@@ -106,7 +130,7 @@ class FakeFeed(Node):
             off = abs(off)         # O6 joints are [0, max]
         for c in controllers:
             self.pubs[c].publish(Float64MultiArray(
-                data=[self.home[n] + off for n in self.order[c]]))
+                data=[self._clamp(n, self.home[n] + off) for n in self.order[c]]))
 
 
 def main():
