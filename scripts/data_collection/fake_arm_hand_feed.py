@@ -80,8 +80,11 @@ class FakeFeed(Node):
                           ListHardwareComponents.Request())
         if resp is None:
             return 'no /controller_manager/list_hardware_components'
-        real = [f'{c.name} ({c.plugin_name})' for c in resp.component
-                if c.plugin_name != MOCK_PLUGIN]
+        # Jazzy reports the plugin in `plugin_name`; Humble only has `class_type`.
+        plugins = {c.name: getattr(c, 'plugin_name', '') or c.class_type
+                   for c in resp.component}
+        real = [f'{name} ({plugin})' for name, plugin in plugins.items()
+                if plugin != MOCK_PLUGIN]
         return f'not fake hardware: {real}' if real else None
 
     def read_orders(self):
