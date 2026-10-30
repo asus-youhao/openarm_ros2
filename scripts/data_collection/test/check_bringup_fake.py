@@ -8,13 +8,16 @@ openarm_description/test/fake_smoke.py), so it cannot reach a real robot.
 
   F  robot_controller:=forward_position_controller
      F1 jsb + 4 FPCs active               F2 aggregator read the 4 FPC `joints`
-     F3 26 names, one message per arm tick, one publisher
-     F4 each value equals the command sent for that joint
+     F3 no command yet: 50 Hz, every value = /joint_states
+     F4 commands: 50 Hz, 26 names in order, one publisher, each value = its command
      F5 /joint_states (the fake hardware follows the FPCs) equals /joint_actions
-     F6 fake_arm_hand_feed.py drives /joint_actions
+     F6 fake_arm_hand_feed.py: /joint_actions follows the moving commands
+     F7 commands stopped: publishing goes on at 50 Hz, values = /joint_states
   J  robot_controller:=joint_trajectory_controller (FPCs not loaded)
-     J1 aggregator up (one publisher)      J2 FPC-topic commands -> nothing published
-     J3 the log says why                   J4 fake_arm_hand_feed.py refuses to run
+     J1 aggregator up, one publisher, 50 Hz of /joint_states
+     J2 commands on the FPC topics are not used (still /joint_states)
+     J3 a JTC trajectory moves the arm: /joint_actions follows /joint_states
+     J4 the log says why                   J5 fake_arm_hand_feed.py refuses to run
   O  with_joint_actions:=false
      O1 no publisher on /joint_actions     O2 joint_actions.launch.py on its own works
      O3 Ctrl-C (SIGINT to the group): the aggregator exits cleanly
@@ -45,6 +48,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray, String
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 FEED = os.path.join(os.path.dirname(HERE), 'fake_arm_hand_feed.py')
 LAUNCH = 'openarm_o6_bimanual.launch.py'
@@ -176,6 +180,18 @@ def targets_from_urdf(description):
             for i, n in enumerate(ALL_JOINT_NAMES)}
 
 
+def rate_ok(msgs, seconds, rate=50.0):
+    """Within 10 % of the aggregator's 50 Hz publish rate."""
+    return abs(len(msgs) - rate * seconds) <= 0.1 * rate * seconds
+
+
+def max_diff(msgs, reference):
+    """Largest |value - reference[joint]| over the samples (inf if nothing to compare)."""
+    return max((abs(p - reference[n]) for m in msgs
+                for n, p in zip(m[1].name, m[1].position) if n in reference),
+               default=float('inf'))
+
+
 def case_fpc(domain, rep, log_dir):
     rep.section(f'F: {LAUNCH} robot_controller:=forward_position_controller (domain {domain})')
     isolate(domain)
@@ -195,18 +211,24 @@ def case_fpc(domain, rep, log_dir):
         probe.wait_subscribed(2)
 
         t = time.monotonic()
-        ticks = probe.feed(3.0, values, orders)
-        time.sleep(0.3)
+        time.sleep(1.5)
         msgs = probe.since(t)
+        with probe.lock:
+            js = dict(probe.js)
+        diff = max_diff(msgs, js)
+        rep.check(rate_ok(msgs, 1.5) and diff < 1e-6, 'F3',
+                  f'no command yet: {len(msgs) / 1.5:.1f} Hz, every value = /joint_states '
+                  f'(max diff {diff:.1e})')
+
+        t = time.monotonic()
+        probe.feed(3.0, values, orders)
+        msgs = [m for m in probe.since(t + 0.5) if m[0] < t + 3.0]
         names_ok = all(list(m[1].name) == ALL_JOINT_NAMES for m in msgs)
         pubs = probe.node.count_publishers('/joint_actions')
-        rep.check(msgs and names_ok and ticks - 3 <= len(msgs) <= ticks and pubs == 1, 'F3',
-                  f'{len(msgs)} messages / {ticks} arm ticks, 26 names in order, '
-                  f'{pubs} publisher')
-        worst = max((abs(p - values[n]) for m in msgs[1:]
-                     for n, p in zip(m[1].name, m[1].position)), default=float('inf'))
-        rep.check(worst < 1e-9, 'F4', f'every value is the command sent for that joint '
-                                      f'(max error {worst:.1e})')
+        worst = max_diff(msgs, values)
+        rep.check(msgs and names_ok and rate_ok(msgs, 2.5) and pubs == 1 and worst < 1e-9,
+                  'F4', f'commands: {len(msgs) / 2.5:.1f} Hz, 26 names in order, {pubs} '
+                        f'publisher, each value = its command (max error {worst:.1e})')
         last = dict(zip(msgs[-1][1].name, msgs[-1][1].position)) if msgs else {}
         with probe.lock:
             js = dict(probe.js)
@@ -215,17 +237,32 @@ def case_fpc(domain, rep, log_dir):
         rep.check(len(last) == 26 and all(n in js for n in ALL_JOINT_NAMES) and diff < 1e-3,
                   'F5', f'/joint_states follows the FPCs and equals /joint_actions for all '
                         f'26 joints (max diff {diff:.1e} rad)')
-        hold('F3-F5 targets, every joint parked at 30..70 % of its range')
+        hold('F4/F5 targets, every joint parked at 30..70 % of its range')
 
         t = time.monotonic()
         feed = start([sys.executable, FEED], os.path.join(log_dir, 'feed_fpc.log'))
         try:
-            ok = wait_for(lambda: len(probe.since(t)) > 100, 15.0)
+            wait_for(lambda: 'feeding commands' in read(os.path.join(log_dir, 'feed_fpc.log')),
+                     15.0)
+            time.sleep(4.0)
+            moving = [m[1].position[ALL_JOINT_NAMES.index('openarm_left_joint1')]
+                      for m in probe.since(t)]
             hold('fake_arm_hand_feed.py moving both arms and hands (sine)')
         finally:
             stop(feed)
-        rep.check(ok, 'F6', f'fake_arm_hand_feed.py drives /joint_actions '
-                            f'({len(probe.since(t))} messages)')
+        span = max(moving) - min(moving) if moving else 0.0
+        rep.check(span > 0.02, 'F6', f'fake_arm_hand_feed.py: /joint_actions follows the '
+                                     f'moving commands (left joint1 span {span:.3f} rad)')
+
+        t = time.monotonic()
+        time.sleep(1.5)
+        msgs = probe.since(t + 0.3)
+        with probe.lock:
+            js = dict(probe.js)
+        diff = max_diff(msgs, js)
+        rep.check(rate_ok(msgs, 1.2) and diff < 1e-6, 'F7',
+                  f'commands stopped: still {len(msgs) / 1.2:.1f} Hz, values = /joint_states '
+                  f'(max diff {diff:.1e})')
     finally:
         probe.close()
         stop(proc)
@@ -246,26 +283,58 @@ def case_jtc(domain, rep, log_dir):
             return
         ok = wait_for(lambda: 'JointActionsAggregator started' in read(log)
                       and probe.node.count_publishers('/joint_actions') == 1, 20.0)
-        rep.check(ok, 'J1', 'aggregator started by the bringup, one publisher')
         probe.wait_subscribed(1)
-        time.sleep(1.5)
-        orders = {k: LIMB_JOINTS[k] for k in CONTROLLERS}
-        values = {n: 0.1 for n in ALL_JOINT_NAMES}
         t = time.monotonic()
-        probe.feed(3.0, values, orders)
-        time.sleep(0.3)
-        rep.check(not probe.since(t), 'J2', 'commands on the FPC topics (FPCs not loaded): '
-                                            'nothing published')
+        time.sleep(1.5)
+        msgs = probe.since(t)
+        with probe.lock:
+            js = dict(probe.js)
+        diff = max_diff(msgs, js)
+        rep.check(ok and rate_ok(msgs, 1.5) and diff < 1e-6, 'J1',
+                  f'aggregator up, one publisher, {len(msgs) / 1.5:.1f} Hz of /joint_states '
+                  f'(max diff {diff:.1e})')
+
+        orders = {k: LIMB_JOINTS[k] for k in CONTROLLERS}
+        sent = {n: 0.1 for n in ALL_JOINT_NAMES}
+        t = time.monotonic()
+        probe.feed(2.0, sent, orders)
+        msgs = probe.since(t + 0.3)
+        with probe.lock:
+            js = dict(probe.js)
+        rep.check(msgs and max_diff(msgs, js) < 1e-6 and max_diff(msgs, sent) > 0.05, 'J2',
+                  'commands on the FPC topics (FPCs not loaded) are not used: still '
+                  '/joint_states')
+
+        target = 0.4
+        traj = JointTrajectory(joint_names=LIMB_JOINTS['left_arm'])
+        traj.points = [JointTrajectoryPoint(positions=[target] + [0.0] * 6)]
+        traj.points[0].time_from_start.sec = 1
+        pub = probe.node.create_publisher(
+            JointTrajectory, '/left_joint_trajectory_controller/joint_trajectory', 10)
+        wait_for(lambda: pub.get_subscription_count() >= 1, 10.0)
+        t = time.monotonic()
+        pub.publish(traj)
+        time.sleep(2.0)
+        j1 = ALL_JOINT_NAMES.index('openarm_left_joint1')
+        seen = [m[1].position[j1] for m in probe.since(t)]
+        with probe.lock:
+            js_j1 = probe.js.get('openarm_left_joint1', float('nan'))
+        rep.check(seen and abs(seen[-1] - target) < 1e-3 and abs(seen[-1] - js_j1) < 1e-3
+                  and min(seen) < target - 0.1, 'J3',
+                  f'JTC trajectory moves left joint1 to {target}: /joint_actions follows '
+                  f'/joint_states ({min(seen) if seen else float("nan"):.3f} -> '
+                  f'{seen[-1] if seen else float("nan"):.3f})')
+        hold('JTC mode: /joint_actions = /joint_states, following the JTC move')
+
         text = read(log)
         rep.check('slot order not known yet for left_arm' in text
-                  and 'left_arm: slot order unknown' in text, 'J3',
-                  'log: slot order not known / commands not recorded')
+                  and 'left_arm: slot order unknown' in text, 'J4',
+                  'log: slot order not known / FPC commands not recorded')
         feed_log = os.path.join(log_dir, 'feed_jtc.log')
         feed = start([sys.executable, FEED], feed_log)
         code = feed.wait(timeout=30)
-        rep.check(code == 1 and 'refusing to feed' in read(feed_log), 'J4',
+        rep.check(code == 1 and 'refusing to feed' in read(feed_log), 'J5',
                   'fake_arm_hand_feed.py refuses to run (FPC not loaded)')
-        hold('JTC mode: FPC commands were sent, the arms never moved')
     finally:
         probe.close()
         stop(proc)
@@ -300,12 +369,12 @@ def case_off(domain, rep, log_dir):
         ok = wait_for(lambda: read(standalone_log).count('slot order (from') >= 4, 20.0)
         ok = ok and probe.wait_subscribed(2)
         t = time.monotonic()
-        ticks = probe.feed(2.0, values, orders)
-        time.sleep(0.3)
-        n = len(probe.since(t))
-        rep.check(ok and ticks - 3 <= n <= ticks
+        probe.feed(2.5, values, orders)
+        msgs = [m for m in probe.since(t + 0.5) if m[0] < t + 2.5]
+        rep.check(ok and rate_ok(msgs, 2.0) and max_diff(msgs, values) < 1e-9
                   and probe.node.count_publishers('/joint_actions') == 1, 'O2',
-                  f'joint_actions.launch.py on its own: {n} messages / {ticks} ticks')
+                  f'joint_actions.launch.py on its own: {len(msgs) / 2.0:.1f} Hz, values = '
+                  f'commands, one publisher')
         stop(standalone)   # SIGINT to the whole group, as Ctrl-C in a terminal does
         standalone, text = None, read(standalone_log)
         rep.check('Traceback' not in text and 'process has finished cleanly' in text, 'O3',

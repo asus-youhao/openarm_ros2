@@ -4,23 +4,27 @@ Check the publishing rules of joint_actions_aggregator.py without ros2_control.
 
 The aggregator runs as its own process against stand-in controller nodes (a node
 with the controller's name and a `joints` parameter, deliberately PERMUTED) and
-commands published from here. No hardware, no controller_manager.
+commands published from here. /joint_states is published from here too, with
+values that no command uses, so every column tells where it came from.
+No hardware, no controller_manager.
 
   R1  slot order is read from each controller's `joints`, not assumed
-  R2  no arm ever commanded -> nothing published, hand commands do not trigger (④)
-  R3  26 names in the fixed order; values mapped by name through the permuted
-      `joints`; both arms from the same tick; one message per arm tick
-  R4  a limb that never sent a command is filled from /joint_states (②)
-  R5  header.stamp is the arrival time of the oldest contributing command
+  R2  no command at all -> /joint_states published at 50 Hz from startup
+  R3  hand commands only -> that hand is the command, the rest /joint_states
+  R4  26 names in the fixed order; every value mapped by name through the
+      permuted `joints`; a never-commanded limb is /joint_states; 50 Hz
+  R5  header.stamp is the publish instant
   R6  exactly one publisher on /joint_actions
-  R7  arms go quiet -> publishing stops, 'stale' logged; back -> 'resumed' (③)
-  R8  a latched hand goes quiet -> publishing stops too (③)
-  R9  wrong-length command rejected and logged
-  R10 inactive limb missing from /joint_states -> sample withheld, never 0.0
-  R11 single-arm teleop with arm_config both: the idle arm is filled
-  R12 controller not loaded / wrong `joints` -> rejected; recovers once fixed
-  R13 --arm_config right --hand_config none: only the right arm is recorded
-  R14 arms on independent schedules still pair their closest commands, at arm rate
+  R7  arms stop -> publishing goes on, arm columns become /joint_states (logged);
+      arms back -> commands again (logged)
+  R8  a hand stops -> its columns become /joint_states, arms stay commands
+  R9  wrong-length command rejected and logged; that arm falls back to /joint_states
+  R10 a slower upstream (20 Hz) stays live between its commands; output stays 50 Hz
+  R11 a limb without a live command missing from /joint_states -> tick skipped, never 0.0
+  R12 single arm: the idle arm is /joint_states
+  R13 controller not loaded / wrong `joints` -> commands rejected, /joint_states
+      instead; recovers once the controller reports the right `joints`
+  R14 --arm_config right --hand_config none: only the right arm is recorded
 
 Usage (ROS sourced):  python3 scripts/data_collection/test/check_rules.py
 """
@@ -48,6 +52,7 @@ from std_msgs.msg import Float64MultiArray  # noqa: E402
 STEP = 1e-6   # per-tick offset; base values are 0.01 apart, so a tick never aliases
 BASE = {n: 0.01 * (i + 1) for i, n in enumerate(ALL_JOINT_NAMES)}
 JS = {n: -0.01 * (i + 1) for i, n in enumerate(ALL_JOINT_NAMES)}
+RATE = 50.0   # the aggregator's default publish_rate
 
 PERMUTED = {
     'left_arm': list(reversed(LIMB_JOINTS['left_arm'])),
@@ -56,6 +61,7 @@ PERMUTED = {
                   'L_thumb_cmc_pitch', 'L_middle_mcp_pitch', 'L_pinky_mcp_pitch'],
     'right_hand': list(LIMB_JOINTS['right_hand']),
 }
+ARMS = ('left_arm', 'right_arm')
 
 
 class Harness:
@@ -72,6 +78,7 @@ class Harness:
         self.node.create_subscription(JointState, '/joint_actions', self._on_action, 100)
         self.node.create_timer(0.01, self._publish_js)
         self.ctrl_nodes = {}
+        self.orders = None
         self.executor = MultiThreadedExecutor(num_threads=2)
         self.executor.add_node(self.node)
         threading.Thread(target=self.executor.spin, daemon=True).start()
@@ -87,7 +94,7 @@ class Harness:
 
     def set_controllers(self, orders):
         """orders: key -> `joints` list, or None for a controller that is not loaded."""
-        if orders == getattr(self, 'orders', None):
+        if orders == self.orders:
             return
         self.orders = dict(orders)
         for n in self.ctrl_nodes.values():
@@ -101,9 +108,9 @@ class Harness:
                 self.executor.add_node(n)
                 self.ctrl_nodes[key] = n
 
-    def since(self, t):
+    def between(self, t0, t1=None):
         with self.lock:
-            return [m for m in self.msgs if m[0] >= t]
+            return [m for m in self.msgs if m[0] >= t0 and (t1 is None or m[0] < t1)]
 
     def wait_subscribed(self, limbs, timeout=10.0):
         """Wait until the aggregator has discovered our command publishers."""
@@ -111,29 +118,21 @@ class Harness:
                                     for lb in limbs), timeout)
 
     def feed(self, duration, arms=(), hands=(), orders=PERMUTED, bad_left_arm=False,
-             phase=None):
-        """
-        Publish commands in each controller's slot order; return arm ticks sent.
-
-        Arms due at the same instant are published back to back in `arms` order, like
-        one IK step. `phase` (limb -> seconds) shifts an arm onto its own schedule.
-        """
+             arm_hz=50.0):
+        """Publish commands in each controller's slot order; return arm ticks sent."""
         t0 = time.monotonic()
-        phase = phase or {}
-        next_arm = {limb: t0 + phase.get(limb, 0.0) for limb in arms}
-        tick = {limb: 0 for limb in arms}
-        next_hand = t0
-        h = 0
+        next_arm = next_hand = t0
+        k = h = 0
         while time.monotonic() < t0 + duration:
             now = time.monotonic()
-            for limb in arms:
-                if now >= next_arm[limb]:
-                    tick[limb] += 1
-                    data = [BASE[n] + tick[limb] * STEP for n in orders[limb]]
+            if arms and now >= next_arm:
+                k += 1
+                for limb in arms:
+                    data = [BASE[n] + k * STEP for n in orders[limb]]
                     if bad_left_arm and limb == 'left_arm':
                         data = data[:-1]
                     self.pubs[limb].publish(Float64MultiArray(data=data))
-                    next_arm[limb] += 0.02
+                next_arm += 1.0 / arm_hz
             if hands and now >= next_hand:
                 h += 1
                 for limb in hands:
@@ -141,7 +140,7 @@ class Harness:
                         data=[BASE[n] + h * STEP for n in orders[limb]]))
                 next_hand += 1.0 / 30.0
             time.sleep(0.0005)
-        return max(tick.values()) if tick else 0
+        return k
 
 
 def limb_source(msg, limb):
@@ -161,6 +160,19 @@ def limb_source(msg, limb):
         if all(abs(pos[n] - BASE[n] - k * STEP) < 1e-9 for n in joints):
             return k
     return None
+
+
+def sources(msgs):
+    return [{lb: limb_source(m[2], lb) for lb in LIMB_JOINTS} for m in msgs]
+
+
+def is_cmd(value):
+    return isinstance(value, int)
+
+
+def rate_ok(msgs, seconds):
+    """Within 10 % of the 50 Hz publish rate."""
+    return abs(len(msgs) - RATE * seconds) <= 0.1 * RATE * seconds
 
 
 def run_aggregator(log_dir, name, args=()):
@@ -184,104 +196,86 @@ def run_a(h, rep, log_dir):
         h.wait_subscribed(LIMB_JOINTS)
 
         t = time.monotonic()
-        h.feed(1.5, hands=('left_hand',))
-        rep.check(not h.since(t) and 'waiting for the first arm command' in read(log), 'R2',
-                  'hand commands only (no arm yet): nothing published')
+        time.sleep(2.0)
+        msgs = h.between(t + 0.5, t + 2.0)
+        src = sources(msgs)
+        rep.check(rate_ok(msgs, 1.5) and all(v == 'js' for s in src for v in s.values()),
+                  'R2', f'no command: {len(msgs) / 1.5:.1f} Hz, every column /joint_states')
 
         t = time.monotonic()
-        ticks = h.feed(3.0, arms=('left_arm', 'right_arm'), hands=('left_hand',))
-        time.sleep(0.2)
-        msgs = h.since(t)
+        h.feed(1.5, hands=('left_hand',))
+        src = sources(h.between(t + 0.3, t + 1.5))
+        rep.check(src and all(is_cmd(s['left_hand']) and s['left_arm'] == 'js'
+                              and s['right_arm'] == 'js' and s['right_hand'] == 'js'
+                              for s in src), 'R3',
+                  'left hand commands only: left hand = command, the rest /joint_states')
+
+        t = time.monotonic()
+        h.feed(3.0, arms=ARMS, hands=('left_hand',))
+        msgs = h.between(t + 0.5, t + 3.0)
+        src = sources(msgs)
         names_ok = all(list(m[2].name) == ALL_JOINT_NAMES for m in msgs)
-        src = [{lb: limb_source(m[2], lb) for lb in LIMB_JOINTS} for m in msgs]
-        unmapped = sum(any(s[lb] is None for lb in LIMB_JOINTS) for s in src)
-        # The very first sample may carry the left arm alone: the right arm has not
-        # latched yet when the first left command arrives (single-arm semantics).
-        body = src[1:]
-        split = sum(isinstance(s['left_arm'], int) and s['left_arm'] != s['right_arm']
-                    for s in body)
-        not_cmd = sum(not isinstance(s[lb], int)
-                      for s in body for lb in ('left_arm', 'right_arm', 'left_hand'))
-        rep.check(msgs and names_ok, 'R3a', f'{len(msgs)} messages, 26 names in fixed order')
-        # Scheduling jitter in this harness can tip a rare sample; the defect this
-        # guards against (pairing locked one step off) splits every sample.
-        rep.check(msgs and not unmapped and split <= 0.02 * len(msgs) and not not_cmd, 'R3b',
-                  'every value mapped by name through the permuted `joints`; both arms '
-                  f'from the same IK step (unmapped {unmapped}, split {split}/{len(msgs)}, '
-                  f'not a command {not_cmd})')
-        rep.check(ticks - 3 <= len(msgs) <= ticks, 'R3c',
-                  f'one message per arm tick ({len(msgs)} messages / {ticks} ticks, '
-                  f'{len(msgs) / 3.0:.1f} Hz); hand commands do not add messages')
-        rep.check(msgs and all(s['right_hand'] == 'js' for s in src), 'R4',
-                  'never-commanded right hand filled from /joint_states')
-        ages = [m[1] - (m[2].header.stamp.sec + m[2].header.stamp.nanosec * 1e-9)
-                for m in msgs]
-        ages.sort()
+        unmapped = sum(any(v is None for v in s.values()) for s in src)
+        cmds = all(is_cmd(s['left_arm']) and is_cmd(s['right_arm'])
+                   and is_cmd(s['left_hand']) and s['right_hand'] == 'js' for s in src)
+        rep.check(msgs and names_ok and not unmapped and cmds and rate_ok(msgs, 2.5), 'R4',
+                  f'{len(msgs) / 2.5:.1f} Hz, 26 names in order, every value mapped by '
+                  f'name (unmapped {unmapped}); arms + left hand = commands, never-commanded '
+                  f'right hand = /joint_states')
+        ages = sorted(m[1] - (m[2].header.stamp.sec + m[2].header.stamp.nanosec * 1e-9)
+                      for m in msgs)
         p95 = ages[int(0.95 * (len(ages) - 1))] if ages else float('inf')
-        rep.check(msgs and 0.0 <= ages[0] and p95 < 0.1, 'R5',
-                  f'header.stamp = oldest command arrival, never ahead of arrival '
-                  f'(age min {ages[0] * 1e3:.1f} ms, p95 {p95 * 1e3:.1f} ms)'
-                  if msgs else 'no messages')
+        rep.check(ages and ages[0] >= 0.0 and p95 < 0.03, 'R5',
+                  f'header.stamp = publish instant (receive - stamp: p95 {p95 * 1e3:.1f} ms)')
         rep.check(h.node.count_publishers('/joint_actions') == 1, 'R6',
                   f'{h.node.count_publishers("/joint_actions")} publisher(s) on /joint_actions')
 
-        t_stop = time.monotonic()
+        t = time.monotonic()
         h.feed(1.6, hands=('left_hand',))
-        quiet = not h.since(t_stop + 0.1)
+        msgs = h.between(t + 0.3, t + 1.6)
+        src = sources(msgs)
+        stopped = rate_ok(msgs, 1.3) and all(
+            s['left_arm'] == 'js' and s['right_arm'] == 'js' and is_cmd(s['left_hand'])
+            for s in src)
         t = time.monotonic()
-        h.feed(1.0, arms=('left_arm', 'right_arm'), hands=('left_hand',))
+        h.feed(1.0, arms=ARMS, hands=('left_hand',))
+        back = all(is_cmd(s['left_arm']) and is_cmd(s['right_arm'])
+                   for s in sources(h.between(t + 0.2, t + 1.0)))
         text = read(log)
-        rep.check(quiet and h.since(t) and 'stale: left_arm=' in text
-                  and 'resumed /joint_actions after' in text and "'left_arm'" in text, 'R7',
-                  'arms quiet 1.6 s: nothing published, stale logged; resumed afterwards')
-
-        before = read(log).count('resumed /joint_actions after')
-        t_stop = time.monotonic()
-        h.feed(1.6, arms=('left_arm', 'right_arm'))
-        quiet = not h.since(t_stop + 0.3)
-        t = time.monotonic()
-        h.feed(1.0, arms=('left_arm', 'right_arm'), hands=('left_hand',))
-        text = read(log)
-        rep.check(quiet and h.since(t) and 'stale: left_hand=' in text
-                  and text.count('resumed /joint_actions after') > before, 'R8',
-                  'latched left hand quiet 1.6 s: publishing paused, resumed afterwards')
+        rep.check(stopped and back and 'left_arm: no command for' in text
+                  and 'left_arm: commands arriving' in text, 'R7',
+                  'arms stopped 1.6 s: still 50 Hz, arm columns /joint_states (logged); '
+                  'arms back: commands again (logged)')
 
         t = time.monotonic()
-        h.feed(1.0, arms=('left_arm', 'right_arm'), hands=('left_hand',), bad_left_arm=True)
-        bad_quiet = not h.since(t + 0.2)
+        h.feed(1.6, arms=ARMS)
+        src = sources(h.between(t + 0.3, t + 1.6))
+        rep.check(src and all(s['left_hand'] == 'js' and is_cmd(s['left_arm'])
+                              and is_cmd(s['right_arm']) for s in src), 'R8',
+                  'left hand stopped: its columns /joint_states, arms still commands')
+
         t = time.monotonic()
-        h.feed(0.6, arms=('left_arm', 'right_arm'), hands=('left_hand',))
-        rep.check(bad_quiet and h.since(t)
+        h.feed(1.0, arms=ARMS, hands=('left_hand',), bad_left_arm=True)
+        src = sources(h.between(t + 0.3, t + 1.0))
+        rep.check(src and all(s['left_arm'] == 'js' and is_cmd(s['right_arm']) for s in src)
                   and 'left_arm: command has 6 values, expected 7' in read(log), 'R9',
-                  '6-value left arm command rejected and logged; recovers with 7 values')
+                  '6-value left arm command rejected and logged; left arm /joint_states, '
+                  'right arm still commands')
 
-        # Arms on independent threads: there is no common step, so a sample pairs each
-        # arm with the closest command of the other; scheduling jitter can tip a few
-        # samples to the next-closest one. Required: no stall (arm rate), never more
-        # than one step apart, and the closest pairing for the large majority.
-        for lag_ms, want in ((6, 0), (13, 1)):
-            # Judge the steady state: the first second follows a phase change and a
-            # pause, while the period estimate (and so the pairing window) settles.
-            t = time.monotonic() + 1.0
-            ticks = h.feed(4.0, arms=('left_arm', 'right_arm'), hands=('left_hand',),
-                           phase={'right_arm': lag_ms / 1000.0}) - 50
-            time.sleep(0.2)
-            src = [{lb: limb_source(m[2], lb) for lb in LIMB_JOINTS} for m in h.since(t)]
-            diffs = [s['left_arm'] - s['right_arm'] for s in src
-                     if isinstance(s['left_arm'], int) and isinstance(s['right_arm'], int)]
-            closest = sum(d == want for d in diffs) / len(diffs) if diffs else 0.0
-            rep.check(ticks - 4 <= len(src) <= ticks + 1 and diffs
-                      and all(abs(d - want) <= 1 for d in diffs) and closest >= 0.9,
-                      f'R14{"ab"[want]}',
-                      f'right arm {lag_ms} ms behind on its own schedule: {len(src)} msgs / '
-                      f'{ticks} ticks, left - right step in {sorted(set(diffs))}, '
-                      f'{closest:.0%} closest pairing (expected step {want})')
+        t = time.monotonic()
+        h.feed(3.0, arms=ARMS, hands=('left_hand',), arm_hz=20.0)
+        msgs = h.between(t + 1.0, t + 3.0)
+        src = sources(msgs)
+        rep.check(rate_ok(msgs, 2.0) and src
+                  and all(is_cmd(s['left_arm']) and is_cmd(s['right_arm']) for s in src),
+                  'R10', f'20 Hz arm commands: output {len(msgs) / 2.0:.1f} Hz, arms stay '
+                         f'commands between their updates')
     finally:
         stop(proc)
 
 
 def run_b(h, rep, log_dir):
-    rep.section('B: single-arm teleop, /joint_states incomplete at first')
+    rep.section('B: single arm, /joint_states incomplete at first')
     h.set_controllers(PERMUTED)
     h.js_names = [n for n in ALL_JOINT_NAMES if n not in LIMB_JOINTS['left_arm']]
     proc, log = run_aggregator(log_dir, 'B')
@@ -290,21 +284,21 @@ def run_b(h, rep, log_dir):
         h.wait_subscribed(LIMB_JOINTS)
         t = time.monotonic()
         h.feed(1.5, arms=('right_arm',))
-        rep.check(not h.since(t) and 'left_arm: inactive and' in read(log)
-                  and 'withholding /joint_actions' in read(log), 'R10',
-                  'idle left arm absent from /joint_states: sample withheld, nothing published')
+        text = read(log)
+        rep.check(not h.between(t) and 'left_arm: no live command and' in text
+                  and 'skipping this sample' in text, 'R11',
+                  'idle left arm absent from /joint_states: ticks skipped, nothing made up')
         h.js_names = list(ALL_JOINT_NAMES)
         time.sleep(0.2)
         t = time.monotonic()
-        ticks = h.feed(2.0, arms=('right_arm',))
-        time.sleep(0.2)
-        msgs = h.since(t)
-        src = [{lb: limb_source(m[2], lb) for lb in LIMB_JOINTS} for m in msgs]
-        rep.check(ticks - 3 <= len(msgs) <= ticks
-                  and all(isinstance(s['right_arm'], int) and s['left_arm'] == 'js'
-                          and s['left_hand'] == 'js' and s['right_hand'] == 'js' for s in src),
-                  'R11', f'right arm alone drives publishing ({len(msgs)}/{ticks} ticks); '
-                  'left arm and both hands filled from /joint_states')
+        h.feed(2.0, arms=('right_arm',))
+        msgs = h.between(t + 0.3, t + 2.0)
+        src = sources(msgs)
+        rep.check(rate_ok(msgs, 1.7) and src
+                  and all(is_cmd(s['right_arm']) and s['left_arm'] == 'js'
+                          and s['left_hand'] == 'js' and s['right_hand'] == 'js'
+                          for s in src), 'R12',
+                  'right arm alone: right arm = command, left arm and hands /joint_states')
     finally:
         h.js_names = list(ALL_JOINT_NAMES)
         stop(proc)
@@ -320,19 +314,23 @@ def run_c(h, rep, log_dir):
         h.wait_subscribed(LIMB_JOINTS)
         time.sleep(1.5)
         t = time.monotonic()
-        h.feed(2.0, arms=('left_arm', 'right_arm'), hands=('left_hand',))
+        h.feed(2.0, arms=ARMS, hands=('left_hand',))
+        src = sources(h.between(t + 0.3, t + 2.0))
         text = read(log)
-        rep.check(not h.since(t)
+        rep.check(src and all(s['left_arm'] == 'js' and s['right_arm'] == 'js'
+                              and is_cmd(s['left_hand']) for s in src)
                   and '/right_forward_position_controller `joints` = ' in text
                   and 'left_arm: slot order unknown' in text
-                  and 'slot order not known yet for left_arm' in text, 'R12a',
-                  'commands for an unloaded / mismatched controller rejected, nothing '
-                  'published, both logged')
+                  and 'slot order not known yet for left_arm' in text, 'R13a',
+                  'unloaded / mismatched controllers: commands rejected (logged), '
+                  'both arms /joint_states')
         h.set_controllers(PERMUTED)          # "loaded later", with the right `joints`
         ok = wait_slot_orders(log, 4, timeout=10.0)
         t = time.monotonic()
-        h.feed(1.0, arms=('left_arm', 'right_arm'), hands=('left_hand',))
-        rep.check(ok and len(h.since(t)) > 30, 'R12b',
+        h.feed(1.0, arms=ARMS, hands=('left_hand',))
+        src = sources(h.between(t + 0.3, t + 1.0))
+        rep.check(ok and src and all(is_cmd(s['left_arm']) and is_cmd(s['right_arm'])
+                                     for s in src), 'R13b',
                   'recovers once the controllers report the right `joints`')
     finally:
         stop(proc)
@@ -346,15 +344,14 @@ def run_d(h, rep, log_dir):
         wait_slot_orders(log, 1)
         h.wait_subscribed(['right_arm'])
         t = time.monotonic()
-        ticks = h.feed(2.0, arms=('left_arm', 'right_arm'), hands=('left_hand', 'right_hand'))
-        time.sleep(0.2)
-        msgs = h.since(t)
-        src = [{lb: limb_source(m[2], lb) for lb in LIMB_JOINTS} for m in msgs]
-        rep.check(ticks - 3 <= len(msgs) <= ticks
-                  and all(isinstance(s['right_arm'], int) and s['left_arm'] == 'js'
-                          and s['left_hand'] == 'js' and s['right_hand'] == 'js' for s in src),
-                  'R13', 'only the right arm recorded; everything else from /joint_states, '
-                  'still 26 joints')
+        h.feed(2.0, arms=ARMS, hands=('left_hand', 'right_hand'))
+        msgs = h.between(t + 0.3, t + 2.0)
+        src = sources(msgs)
+        rep.check(rate_ok(msgs, 1.7) and src
+                  and all(is_cmd(s['right_arm']) and s['left_arm'] == 'js'
+                          and s['left_hand'] == 'js' and s['right_hand'] == 'js'
+                          for s in src), 'R14',
+                  'only the right arm recorded; everything else /joint_states, 26 joints')
     finally:
         stop(proc)
 
