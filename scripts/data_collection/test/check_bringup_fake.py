@@ -312,8 +312,13 @@ def case_jtc(domain, rep, log_dir):
         pub = probe.node.create_publisher(
             JointTrajectory, '/left_joint_trajectory_controller/joint_trajectory', 10)
         wait_for(lambda: pub.get_subscription_count() >= 1, 10.0)
+        # A sample written right after matching can still be lost; resending the same
+        # trajectory is harmless (the JTC just replaces it with an identical one).
+        time.sleep(0.5)
         t = time.monotonic()
-        pub.publish(traj)
+        for _ in range(3):
+            pub.publish(traj)
+            time.sleep(0.1)
         time.sleep(2.0)
         j1 = ALL_JOINT_NAMES.index('openarm_left_joint1')
         seen = [m[1].position[j1] for m in probe.since(t)]
