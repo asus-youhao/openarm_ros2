@@ -21,8 +21,9 @@ This launch file starts:
 - Joint trajectory controllers for both arms
 - O6 hand controllers for both hands
 - The /joint_actions aggregator (with_joint_actions:=true, the default), the only
-  publisher of /joint_actions. It records the FPC commands, so it publishes only
-  with robot_controller:=forward_position_controller (docs/JOINT_ACTIONS.md).
+  publisher of /joint_actions. It publishes at 50 Hz from startup: the FPC commands
+  where they arrive, /joint_states for every limb without a live command (all of
+  them with robot_controller:=joint_trajectory_controller). docs/JOINT_ACTIONS.md
 
 Example usage:
   # Bimanual with O6 hands (can0=right arm, can1=left arm, can2=right O6, can3=left O6)
@@ -280,7 +281,7 @@ def generate_launch_description():
             'aggregator_arm_config',
             default_value='both',
             choices=['both', 'left', 'right'],
-            description='Arms the aggregator subscribes to (both also covers single-arm).',
+            description='Arms the aggregator subscribes to; others from /joint_states.',
         ),
         DeclareLaunchArgument(
             'aggregator_hand_config',

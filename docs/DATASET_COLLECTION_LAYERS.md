@@ -88,7 +88,7 @@
 | **B. EE delta** | `/ee_delta/{arm}` | 抽象掉 controller 幾何；EE-space 易解釋；replay 容易 | • 是 **相對量** (delta)，需要 session ref 才能還原絕對位姿<br>• Trigger 放開時不發 → 有間斷<br>• 7-DoF arm 對 6-DoF EE 有 redundancy，policy 學不到肘部選擇 |
 | **C. IK output (joint cmd)** | `/{arm}_..._/joint_trajectory`<br>`+ /{side}_hand_.../commands` | • 已在 joint space，replay 直接灌 controller<br>• 上游意圖完整保留（IK 唯一解 → 7-DoF arm 全保留）<br>• 與 `/joint_states` 同維度，易做 loss | • Sparse points（每次 solve 一個 point）<br>• 兩個 topic（arm + hand）需要對齊 timestamp |
 | **D. JTC reference** | `controller_state.reference` | 插值後 dense, smooth | • **太貼近 state** → policy 容易 collapse 成 identity（學「下一個 state ≈ 當前 state」）<br>• 已經被 JTC 平滑，丟掉 IK 原始 cmd 的高頻意圖 |
-| **E. 聚合 `/joint_actions`** | `/joint_actions` | • 單一 topic 含 arm + 雙手 command<br>• 已對齊好（你目前的 recorder 就在用）| • 來源是 Layer C：四個 FPC 實際收到的命令（見 docs/JOINT_ACTIONS.md）|
+| **E. 聚合 `/joint_actions`** | `/joint_actions` | • 單一 topic 含 arm + 雙手 command<br>• 已對齊好（你目前的 recorder 就在用）| • 來源是 Layer C：四個 FPC 實際收到的命令；沒有命令的部位是 `/joint_states`（見 docs/JOINT_ACTIONS.md）|
 
 ### 為什麼推薦 Layer C / `/joint_actions`（而不是 Layer A 或 D）
 

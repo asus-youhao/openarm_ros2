@@ -1,8 +1,9 @@
 """
 /joint_actions aggregator: standalone launch, also included by the O6 bringup.
 
-Starts scripts/data_collection/joint_actions_aggregator.py, which merges the arm
-and O6 hand FPC commands into a fixed 26-joint /joint_actions. The script is not a
+Starts scripts/data_collection/joint_actions_aggregator.py, which publishes a fixed
+26-joint /joint_actions at publish_rate: the arm and O6 hand FPC commands where they
+arrive, /joint_states for every limb without a live command. The script is not a
 ROS executable (scripts/ is outside any package), so openarm_bringup installs it
 into share/openarm_bringup/scripts/data_collection (CMakeLists.txt) and it is run
 with the current interpreter. That works with and without --symlink-install.
@@ -58,16 +59,16 @@ def generate_launch_description():
                               description='Path override; empty = installed copy.'),
         DeclareLaunchArgument('arm_config', default_value='both',
                               choices=['both', 'left', 'right'],
-                              description='Arms subscribed. With both, single-arm teleop '
-                                          'works too: only arms that sent a command gate '
-                                          'publishing; the other is filled from '
+                              description='Arms subscribed; the others are filled from '
                                           '/joint_states.'),
         DeclareLaunchArgument('hand_config', default_value='o6_both',
                               choices=['none', 'o6_left', 'o6_right', 'o6_both'],
                               description='Hands subscribed; the vector is always 26 joints.'),
         DeclareLaunchArgument('publish_rate', default_value='50.0',
-                              description='Seeds the arm staleness window only.'),
+                              description='Publish rate of /joint_actions (Hz).'),
         DeclareLaunchArgument('stale_timeout', default_value='0.0',
-                              description='Fixed staleness window (s); 0 = auto.'),
+                              description='How long (s) a command stays live; past it '
+                                          'the limb is filled from /joint_states. '
+                                          '0 = auto.'),
         OpaqueFunction(function=_launch_setup),
     ])

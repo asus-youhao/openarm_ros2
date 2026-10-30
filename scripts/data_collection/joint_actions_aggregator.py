@@ -16,7 +16,7 @@ Which slot is which joint is read from the controller's own `joints`
 parameter, never hard-coded, so a reordered controllers yaml cannot mislabel a
 joint. Until a controller has answered, its commands are rejected; a
 controller that is not loaded (e.g. robot_controller:=joint_trajectory_controller)
-never answers, so nothing is recorded for it.
+never answers, so its limb is always filled from /joint_states.
 
 The published vector ALWAYS carries all 26 joints in a fixed order
 (ALL_JOINT_NAMES), whatever --arm_config / --hand_config is. Downstream
@@ -24,28 +24,23 @@ The published vector ALWAYS carries all 26 joints in a fixed order
 sample if any expected name is absent, so a shrinking vector would silently
 record nothing.
 
-Publishing model (same as phu_controller_ros2's gallop_joint_actions_aggregator)
---------------------------------------------------------------------------------
-Event driven, NOT a fixed-rate timer. A sample is published when every *active*
-arm has delivered a new command since the last publish, so /joint_actions
-inherits the IK rate and phase instead of being resampled a second time. The arm
-commands are paired by arrival time, so both arms of a sample come from the same
-IK step (see _build_sample_locked). Hand commands never trigger a publish; their
-latest value is taken.
+Publishing model (fixed-rate timer, like phu_controller_ros2 #98)
+-----------------------------------------------------------------
+A sample goes out on every tick of a --publish_rate timer (default 50 Hz) from
+startup, whether or not any command has arrived. Per limb, at each tick:
 
-A limb becomes ACTIVE the first time a command arrives on it ("latch"), and
-stays active for the rest of the session:
+  - a LIVE command (arrived within the staleness window) -> that command
+  - no live command: never sent one, the upstream stopped, the controller is
+    not loaded, or the limb is not subscribed              -> latest /joint_states
+  - ...and a needed joint is not in /joint_states yet      -> this tick is skipped
+                                                              (never a made-up 0.0)
 
-  - never seen a command  -> the source is not running; that limb's joints are
-    filled from /joint_states and it does not gate publishing.
-  - seen, then went quiet -> the source failed or paused; publishing STOPS until
-    it recovers, rather than republishing a held value.
-  - no arm ever commanded -> nothing is published (the whole vector would be a
-    copy of /joint_states).
-
-/joint_states is deliberately NOT used to paper over a failed source: the
-collector's observation is also /joint_states, so a substituted action would be
-a copy of the observation and train a policy to reproduce its own state.
+So with no command at all, /joint_actions is /joint_states; while a limb is
+commanded its columns are the commands; when its upstream stops for longer than
+the staleness window (3 measured periods, at least 30 ms) its columns go back to
+/joint_states. Unlike phu #98, which keeps the last command after the upstream
+stops, a stopped limb is filled from /joint_states. header.stamp is the publish
+instant.
 
 Ownership
 ---------
@@ -102,17 +97,14 @@ DEFAULT_CONTROLLERS = {
     'right_hand': 'right_hand_forward_position_controller',
 }
 
-# A source is stale after 3 missed messages at its own measured rate; the floor
-# keeps a fast source from tripping on ordinary jitter.
+# A command is live until 3 periods of its own measured rate have passed without
+# a new one; the floor keeps a fast source from dropping out on ordinary jitter.
 STALE_PERIODS = 3.0
 STALE_FLOOR_SEC = 0.03
-# Arm commands of one IK step arrive back to back; an arm's pending command that
-# arrived more than this fraction of a period before the newest one belongs to the
-# previous step. See _build_sample_locked.
-PAIR_FRACTION = 0.5
-# Seeds the hands' rate estimate until it is measured. pico_o6_hand_trigger.py
-# publishes at 30 Hz by default; seeding lower than the real rate only widens
-# the first stale window, seeding higher would trip it on the first messages.
+# Seed the rate estimates until they are measured: the placo IK runs at 50 Hz,
+# pico_o6_hand_trigger.py at 30 Hz. Seeding lower than the real rate only widens
+# the first window; seeding higher would drop the first commands to /joint_states.
+ARM_SEED_RATE = 50.0
 HAND_SEED_RATE = 30.0
 
 
@@ -126,10 +118,9 @@ class _LimbSource:
         self.subscribed = subscribed
         self.value: Optional[List[float]] = None
         self.last_t: Optional[float] = None   # seconds, node clock
-        self.latched = False                  # has ever delivered a command
-        self.advanced = False                 # new data since the last publish
-        self.period_ema = 1.0 / expected_rate if expected_rate > 0 else 0.02
+        self.period_ema = 1.0 / expected_rate
         self.rejects = 0
+        self.using: Optional[str] = None      # 'command' / 'joint_states', for the log
 
     def accept(self, values: List[float], now: float):
         if self.last_t is not None:
@@ -138,8 +129,6 @@ class _LimbSource:
                 self.period_ema = 0.85 * self.period_ema + 0.15 * dt
         self.value = values
         self.last_t = now
-        self.latched = True
-        self.advanced = True
 
     @property
     def stale_timeout(self) -> float:
@@ -173,24 +162,22 @@ class JointActionsAggregator(Node):
             raise ValueError(f'unknown arm_config {arm_config!r}')
         if hand_config not in ('none', 'o6_left', 'o6_right', 'o6_both'):
             raise ValueError(f'unknown hand_config {hand_config!r}')
+        if publish_rate <= 0:
+            raise ValueError(f'publish_rate must be > 0, got {publish_rate}')
         self.arm_config = arm_config
         self.hand_config = hand_config
-        # publish_rate does not drive publishing (that is event driven); it only
-        # seeds the arm rate estimate before enough messages arrive to measure.
         self.stale_override = stale_timeout if stale_timeout > 0 else None
         self.controllers = dict(DEFAULT_CONTROLLERS, **(controllers or {}))
 
         self.joint_states_map: Dict[str, float] = {}
         self.lock = threading.Lock()
         self.msg_count = 0
-        self._pause_t: Optional[float] = None   # when publishing last stopped
-        self._pause_keys: List[str] = []        # which limbs stopped it
 
         self.sources: Dict[str, _LimbSource] = {
             'left_arm': _LimbSource('left_arm', LEFT_ARM_JOINTS,
-                                    arm_config in ('both', 'left'), publish_rate),
+                                    arm_config in ('both', 'left'), ARM_SEED_RATE),
             'right_arm': _LimbSource('right_arm', RIGHT_ARM_JOINTS,
-                                     arm_config in ('both', 'right'), publish_rate),
+                                     arm_config in ('both', 'right'), ARM_SEED_RATE),
             'left_hand': _LimbSource('left_hand', O6_LEFT_JOINTS,
                                      hand_config in ('o6_left', 'o6_both'),
                                      HAND_SEED_RATE),
@@ -198,7 +185,6 @@ class JointActionsAggregator(Node):
                                       hand_config in ('o6_right', 'o6_both'),
                                       HAND_SEED_RATE),
         }
-        self.arm_keys = ('left_arm', 'right_arm')
         # Concatenation order of the published vector; must match ALL_JOINT_NAMES.
         self.limb_order = ('left_arm', 'right_arm', 'left_hand', 'right_hand')
 
@@ -206,15 +192,11 @@ class JointActionsAggregator(Node):
         for key, src in self.sources.items():
             if src.subscribed:
                 self._watch_fpc(key, self.controllers[key], src.joint_names)
-        # Fill for limbs that are inactive or never started. Never used to
-        # substitute for a failed source.
         self.create_subscription(JointState, '/joint_states', self._joint_states_callback, 10)
 
         self.joint_actions_pub = self.create_publisher(JointState, '/joint_actions', 10)
-
-        # Diagnostics only — publishing is driven by incoming arm commands, so a
-        # source that goes quiet would otherwise never be reported.
-        self.create_timer(1.0, self._report_health)
+        self.create_timer(1.0 / publish_rate, self._publish_tick)
+        self.create_timer(1.0, self._report_health)   # diagnostics only
 
         log = self.get_logger()
         log.info('JointActionsAggregator started')
@@ -223,7 +205,8 @@ class JointActionsAggregator(Node):
         for key, src in self.sources.items():
             log.info(f'  {key}: ' + (f'/{self.controllers[key]}/commands' if src.subscribed
                                      else 'not subscribed (filled from /joint_states)'))
-        log.info('  Publishing on arm command arrival (no fixed-rate timer)')
+        log.info(f'  Publishing at {publish_rate:g} Hz; a limb without a live command is '
+                 f'filled from /joint_states')
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -280,7 +263,7 @@ class JointActionsAggregator(Node):
             throttle_duration_sec=5.0)
 
     def _fpc_command(self, key: str, msg: Float64MultiArray):
-        """Map unnamed slots by the controller's `joints`; arms then try to publish."""
+        """Map unnamed slots by the controller's `joints` and keep the latest value."""
         src = self.sources[key]
         so = self._slot_orders[key]
         order = so.order
@@ -295,9 +278,6 @@ class JointActionsAggregator(Node):
         values = [float(by_name[n]) for n in src.joint_names]
         with self.lock:
             src.accept(values, self._now())
-            sample = self._build_sample_locked() if key in self.arm_keys else None
-        if sample is not None:
-            self._publish(*sample)
 
     def _joint_states_callback(self, msg: JointState):
         with self.lock:
@@ -306,93 +286,48 @@ class JointActionsAggregator(Node):
 
     # ── Aggregation and publishing ────────────────────────────────────────────
 
-    def _fresh(self, src: _LimbSource, now: float) -> bool:
+    def _live(self, src: _LimbSource, now: float) -> bool:
+        """Whether the limb has a command recent enough to record."""
         timeout = self.stale_override if self.stale_override else src.stale_timeout
-        return src.latched and src.age(now) <= timeout
+        return src.age(now) <= timeout
 
-    def _blockers_locked(self, now: float) -> List[str]:
-        """Active limbs whose latest command is too old to publish with."""
-        return [s.key for s in self.sources.values()
-                if s.latched and not self._fresh(s, now)]
-
-    def _build_sample_locked(self):
+    def _build_sample_locked(self, now: float):
         """
-        Build one aggregated sample, or None if it must not be published.
+        Return (positions, which source each limb used), or None to skip this tick.
 
-        Caller must hold self.lock. Publishing requires:
-          1. at least one arm has ever delivered a command;
-          2. every active arm has advanced since the last publish, and their
-             commands are from the same IK step (paired by arrival time);
-          3. no active limb is stale.
+        Caller must hold self.lock. A tick is skipped only when a limb without a
+        live command has joints that /joint_states does not carry (yet).
         """
-        now = self._now()
-
-        active_arms = [self.sources[k] for k in self.arm_keys if self.sources[k].latched]
-        if not active_arms or not all(s.advanced for s in active_arms):
-            return None
-
-        # "Every arm advanced" alone can lock onto the wrong pairing for good: the IK
-        # publishes left then right each step, the very first left command is
-        # published alone (right not latched yet), and from then on every sample
-        # would pair left step k with right step k-1. A pending command that arrived
-        # more than PAIR_FRACTION of a period before the newest one is from the
-        # previous step: drop its advanced flag and wait for its next command. Arms
-        # on independent threads (no common step) still pair with their closest
-        # neighbour, at the arm rate.
-        newest = max(s.last_t for s in active_arms)
-        window = PAIR_FRACTION * min(s.period_ema for s in active_arms)
-        lagging = [s for s in active_arms if newest - s.last_t > window]
-        if lagging:
-            for s in lagging:
-                s.advanced = False
-            return None
-
-        blockers = self._blockers_locked(now)
-        if blockers:
-            if self.msg_count and self._pause_t is None:
-                self._pause_t, self._pause_keys = now, blockers
-            return None
-
         positions: List[float] = []
-        oldest = None
-        for src in (self.sources[k] for k in self.limb_order):
-            if src.latched:
+        using: Dict[str, str] = {}
+        for key in self.limb_order:
+            src = self.sources[key]
+            if self._live(src, now):
                 positions.extend(src.value)
-                oldest = src.last_t if oldest is None else min(oldest, src.last_t)
-            else:
-                fill = self._fill_from_state_locked(src)
-                if fill is None:
-                    return None
-                positions.extend(fill)
+                using[key] = 'command'
+                continue
+            missing = [n for n in src.joint_names if n not in self.joint_states_map]
+            if missing:
+                self.get_logger().warn(
+                    f'{key}: no live command and {missing} absent from /joint_states — '
+                    f'skipping this sample (nothing truthful to fill with)',
+                    throttle_duration_sec=5.0)
+                return None
+            positions.extend(self.joint_states_map[n] for n in src.joint_names)
+            using[key] = 'joint_states'
+        return positions, using
 
-        for src in self.sources.values():
-            src.advanced = False
-
-        paused_for, paused_keys = None, None
-        if self._pause_t is not None:
-            paused_for, paused_keys = now - self._pause_t, self._pause_keys
-            self._pause_t, self._pause_keys = None, []
-
-        return positions, oldest, paused_for, paused_keys
-
-    def _fill_from_state_locked(self, src: _LimbSource) -> Optional[List[float]]:
-        """Latest /joint_states values for an inactive limb; None withholds the sample."""
-        missing = [n for n in src.joint_names if n not in self.joint_states_map]
-        if missing:
-            self.get_logger().warn(
-                f'{src.key}: inactive and {missing} absent from /joint_states — '
-                f'withholding /joint_actions (nothing truthful to fill with)',
-                throttle_duration_sec=5.0)
-            return None
-        return [self.joint_states_map[n] for n in src.joint_names]
-
-    def _publish(self, positions: List[float], stamp_sec: float,
-                 paused_for: Optional[float], paused_keys: Optional[List[str]]):
+    def _publish_tick(self):
+        """Timer: publish one sample."""
+        with self.lock:
+            now = self._now()
+            built = self._build_sample_locked(now)
+            ages = {k: s.age(now) for k, s in self.sources.items()}
+        if built is None:
+            return
+        positions, using = built
         msg = JointState()
-        # Arrival time of the OLDEST contributing command (FPC commands carry no
-        # header), not the publish instant.
-        msg.header.stamp.sec = int(stamp_sec)
-        msg.header.stamp.nanosec = int((stamp_sec - int(stamp_sec)) * 1e9)
+        msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = list(ALL_JOINT_NAMES)
         msg.position = positions
         self.joint_actions_pub.publish(msg)
@@ -401,26 +336,29 @@ class JointActionsAggregator(Node):
         if self.msg_count == 1:
             self.get_logger().info(
                 f'Started publishing to /joint_actions ({len(positions)} joints)')
-        elif paused_for is not None:
-            self.get_logger().info(
-                f'resumed /joint_actions after {paused_for * 1000:.0f}ms '
-                f'waiting on {paused_keys}')
+        self._log_switches(using, ages)
+
+    def _log_switches(self, using: Dict[str, str], ages: Dict[str, float]):
+        """Log when a subscribed limb switches between its command and /joint_states."""
+        for key, now_using in using.items():
+            src = self.sources[key]
+            before, src.using = src.using, now_using
+            if not src.subscribed or before is None or before == now_using:
+                continue
+            if now_using == 'command':
+                self.get_logger().info(f'{key}: commands arriving — recording them')
+            else:
+                self.get_logger().info(
+                    f'{key}: no command for {ages[key] * 1000:.0f}ms — '
+                    f'filling from /joint_states')
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
     def _report_health(self):
         with self.lock:
-            now = self._now()
             unknown = [k for k, so in self._slot_orders.items() if so.order is None]
-            waiting = [s.key for s in self.sources.values()
-                       if s.subscribed and not s.latched]
-            # An arm that went quiet never reaches the stale check in
-            # _build_sample_locked (nothing calls it), so check freshness here.
-            blockers = self._blockers_locked(now)
-            ages = {s.key: s.age(now) for s in self.sources.values() if s.latched}
-            any_arm = any(self.sources[k].latched for k in self.arm_keys)
-            if blockers and self.msg_count and self._pause_t is None:
-                self._pause_t, self._pause_keys = now, blockers
+            never = [s.key for s in self.sources.values()
+                     if s.subscribed and s.last_t is None]
 
         log = self.get_logger()
         if unknown:
@@ -429,19 +367,9 @@ class JointActionsAggregator(Node):
                 + ', '.join(f'{k} (/{self._slot_orders[k].controller})' for k in unknown)
                 + ' — their commands are not recorded until the controller is loaded',
                 throttle_duration_sec=30.0)
-        if waiting:
-            # Deliberately repeated: an operator who MEANT to run this source sees
-            # the same log line as one who did not, so it must keep nagging.
-            log.warn(
-                f'no command since startup on {waiting} — treating as inactive and '
-                f'filling from /joint_states', throttle_duration_sec=5.0)
-        if not any_arm:
-            log.info('waiting for the first arm command before publishing',
-                     throttle_duration_sec=5.0)
-        elif blockers:
-            detail = ', '.join(f'{k}={ages[k] * 1000:.0f}ms' for k in blockers)
-            log.warn(f'stale: {detail} — /joint_actions paused until it recovers',
-                     throttle_duration_sec=2.0)
+        if never:
+            log.info(f'no command since startup on {never} — filling from /joint_states',
+                     throttle_duration_sec=10.0)
 
 
 def main():
@@ -449,19 +377,17 @@ def main():
         description='Aggregate OpenArm arm/hand commands to /joint_actions (26 joints)')
     parser.add_argument('--arm_config', default='both', choices=['both', 'left', 'right'],
                         help='Arms to subscribe to. The other arm still occupies its '
-                             'columns, filled from /joint_states. With both, single-arm '
-                             'teleop works too: only arms that ever sent a command gate '
-                             'publishing.')
+                             'columns, filled from /joint_states.')
     parser.add_argument('--hand_config', default='o6_both',
                         choices=['none', 'o6_left', 'o6_right', 'o6_both'],
                         help='Hands to subscribe to. Unsubscribed hands still occupy '
                              'their columns; the vector is always 26 joints.')
     parser.add_argument('--publish_rate', type=float, default=50.0,
-                        help='Expected arm command rate (Hz), only seeds the staleness '
-                             'window. Publishing is driven by arm commands.')
+                        help='Publish rate of /joint_actions (Hz).')
     parser.add_argument('--stale_timeout', type=float, default=0.0,
-                        help='Fixed staleness window (s) for every source. '
-                             '0 = derive per source from the measured rate.')
+                        help='How long (s) a command stays live without a new one; past '
+                             'it the limb is filled from /joint_states. 0 = 3 periods of '
+                             'the measured rate (at least 30 ms).')
     for key, name in DEFAULT_CONTROLLERS.items():
         parser.add_argument(f'--{key}_controller', default=name,
                             help=f'Controller whose /<name>/commands and `joints` are '
