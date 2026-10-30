@@ -90,9 +90,15 @@ ros2 topic echo /joint_actions --once --field name
 discovery 限制在 localhost，不會碰到別人的機器人：
 
 ```bash
-source /opt/ros/jazzy/setup.bash && source <ws>/install/setup.bash
+# 一定要 source 這個 branch build 出來的 workspace（舊的 openarm_ws 沒有 aggregator，
+# check_bringup_fake.py 會直接拒絕執行並提示）
+source ~/work/openarm/openarm_jact_ws/install/local_setup.bash
 python3 scripts/data_collection/test/check_rules.py         # 規則 R1–R14（約 1 分鐘）
 python3 scripts/data_collection/test/check_bringup_fake.py  # bringup 端對端 F/J/O（約 2 分鐘）
+
+# 想看 RViz：開 RViz，每個 case 測完停 10 秒（F case 停留時手臂持續正弦運動）
+python3 scripts/data_collection/test/check_bringup_fake.py --rviz
+python3 scripts/data_collection/test/check_bringup_fake.py --rviz --cases F --hold 30
 ```
 
 ## 常見 log

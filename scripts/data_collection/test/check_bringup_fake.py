@@ -19,10 +19,15 @@ openarm_description/test/fake_smoke.py), so it cannot reach a real robot.
      O1 no publisher on /joint_actions     O2 joint_actions.launch.py on its own works
      O3 Ctrl-C (SIGINT to the group): the aggregator exits cleanly
 
-Usage (workspace with openarm_bringup sourced):
+Usage (source the workspace of THIS branch, not an older openarm_ws):
+    source <ws>/install/local_setup.bash
     python3 scripts/data_collection/test/check_bringup_fake.py
+    # watch it: RViz on, every case held 10 s before teardown (F keeps the arms moving)
+    python3 scripts/data_collection/test/check_bringup_fake.py --rviz
+    python3 scripts/data_collection/test/check_bringup_fake.py --rviz --cases F --hold 30
 """
 
+import argparse
 import os
 import sys
 import tempfile
@@ -30,6 +35,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
+from ament_index_python.packages import get_package_share_directory, PackageNotFoundError
 from common import (ALL_JOINT_NAMES, CONTROLLERS, HERE, isolate, LIMB_JOINTS, pick_domains,
                     read, Report, start, stop, wait_for)
 from controller_manager_msgs.srv import ListControllers
@@ -44,6 +50,7 @@ FEED = os.path.join(os.path.dirname(HERE), 'fake_arm_hand_feed.py')
 LAUNCH = 'openarm_o6_bimanual.launch.py'
 ARMS = ('left_arm', 'right_arm')
 HANDS = ('left_hand', 'right_hand')
+OPTS = argparse.Namespace(rviz=False, hold=0.0)
 
 
 class Probe:
@@ -147,8 +154,15 @@ class Probe:
 
 def start_launch(args, log_path):
     cmd = 'ulimit -l 64; exec ros2 launch openarm_bringup {} use_fake_hardware:=true ' \
-          'launch_rviz:=false {}'.format(LAUNCH, ' '.join(args))
+          'launch_rviz:={} {}'.format(LAUNCH, str(OPTS.rviz).lower(), ' '.join(args))
     return start(['bash', '-c', cmd], log_path)
+
+
+def hold(what):
+    """Keep the case running for --hold seconds so it can be watched in RViz."""
+    if OPTS.hold > 0:
+        print(f'  ... {OPTS.hold:.0f} s to watch: {what}', flush=True)
+        time.sleep(OPTS.hold)
 
 
 def targets_from_urdf(description):
@@ -201,11 +215,13 @@ def case_fpc(domain, rep, log_dir):
         rep.check(len(last) == 26 and all(n in js for n in ALL_JOINT_NAMES) and diff < 1e-3,
                   'F5', f'/joint_states follows the FPCs and equals /joint_actions for all '
                         f'26 joints (max diff {diff:.1e} rad)')
+        hold('F3-F5 targets, every joint parked at 30..70 % of its range')
 
         t = time.monotonic()
         feed = start([sys.executable, FEED], os.path.join(log_dir, 'feed_fpc.log'))
         try:
             ok = wait_for(lambda: len(probe.since(t)) > 100, 15.0)
+            hold('fake_arm_hand_feed.py moving both arms and hands (sine)')
         finally:
             stop(feed)
         rep.check(ok, 'F6', f'fake_arm_hand_feed.py drives /joint_actions '
@@ -249,6 +265,7 @@ def case_jtc(domain, rep, log_dir):
         code = feed.wait(timeout=30)
         rep.check(code == 1 and 'refusing to feed' in read(feed_log), 'J4',
                   'fake_arm_hand_feed.py refuses to run (FPC not loaded)')
+        hold('JTC mode: FPC commands were sent, the arms never moved')
     finally:
         probe.close()
         stop(proc)
@@ -293,6 +310,7 @@ def case_off(domain, rep, log_dir):
         standalone, text = None, read(standalone_log)
         rep.check('Traceback' not in text and 'process has finished cleanly' in text, 'O3',
                   'SIGINT (Ctrl-C): aggregator exits cleanly, no traceback')
+        hold('with_joint_actions:=false, arms at the last FPC command')
     finally:
         if standalone is not None:
             stop(standalone)
@@ -300,13 +318,42 @@ def case_off(domain, rep, log_dir):
         stop(proc)
 
 
+def preflight():
+    """Return an error unless the sourced openarm_bringup is the one of this branch."""
+    try:
+        share = get_package_share_directory('openarm_bringup')
+    except PackageNotFoundError:
+        return 'openarm_bringup not found'
+    needed = [os.path.join(share, 'launch', 'joint_actions.launch.py'),
+              os.path.join(share, 'scripts', 'data_collection', 'joint_actions_aggregator.py')]
+    missing = [p for p in needed if not os.path.exists(p)]
+    return f'{share} has no {missing}' if missing else None
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    parser.add_argument('--rviz', action='store_true', help='launch_rviz:=true')
+    parser.add_argument('--hold', type=float, default=None,
+                        help='seconds to keep each case up before teardown '
+                             '(default 10 with --rviz, else 0)')
+    parser.add_argument('--cases', default='FJO', help='subset of F, J, O (default FJO)')
+    args = parser.parse_args()
+    OPTS.rviz = args.rviz
+    OPTS.hold = args.hold if args.hold is not None else (10.0 if args.rviz else 0.0)
+    cases = [c for c in 'FJO' if c in args.cases.upper()]
+
+    error = preflight()
+    if error:
+        print(f'{error}\nSource the workspace built from this branch first, e.g.\n'
+              f'  source ~/work/openarm/openarm_jact_ws/install/local_setup.bash')
+        return 2
     log_dir = tempfile.mkdtemp(prefix='joint_actions_bringup_')
-    domains = pick_domains(3, start=180)
+    domains = pick_domains(len(cases), start=180)
     print(f'domains {domains}, logs in {log_dir}', flush=True)
     rep = Report()
-    for case, domain in zip((case_fpc, case_jtc, case_off), domains):
-        case(domain, rep, log_dir)
+    runs = {'F': case_fpc, 'J': case_jtc, 'O': case_off}
+    for c, domain in zip(cases, domains):
+        runs[c](domain, rep, log_dir)
     print(f'\n{"ALL PASS" if not rep.failed else f"{rep.failed} FAILED"}  (logs: {log_dir})')
     return 1 if rep.failed else 0
 
