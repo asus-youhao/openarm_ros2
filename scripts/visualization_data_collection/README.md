@@ -82,10 +82,10 @@ pip install matplotlib numpy
 
 ### 3. 啟動系統
 ```bash
-# Terminal 1: 啟動硬體或模擬器
-ros2 launch openarm_bringup openarm_o6_bimanual.launch.py
+# Terminal 1: 啟動硬體或模擬器（FPC 模式；bringup 會一起帶起 /joint_actions aggregator）
+ros2 launch openarm_bringup openarm_o6_bimanual.launch.py robot_controller:=forward_position_controller
 
-# Terminal 2: 啟動 IK（雙臂 + aggregator）
+# Terminal 2: 啟動 IK（雙臂；/joint_actions 不是由 IK 發，見 docs/JOINT_ACTIONS.md）
 ros2 run openarm_ros2 placo_ik_online_profiler_ws_mesh.py --arm both
 
 # Terminal 3: 運行繪圖工具

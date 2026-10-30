@@ -71,7 +71,6 @@ _sys.path.insert(0, _ROOT)                                     # paths.py
 _sys.path.insert(0, _HERE)                                     # siblings: session, node
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))         # placo_ik_solver
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))           # placo_ws_analyze (via node)
-_sys.path.insert(0, _os.path.join(_os.path.dirname(_ROOT), "scripts"))  # joint_actions_aggregator
 
 import argparse
 import copy
@@ -84,12 +83,9 @@ from paths import ws_mesh_path as _ws_mesh_path
 from placo_ik_session import _MAX_ITER
 from placo_ik_node import PlacoOnlineProfiler
 
-try:
-    from data_collection import JointActionsAggregator
-    _AGGREGATOR_AVAILABLE = True
-except ImportError:
-    _AGGREGATOR_AVAILABLE = False
-    print("  ⚠  joint_actions_aggregator not available — /joint_actions will not be published")
+# /joint_actions is not published from here: the bringup's aggregator records the
+# FPC commands (openarm_o6_bimanual.launch.py with_joint_actions:=true, see
+# docs/JOINT_ACTIONS.md). /{arm}_arm_ik_commands is still published for monitoring.
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -222,27 +218,6 @@ def _prepare_args(args):
         args.horizon = period_ms
 
 
-def _start_aggregator(executor, arm):
-    """Start JointActionsAggregator for the given arm scope ('both'/'left'/'right').
-
-    Single-arm scope publishes /joint_actions without waiting for the idle
-    arm; output is always the full 26 joints — command-less joints (idle arm,
-    idle hand) are filled from /joint_states.
-    Returns the node (added to executor) or None if unavailable/failed.
-    """
-    if not _AGGREGATOR_AVAILABLE:
-        return None
-    try:
-        node = JointActionsAggregator(hand_config="o6_both", publish_rate=50.0,
-                                      arm_config=arm)
-        executor.add_node(node)
-        print(f"  [✓] joint_actions_aggregator started (arm={arm}, o6_both, 50Hz)")
-        return node
-    except Exception as e:
-        print(f"  ⚠  Failed to start aggregator: {e}")
-        return None
-
-
 def _add_reset_pose_service(host_node, nodes):
     """Create a single /reset_robot_pose (std_srvs/Trigger) on host_node that
     first disables teleop, then homes every node in `nodes`.
@@ -325,11 +300,7 @@ def _run_arm(node):
 
 
 def _run_bimanual(args):
-    """Launch right + left IK nodes in one process with MultiThreadedExecutor.
-    
-    If aggregator is available, also starts joint_actions_aggregator to combine
-    arm commands into /joint_actions topic for data collection.
-    """
+    """Launch right + left IK nodes in one process with MultiThreadedExecutor."""
     from rclpy.executors import MultiThreadedExecutor
 
     yaml_cfg = {}
@@ -358,9 +329,6 @@ def _run_bimanual(args):
     # Single /reset_robot_pose that homes BOTH arms at once (2026-07-01).
     _add_reset_pose_service(node_right, [node_right, node_left])
 
-    # Start joint_actions_aggregator if available (both arms + both hands)
-    aggregator_node = _start_aggregator(executor, "both")
-
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -377,8 +345,6 @@ def _run_bimanual(args):
     finally:
         node_right.destroy_node()
         node_left.destroy_node()
-        if aggregator_node:
-            aggregator_node.destroy_node()
         rclpy.shutdown()
 
 
@@ -405,9 +371,6 @@ def main():
     executor.add_node(node)
     # /reset_robot_pose alias — single arm mode homes just this arm.
     _add_reset_pose_service(node, [node])
-    # Single-arm aggregator: publishes /joint_actions with only this arm's
-    # joints (+ its hand), without waiting for the idle arm.
-    aggregator_node = _start_aggregator(executor, args.arm)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -428,8 +391,6 @@ def main():
     finally:
         node.print_final_stats()
         node.destroy_node()
-        if aggregator_node:
-            aggregator_node.destroy_node()
         rclpy.shutdown()
 
 

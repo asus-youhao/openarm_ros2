@@ -21,8 +21,12 @@ Published topics：
   /right_forward_position_controller/commands   (Float64MultiArray)
   /left_forward_position_controller/commands    (Float64MultiArray)
   /{right,left}/delta_ik_latency_ms             (Float32)
-  /{right,left}_arm_ik_commands                 (JointState, aggregator 用)
+  /{right,left}_arm_ik_commands                 (JointState, 旁路監看用)
   /bimanual/placo_profile                       (String JSON, 合併 profile)
+
+/joint_actions 不由這裡發：bringup 的 aggregator 直接記錄上面兩個 FPC
+commands（openarm_o6_bimanual.launch.py with_joint_actions:=true，見
+docs/JOINT_ACTIONS.md）。
 
 Subscribed topics：
   /ee_delta/right + /ee_delta/left  (PoseStamped)   /joint_states
@@ -37,7 +41,6 @@ _sys.path.insert(0, _ROOT)
 _sys.path.insert(0, _HERE)
 _sys.path.insert(0, _os.path.join(_ROOT, "ik_solver"))
 _sys.path.insert(0, _os.path.join(_ROOT, "ws_mesh"))
-_sys.path.insert(0, _os.path.join(_os.path.dirname(_ROOT), "scripts"))
 
 import argparse
 import os
@@ -50,13 +53,6 @@ from placo_ik_session_bimanual import (
     ARMS, _MAX_ITER, _TICK_BUDGET_DEG_DEFAULT, _EE_DIST_SOFT_DEFAULT,
 )
 from placo_ik_node_bimanual import PlacoBimanualNode
-
-try:
-    from data_collection import JointActionsAggregator
-    _AGGREGATOR_AVAILABLE = True
-except ImportError:
-    _AGGREGATOR_AVAILABLE = False
-    print("  ⚠  joint_actions_aggregator not available — /joint_actions off")
 
 
 def _parse_args():
@@ -179,21 +175,9 @@ def main():
     rclpy.init()
     node = PlacoBimanualNode(args)
 
-    aggregator = None
-    if _AGGREGATOR_AVAILABLE and not args.dry_run:
-        try:
-            aggregator = JointActionsAggregator(
-                hand_config="o6_both", publish_rate=50.0)
-            print("  [✓] joint_actions_aggregator started (o6_both, 50Hz)")
-        except Exception as e:
-            print(f"  ⚠  aggregator failed to start: {e}")
-            aggregator = None
-
     from rclpy.executors import MultiThreadedExecutor
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
-    if aggregator:
-        executor.add_node(aggregator)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
 
@@ -209,8 +193,6 @@ def main():
     finally:
         node.print_final_stats()
         node.destroy_node()
-        if aggregator:
-            aggregator.destroy_node()
         rclpy.shutdown()
 
 

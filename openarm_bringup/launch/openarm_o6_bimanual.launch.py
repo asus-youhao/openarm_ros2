@@ -20,6 +20,10 @@ This launch file starts:
 - ROS2 Control hardware interface (v10_simple_hardware)
 - Joint trajectory controllers for both arms
 - O6 hand controllers for both hands
+- The /joint_actions aggregator (with_joint_actions:=true, the default), the only
+  publisher of /joint_actions. It publishes at 50 Hz from startup: the FPC commands
+  where they arrive, /joint_states for every limb without a live command (all of
+  them with robot_controller:=joint_trajectory_controller). docs/JOINT_ACTIONS.md
 
 Example usage:
   # Bimanual with O6 hands (can0=right arm, can1=left arm, can2=right O6, can3=left O6)
@@ -36,6 +40,9 @@ Example usage:
 
   # With RViz visualization
   ros2 launch openarm_bringup openarm_o6_bimanual.launch.py launch_rviz:=true
+
+  # Without the /joint_actions aggregator
+  ros2 launch openarm_bringup openarm_o6_bimanual.launch.py with_joint_actions:=false
 """
 
 import os
@@ -45,7 +52,9 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription, LaunchContext, conditions
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, TimerAction, OpaqueFunction
+from launch.actions import IncludeLaunchDescription
 from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -263,6 +272,23 @@ def generate_launch_description():
             default_value="true",
             description="Start RViz automatically with this launch file.",
         ),
+        DeclareLaunchArgument(
+            'with_joint_actions',
+            default_value='true',
+            description='Start the /joint_actions aggregator (joint_actions.launch.py).',
+        ),
+        DeclareLaunchArgument(
+            'aggregator_arm_config',
+            default_value='both',
+            choices=['both', 'left', 'right'],
+            description='Arms the aggregator subscribes to; others from /joint_states.',
+        ),
+        DeclareLaunchArgument(
+            'aggregator_hand_config',
+            default_value='o6_both',
+            choices=['none', 'o6_left', 'o6_right', 'o6_both'],
+            description='Hands the aggregator subscribes to; always 26 joints out.',
+        ),
     ]
 
     # Initialize launch configurations
@@ -342,6 +368,23 @@ def generate_launch_description():
         actions=[o6_hand_controller_spawner_func],
     )
 
+    # /joint_actions aggregator, the only publisher of /joint_actions. It reads each
+    # FPC's `joints` and keeps retrying until the controller is loaded, so the start
+    # order is not critical; it starts after the spawners to keep the log readable.
+    joint_actions = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(PathJoinSubstitution(
+            [FindPackageShare('openarm_bringup'), 'launch', 'joint_actions.launch.py'])),
+        launch_arguments={
+            'arm_config': LaunchConfiguration('aggregator_arm_config'),
+            'hand_config': LaunchConfiguration('aggregator_hand_config'),
+        }.items(),
+        condition=conditions.IfCondition(LaunchConfiguration('with_joint_actions')),
+    )
+    delayed_joint_actions = TimerAction(
+        period=LAUNCH_DELAY_SECONDS * 2,
+        actions=[joint_actions],
+    )
+
     nodes = [
         *declared_arguments,
         robot_nodes,
@@ -349,6 +392,7 @@ def generate_launch_description():
         delayed_arm_controller,
         delayed_o6_hand_controller,
         rviz_node,
+        delayed_joint_actions,
     ]
 
     return LaunchDescription(nodes)

@@ -388,7 +388,7 @@ class PlacoOnlineProfiler(Node):
                           self.create_publisher(Float64MultiArray, cfg["fwd_cmd_topic"], 10))
         self._latency_pub = self.create_publisher(Float32, cfg["latency_topic"], 10)
         self._profile_pub = self.create_publisher(String,  cfg["profile_topic"], 10)
-        # JointState publisher for arm-specific IK commands (intermediate topic for aggregator)
+        # JointState publisher for arm-specific IK commands (monitoring only)
         ik_cmd_topic = f"/{self.args.arm}_arm_ik_commands"
         self._ik_cmd_pub = self.create_publisher(JointState, ik_cmd_topic, 10)
         # EE pose 連續輸出（Cartesian PoseStamped，base_link frame）
@@ -884,7 +884,7 @@ class PlacoOnlineProfiler(Node):
             msg.points = [pt]
             self._traj_pub.publish(msg)
         
-        # Publish to arm-specific IK command topic (for aggregator to combine)
+        # Publish to arm-specific IK command topic (monitoring side channel)
         ik_cmd_msg = JointState()
         ik_cmd_msg.header.stamp = self.get_clock().now().to_msg()
         ik_cmd_msg.name = list(self.cfg["joint_names"])
@@ -1635,7 +1635,7 @@ class PlacoOnlineProfiler(Node):
             print(f"  cmd      : {cfg['fwd_cmd_topic']}  (ForwardCommandController)")
         else:
             print(f"  cmd      : {cfg['traj_topic']}  (JointTrajectoryController)")
-        print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (for aggregator)")
+        print(f"  ik_cmd   : /{args.arm}_arm_ik_commands  (monitoring)")
         print(f"  horizon  : {self._horizon_ms:.1f}ms")
         print(f"  CSV      : {self._csv_path}")
         if self._ws_mesh is not None:

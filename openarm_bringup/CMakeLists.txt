@@ -41,4 +41,11 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+# The /joint_actions aggregator lives in the repository's scripts/ tree, which is
+# not a package. Install it next to launch/joint_actions.launch.py so the bringup
+# finds it with or without --symlink-install (docs/JOINT_ACTIONS.md).
+install(PROGRAMS ../scripts/data_collection/joint_actions_aggregator.py
+  DESTINATION share/${PROJECT_NAME}/scripts/data_collection
+)
+
 ament_package()
